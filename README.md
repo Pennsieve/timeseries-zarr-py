@@ -51,6 +51,38 @@ setting is optional.
 The last four override the pyramid and chunk parameters that
 [docs/bundle-format.md](./docs/bundle-format.md) specifies.
 
+## Reading layer
+
+`timeseries_zarr.reading` opens, queries, montages, and filters
+bundles. A bundle needs no library to be read — any Zarr
+implementation works — so everything here is convenience over stock
+Zarr, plus the parts that are easy to get wrong: level selection, the
+rho serving tiers, exact montage from mean levels, filter redesign
+with pole-decay pre-roll, and event queries bounded by
+`max_duration_us`. Filtered views need scipy
+(`pip install .[serving]`).
+
+```python
+from timeseries_zarr.reading import open_bundle
+
+b = open_bundle("path/or/url/to/bundle.tszarr")
+w = b["0"].window(0, 600, pixels=2000)          # env+mean, auto level
+m = b.montage({"0": 1.0, "1": -1.0})            # exact at every level
+f = b["0"].filtered_window(0, 60, 0.5, 70.0)    # rho-tiered; f.marked
+ev = b["4"].overlapping(30, 60)                 # interval stabbing
+body = b["4"].body(0)                           # NDJSON-decoded
+```
+
+The `tszarr` CLI wraps inspection and the de-identification the
+format makes trivial:
+
+```bash
+tszarr info bundle.tszarr        # channel inventory
+tszarr validate bundle.tszarr    # spec conformance, exit 1 on error
+tszarr dateshift bundle.tszarr --days 30
+tszarr deid bundle.tszarr        # delete meta/, list body surfaces
+```
+
 ## Development
 
 Python 3.12, fully typed under `mypy --strict`, with a strict `ruff` ruleset. Tests in
