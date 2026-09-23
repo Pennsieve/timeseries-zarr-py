@@ -38,13 +38,23 @@ inputs:
       One NWB file. The writer reads the single file matching *.nwb in
       INPUT_DIR and fails if that directory holds none or several.
 
+  - name: annotations
+    dataType: file
+    required: false
+    description: >-
+      Any number of *.annotations.ndjson files in INPUT_DIR, each one an
+      annotation source that becomes one event channel. Normally these arrive
+      from a parallel extractor branch at the merge. Without them the bundle
+      holds signal only.
+
 outputs:
   - name: bundle
     dataType: directory
     description: >-
       One Zarr v3 bundle written into OUTPUT_DIR, named for the input file stem:
       session.nwb produces session.zarr. The directory appears in one atomic
-      rename, so a reader never sees a partial bundle.
+      rename, so a reader never sees a partial bundle. Every annotation file
+      that arrived becomes one event channel inside it.
 
   - name: properties
     dataType: file
@@ -73,13 +83,14 @@ parameters:
   - name: ZARR_WRITER_MAX_LEVELS
     label: Maximum pyramid levels
     description: >-
-      Upper bound on the number of min/max envelope levels built above the raw
-      samples. Each level is 4x coarser than the one below it. Integer values
-      only.
+      Upper bound on the number of level groups built above the raw samples.
+      Each level is 4x coarser than the one below it. Raw is not a level, and
+      7 is the ceiling: a level-8 bin would span 65536 samples, past what the
+      u2 valid member can count. Integer values only.
     type: number
-    default: 8
+    default: 7
     min: 1
-    max: 8
+    max: 7
 
   - name: ZARR_WRITER_MIN_BINS
     label: Minimum bins per level
