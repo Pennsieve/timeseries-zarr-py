@@ -10,12 +10,15 @@ Nothing here imports NWB or Zarr. Timestamps arrive as any object supporting
 dataset both work and neither is read whole.
 """
 
+import logging
 from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
 import numpy.typing as npt
+
+logger = logging.getLogger(__name__)
 
 READ_BLOCK_SAMPLES = 2**22
 """Timestamps read per block (~4.2M, 32 MiB as float64) when scanning."""
@@ -102,6 +105,20 @@ def derive_rate_hz(
 
     span = float(window[run_stop - 1] - window[0])
     if span <= 0.0:
+        # DEBUG: suspected cause is a one-sample first segment followed by a
+        # gap. Log what the timestamps actually look like to confirm.
+        logger.warning(
+            "derive_rate_hz: first run spans no time. first 10 timestamps=%s, "
+            "median step=%r, run_stop=%d, probed=%d, gaps found=%d, "
+            "first 5 gap indices=%s, their steps=%s",
+            window[:10].tolist(),
+            nominal,
+            run_stop,
+            count,
+            breaks.size,
+            breaks[:5].tolist(),
+            steps[breaks[:5]].tolist(),
+        )
         raise ValueError("the first run of timestamps spans no time")
     return (run_stop - 1) / span
 
