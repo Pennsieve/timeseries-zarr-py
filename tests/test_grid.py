@@ -129,6 +129,20 @@ def test_derive_rate_stops_at_the_first_gap():
     assert derive_rate_hz(ts) == pytest.approx(RATE)
 
 
+def test_derive_rate_skips_a_one_sample_first_run():
+    # A MEF-derived recording opened with one sample, then a 3.3 s gap.
+    ts = np.concatenate([[0.0], _regular(2000, start=3.3555)])
+    assert derive_rate_hz(ts) == pytest.approx(RATE)
+
+
+def test_derive_rate_uses_the_longest_run():
+    # The short first run measures the dither badly; the long one averages it.
+    short = _dithered(4)
+    long = _dithered(4000) + short[-1] + 30.0
+    ts = np.concatenate([short, long])
+    assert derive_rate_hz(ts) == pytest.approx(512.0, abs=1e-3)
+
+
 def test_derive_rate_needs_two_timestamps():
     with pytest.raises(ValueError, match="at least two timestamps"):
         derive_rate_hz(np.zeros(1, dtype=np.float64))

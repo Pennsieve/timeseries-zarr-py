@@ -78,7 +78,7 @@ def _read(
 def derive_rate_hz(
     timestamps: Timestamps, *, probe: int = RATE_PROBE_SAMPLES
 ) -> float:
-    """Return the sample rate implied by the first gap-free run of timestamps.
+    """Return the sample rate implied by the longest gap-free run of timestamps.
 
     Measured over the run's whole span rather than from the median interval.
     Timestamps are often dithered between two neighboring representable values
@@ -86,9 +86,13 @@ def derive_rate_hz(
     drifts. On a real 512 Hz recording the median gives 511.967234 Hz, which
     misplaces samples by half a minute across six days.
 
+    The longest run is used rather than the first because a recording can
+    open with a run too short to measure, such as one sample before a gap.
+    The longest run also averages the dither over the most samples.
+
     Only the first ``probe`` timestamps are read. Raises ValueError when fewer
-    than two are available, when they do not increase, or when the first run
-    spans no time.
+    than two are available, when they do not increase, or when every run in
+    the probe spans no time.
     """
     count = min(len(timestamps), probe)
     if count < MIN_TIMESTAMPS_FOR_RATE:
@@ -100,27 +104,40 @@ def derive_rate_hz(
     if nominal <= 0.0:
         raise ValueError("timestamps are not increasing")
 
+    # A run ends at each gap. Pick the one with the most samples; ties go to
+    # the earliest.
     breaks = np.flatnonzero(steps > nominal * GAP_THRESHOLD)
-    run_stop = int(breaks[0]) + 1 if breaks.size else count
+    run_starts = np.concatenate([[0], breaks + 1])
+    run_stops = np.concatenate([breaks + 1, [count]])
+    longest = int(np.argmax(run_stops - run_starts))
+    run_start = int(run_starts[longest])
+    run_stop = int(run_stops[longest])
 
-    span = float(window[run_stop - 1] - window[0])
-    if span <= 0.0:
-        # DEBUG: suspected cause is a one-sample first segment followed by a
-        # gap. Log what the timestamps actually look like to confirm.
+    # DEBUG: suspected cause of "spans no time" on MEF-derived files is a
+    # one-sample first run followed by a gap. Log the timestamps whenever the
+    # first run isn't the one used, so a real run can confirm it.
+    if longest != 0 or run_stop - run_start < MIN_TIMESTAMPS_FOR_RATE:
         logger.warning(
-            "derive_rate_hz: first run spans no time. first 10 timestamps=%s, "
-            "median step=%r, run_stop=%d, probed=%d, gaps found=%d, "
-            "first 5 gap indices=%s, their steps=%s",
+            "derive_rate_hz: first run not usable or not longest. first 10 "
+            "timestamps=%s, median step=%r, probed=%d, gaps found=%d, first 5 "
+            "gap indices=%s, their steps=%s, first run length=%d, using run "
+            "[%d, %d) of length %d",
             window[:10].tolist(),
             nominal,
-            run_stop,
             count,
             breaks.size,
             breaks[:5].tolist(),
             steps[breaks[:5]].tolist(),
+            int(run_stops[0] - run_starts[0]),
+            run_start,
+            run_stop,
+            run_stop - run_start,
         )
-        raise ValueError("the first run of timestamps spans no time")
-    return (run_stop - 1) / span
+
+    span = float(window[run_stop - 1] - window[run_start])
+    if span <= 0.0:
+        raise ValueError("no run of timestamps in the probe spans any time")
+    return (run_stop - run_start - 1) / span
 
 
 def build_segments(
