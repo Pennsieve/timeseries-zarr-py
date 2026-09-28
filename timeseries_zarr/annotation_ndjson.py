@@ -161,6 +161,10 @@ class NdjsonAnnotationSource:
             )
 
         marks = sorted(lines, key=lambda mark: int(mark["time_us"]))
+        if channel_index_by_name is not None:
+            marks = _drop_missing_channels(
+                marks, channel_index_by_name, path.name
+            )
         origin = recording_onset_us if reference == RECORDING_ONSET else 0
 
         self._events = np.array(
@@ -236,11 +240,6 @@ class NdjsonAnnotationSource:
         resolved: list[npt.NDArray[np.uint16]] = []
         for mark in marks:
             names = [str(name) for name in mark.get("channels", [])]
-            unknown = sorted({n for n in names if n not in index_by_name})
-            if unknown:
-                raise AnnotationDocumentError(
-                    f"channels {unknown} are not in this bundle"
-                )
             resolved.append(
                 np.array(
                     [index_by_name[name] for name in names], dtype=np.uint16
@@ -331,6 +330,49 @@ class NdjsonAnnotationSource:
         """Return the channel indices each mark in [start, stop) applies to."""
         assert self._refs is not None
         return self._refs[start:stop]
+
+
+def _drop_missing_channels(
+    marks: list[dict[str, Any]],
+    index_by_name: dict[str, int],
+    file_name: str,
+) -> list[dict[str, Any]]:
+    """Keep only the channel names this bundle has, and warn about the rest.
+
+    The extractor runs parallel to signal conversion, so it can't know when
+    only some channels were converted. A mark left naming none of the bundle's
+    channels is dropped, not kept with an empty list, because an empty list
+    means the mark belongs to the whole recording.
+    """
+    kept: list[dict[str, Any]] = []
+    missing: set[str] = set()
+    trimmed = 0
+    for mark in marks:
+        if "channels" not in mark:
+            kept.append(mark)
+            continue
+        names = [str(name) for name in mark["channels"]]
+        present = [name for name in names if name in index_by_name]
+        missing.update(name for name in names if name not in index_by_name)
+        if names and not present:
+            continue
+        if len(present) == len(names):
+            kept.append(mark)
+        else:
+            trimmed += 1
+            kept.append({**mark, "channels": present})
+
+    if missing:
+        log.warning(
+            "%s names %d channels not in this bundle %s; trimmed them from %d "
+            "marks and dropped %d marks that named only those channels",
+            file_name,
+            len(missing),
+            sorted(missing),
+            trimmed,
+            len(marks) - len(kept),
+        )
+    return kept
 
 
 def build_annotation_sources(

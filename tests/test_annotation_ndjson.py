@@ -218,13 +218,46 @@ def test_a_mark_naming_no_channels_keeps_an_empty_span(tmp_path):
     assert list(source.read_channel_refs(1, 2)[0]) == []
 
 
-def test_a_channel_the_bundle_does_not_have_is_rejected(tmp_path):
-    with pytest.raises(AnnotationDocumentError, match="not in this bundle"):
-        _source(
+def test_channels_the_bundle_does_not_have_are_trimmed(tmp_path, caplog):
+    """A partial conversion still gets the marks on the channels it has."""
+    with caplog.at_level("WARNING"):
+        source = _source(
             tmp_path,
-            [{"time_us": 1, "channels": ["LH3"]}],
+            [{"time_us": 1, "channels": ["C3", "LH3"]}],
             channel_index_by_name={"C3": 0},
         )
+    assert source.num_events() == 1
+    assert list(source.read_channel_refs(0, 1)[0]) == [0]
+    assert "LH3" in caplog.text
+
+
+def test_a_mark_naming_only_missing_channels_is_dropped(tmp_path, caplog):
+    """Not kept with an empty list, which would move it onto the recording."""
+    with caplog.at_level("WARNING"):
+        source = _source(
+            tmp_path,
+            [
+                {"time_us": 1, "channels": ["LH3"], "label": "spike"},
+                {"time_us": 2, "channels": ["C3"], "label": "sz"},
+                {"time_us": 3, "label": "note"},
+            ],
+            channel_index_by_name={"C3": 0},
+        )
+    assert source.num_events() == 2
+    assert list(source.read_events(0, 2)) == [2, 3]
+    assert [list(refs) for refs in source.read_channel_refs(0, 2)] == [[0], []]
+    assert source.label_names() == ["note", "sz"]
+    assert "dropped 1 marks" in caplog.text
+
+
+def test_no_warning_when_every_channel_is_present(tmp_path, caplog):
+    with caplog.at_level("WARNING"):
+        _source(
+            tmp_path,
+            [{"time_us": 1, "channels": ["C3"]}],
+            channel_index_by_name={"C3": 0},
+        )
+    assert "not in this bundle" not in caplog.text
 
 
 def test_naming_channels_without_a_bundle_to_resolve_against_is_rejected(
