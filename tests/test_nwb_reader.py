@@ -5,16 +5,19 @@ import pytest
 from hdmf.common import DynamicTableRegion
 from pynwb import TimeSeries
 from pynwb.ecephys import ElectricalSeries
+from pynwb.file import Subject
 from pynwb.misc import Units
 from pynwb.testing.mock.base import mock_TimeSeries
 from pynwb.testing.mock.device import mock_Device
 from pynwb.testing.mock.ecephys import mock_ElectricalSeries
 from pynwb.testing.mock.file import mock_NWBFile
 
+import timeseries_zarr.nwb_reader as nwb_reader_module
 from timeseries_zarr.nwb_reader import (
     NwbContinuousSource,
     NwbTimeSeriesSource,
     NwbUnitSource,
+    build_meta_from_nwb,
     build_sources_from_nwb,
 )
 
@@ -275,11 +278,11 @@ def test_unit_read_events_window_is_a_subset():
     assert np.array_equal(src.read_events(1, 3), src.read_events(0, 5)[1:3])
 
 
-def test_unit_read_units_are_dense_cluster_ids_aligned_with_events():
+def test_unit_read_labels_are_dense_cluster_ids_aligned_with_events():
     src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
-    units = src.read_units(0, 5)
-    assert units.dtype == np.uint8
-    assert np.array_equal(units, np.array(_SORTED_CLUSTERS, dtype=np.uint8))
+    labels = src.read_labels(0, 5)
+    assert labels.dtype == np.uint16
+    assert np.array_equal(labels, np.array(_SORTED_CLUSTERS, dtype=np.uint16))
 
 
 def test_unit_read_waveforms_broadcasts_each_clusters_mean():
@@ -302,9 +305,19 @@ def test_unit_read_waveforms_empty_range_keeps_point_axis():
     assert src.read_waveforms(2, 2).shape == (0, 4)
 
 
-def test_unit_init_rejects_more_than_256_units():
-    specs = [([float(i)], [0.0]) for i in range(257)]
-    with pytest.raises(ValueError):
+def test_unit_init_accepts_more_than_256_labels():
+    """The old u1 column capped a sort at 256, which a dense probe passes."""
+    specs = [([float(i)], [0.0]) for i in range(300)]
+    src = NwbUnitSource(_make_units(specs), 30000.0, STARTED)
+    assert src.num_events() == 300
+    assert src.read_labels(0, 300).max() == 299
+
+
+def test_unit_init_rejects_more_labels_than_u2_can_address(monkeypatch):
+    # Building 65537 units is not worth the runtime; lower the ceiling.
+    monkeypatch.setattr(nwb_reader_module, "MAX_LABEL_VALUES", 2)
+    specs = [([float(i)], [0.0]) for i in range(3)]
+    with pytest.raises(ValueError, match="at most"):
         NwbUnitSource(_make_units(specs), 30000.0, STARTED)
 
 
@@ -580,3 +593,95 @@ def test_build_reports_a_series_sampled_by_timestamps():
     )
     with pytest.raises(ValueError, match="irregular sampling.*irregular"):
         build_sources_from_nwb(nwb)
+
+
+def test_build_reads_a_gapped_series_timestamps_once(monkeypatch):
+    """Every channel shares the timestamps, so the gap map is built once."""
+    nwb = mock_NWBFile()
+    timestamps = np.concatenate([np.arange(64), np.arange(80, 144)]) / 512.0
+    mock_ElectricalSeries(
+        nwbfile=nwb, data=np.zeros((128, 4)), timestamps=timestamps
+    )
+    calls = []
+    real = nwb_reader_module.build_segments
+    monkeypatch.setattr(
+        nwb_reader_module,
+        "build_segments",
+        lambda *args, **kwargs: calls.append(1) or real(*args, **kwargs),
+    )
+    continuous, _ = build_sources_from_nwb(nwb)
+    assert len(continuous) == 4
+    assert len(calls) == 1
+    # Each channel still sees the gap.
+    assert all(source.num_samples() == 144 for source in continuous)
+
+
+def test_build_meta_from_nwb_carries_the_subject_across():
+    nwb = mock_NWBFile(
+        subject=Subject(
+            subject_id="sub-01",
+            species="Homo sapiens",
+            sex="F",
+            age="P41Y",
+            date_of_birth=datetime(1985, 3, 2, tzinfo=UTC),
+        )
+    )
+    meta = build_meta_from_nwb(nwb)
+    assert meta.subject["subject_id"] == "sub-01"
+    assert meta.subject["species"] == "Homo sapiens"
+    assert meta.subject["sex"] == "F"
+    # A date has to survive as JSON text, not as a datetime object.
+    assert meta.subject["date_of_birth"] == "1985-03-02T00:00:00+00:00"
+
+
+def test_build_meta_from_nwb_without_a_subject():
+    meta = build_meta_from_nwb(mock_NWBFile())
+    assert meta.subject == {}
+    assert "identifier" in meta.session
+
+
+def test_build_meta_from_nwb_drops_unset_fields():
+    nwb = mock_NWBFile(subject=Subject(subject_id="sub-01"))
+    meta = build_meta_from_nwb(nwb)
+    # NWB leaves most of the subject table None; meta/ shows only what it knew.
+    assert set(meta.subject) == {"subject_id"}
+
+
+def test_build_meta_from_nwb_records_the_converter_and_devices():
+    nwb = mock_NWBFile()
+    mock_Device(name="amp-1", nwbfile=nwb)
+    meta = build_meta_from_nwb(nwb)
+    assert meta.source["converter"] == "timeseries-zarr-py"
+    assert meta.source["devices"] == ["amp-1"]
+
+
+def test_build_meta_from_nwb_carries_no_start_us():
+    # The onset is the earliest channel start, which only the bundle knows.
+    assert "start_us" not in build_meta_from_nwb(mock_NWBFile()).session
+
+
+def test_continuous_source_reports_the_declared_offset_in_uv():
+    es = mock_ElectricalSeries(rate=100.0, offset=0.5)
+    source = NwbContinuousSource(es, 0, datetime(2026, 1, 1, tzinfo=UTC))
+    # 0.5 V of bias is 500000 uV, the unit the samples are stored in.
+    assert source.offset_uv() == pytest.approx(500_000.0)
+
+
+def test_continuous_source_reports_no_offset_when_none_is_declared():
+    es = mock_ElectricalSeries(rate=100.0)
+    source = NwbContinuousSource(es, 0, datetime(2026, 1, 1, tzinfo=UTC))
+    assert source.offset_uv() == 0.0
+
+
+def test_timeseries_source_scales_the_offset_like_its_samples():
+    series = mock_TimeSeries(rate=100.0, unit="millivolts", offset=2.0)
+    source = NwbTimeSeriesSource(series, 0, datetime(2026, 1, 1, tzinfo=UTC))
+    assert source.unit == "uV"
+    assert source.offset_uv() == pytest.approx(2000.0)
+
+
+def test_timeseries_source_keeps_the_offset_in_a_non_volts_unit():
+    series = mock_TimeSeries(rate=100.0, unit="degrees", offset=2.0)
+    source = NwbTimeSeriesSource(series, 0, datetime(2026, 1, 1, tzinfo=UTC))
+    assert source.unit == "degrees"
+    assert source.offset_uv() == pytest.approx(2.0)

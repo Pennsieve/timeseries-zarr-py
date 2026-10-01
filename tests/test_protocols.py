@@ -17,6 +17,9 @@ class FakeContinuous:
     def num_samples(self):
         return 4
 
+    def offset_uv(self):
+        return 0.0
+
     def read_samples(self, start, stop):
         return np.zeros(stop - start, dtype=np.float32)
 
@@ -112,14 +115,17 @@ class FakeUnit:
     def num_events(self):
         return 3
 
+    def num_labels(self):
+        return 1
+
     def points_per_event(self):
         return 32
 
     def read_events(self, start, stop):
         return np.zeros(stop - start, dtype=np.int64)
 
-    def read_units(self, start, stop):
-        return np.zeros(stop - start, dtype=np.uint8)
+    def read_labels(self, start, stop):
+        return np.zeros(stop - start, dtype=np.uint16)
 
     def read_waveforms(self, start, stop):
         return np.zeros((stop - start, 32), dtype=np.float32)
@@ -148,8 +154,8 @@ def test_unit_missing_name_or_unit_is_not_recognized():
         def read_events(self, start, stop):
             return np.zeros(stop - start, dtype=np.int64)
 
-        def read_units(self, start, stop):
-            return np.zeros(stop - start, dtype=np.uint8)
+        def read_labels(self, start, stop):
+            return np.zeros(stop - start, dtype=np.uint16)
 
         def read_waveforms(self, start, stop):
             return np.zeros((stop - start, 32), dtype=np.float32)
@@ -176,7 +182,7 @@ def test_unit_missing_method_is_not_recognized():
         def read_events(self, start, stop):
             return np.zeros(stop - start, dtype=np.int64)
 
-        def read_units(self, start, stop):
-            return np.zeros(stop - start, dtype=np.uint8)
+        def read_labels(self, start, stop):
+            return np.zeros(stop - start, dtype=np.uint16)
 
     assert not isinstance(MissingReadWaveforms(), UnitChannelSource)

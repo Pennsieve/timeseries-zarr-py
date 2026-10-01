@@ -2,7 +2,7 @@ import pytest
 
 from timeseries_zarr.attrs import (
     channel_group_attrs,
-    level_array_attrs,
+    level_group_attrs,
     root_attrs,
     waveform_array_attrs,
 )
@@ -20,7 +20,7 @@ def test_channel_group_attrs(kind):
     assert attrs == {
         "id": "N:channel:abc",
         "rate_hz": 32000.0,
-        "start_us": 1000,
+        "offset_us": 1000,
         "kind": kind,
         "name": "channel one",
         "unit": "uV",
@@ -28,8 +28,8 @@ def test_channel_group_attrs(kind):
 
 
 @pytest.mark.parametrize("period_us", [31.25, 125.0, 512000.0])
-def test_level_array_attrs(period_us):
-    assert level_array_attrs(period_us) == {"period_us": period_us}
+def test_level_group_attrs(period_us):
+    assert level_group_attrs(period_us) == {"period_us": period_us}
 
 
 @pytest.mark.parametrize("period_us", [31.25, 125.0, 512000.0])

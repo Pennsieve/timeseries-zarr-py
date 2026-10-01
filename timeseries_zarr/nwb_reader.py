@@ -2,7 +2,7 @@
 
 import logging
 from collections.abc import Iterator, Sequence
-from datetime import datetime
+from datetime import date, datetime
 
 import numpy as np
 import numpy.typing as npt
@@ -11,56 +11,28 @@ from pynwb.ecephys import ElectricalSeries
 from pynwb.misc import Units
 
 from timeseries_zarr.constants import (
-    MAX_UNIT_CLUSTERS,
+    MAX_LABEL_VALUES,
     MICROSECONDS_PER_SECOND,
     UNIT_TO_UV,
 )
+from timeseries_zarr.grid import build_segments, derive_rate_hz
+from timeseries_zarr.nwb_series import (
+    channel_count,
+    electrode_id,
+    electrode_name,
+    offset_uv,
+    read_column,
+    read_uv,
+    require_rate,
+    start_us,
+)
+from timeseries_zarr.nwb_timestamped import NwbTimestampedSource
+from timeseries_zarr.types import RecordingMeta
 
 logger = logging.getLogger(__name__)
 
 MAX_SERIES_RANK = 2
 """Highest data rank a series can have and still be read as channels."""
-
-
-def _require_rate(series: TimeSeries) -> float:
-    """Return the series' sample rate in hertz, raising for a timestamps-only series."""
-    if series.rate is None:
-        raise ValueError(
-            f"irregular sampling is not supported: {series.name} has "
-            "timestamps and no rate"
-        )
-    return float(series.rate)
-
-
-def _start_us(series: TimeSeries, session_start_time: datetime) -> int:
-    """Return wall-clock microseconds of sample 0, rounded to whole microseconds."""
-    start_s: float = session_start_time.timestamp() + float(
-        series.starting_time
-    )
-    return round(start_s * MICROSECONDS_PER_SECOND)
-
-
-def _read_column(
-    series: TimeSeries, channel_index: int, start: int, stop: int
-) -> npt.NDArray[np.float64]:
-    """Return one channel's [start, stop) window as float64.
-
-    A rank-1 series is its own single channel; a rank-2 series is indexed by
-    column.
-    """
-    data = series.data
-    window = (
-        data[start:stop]
-        if len(data.shape) == 1
-        else data[start:stop, channel_index]
-    )
-    return np.asarray(window, dtype=np.float64)
-
-
-def _channel_count(series: TimeSeries) -> int:
-    """Return the number of channels a rank-1 or rank-2 series holds."""
-    shape = series.data.shape
-    return 1 if len(shape) == 1 else int(shape[1])
 
 
 class NwbContinuousSource:
@@ -82,25 +54,17 @@ class NwbContinuousSource:
         self._series = electrical_series
         self._channel_index = channel_index
         self._session_start_time = session_start_time
-        self._rate_hz = _require_rate(electrical_series)
+        self._rate_hz = require_rate(electrical_series)
 
     @property
     def id(self) -> str:
         """The selected electrode's table id."""
-        electrodes = self._series.electrodes
-        row_index = electrodes.data[self._channel_index]
-        return str(electrodes.table.id[row_index])
+        return electrode_id(self._series, self._channel_index)
 
     @property
     def name(self) -> str:
         """The electrode's channel_name column, then its label, then the id."""
-        electrodes = self._series.electrodes
-        row_index = electrodes.data[self._channel_index]
-        table = electrodes.table
-        for column in ("channel_name", "label"):
-            if column in table.colnames:
-                return str(table[column][row_index])
-        return self.id
+        return electrode_name(self._series, self._channel_index)
 
     @property
     def unit(self) -> str:
@@ -117,11 +81,15 @@ class NwbContinuousSource:
         The session start plus the series' own start offset, rounded to whole
         microseconds.
         """
-        return _start_us(self._series, self._session_start_time)
+        return start_us(self._series, self._session_start_time)
 
     def num_samples(self) -> int:
         """Return the length of the series' time axis, shared by every channel."""
         return int(self._series.data.shape[0])
+
+    def offset_uv(self) -> float:
+        """Return the series' declared DC offset in microvolts."""
+        return offset_uv(self._series)
 
     def read_samples(self, start: int, stop: int) -> npt.NDArray[np.float32]:
         """Return the half-open [start, stop) sample window as float32 microvolts.
@@ -130,17 +98,7 @@ class NwbContinuousSource:
         unit to microvolts. Raises ValueError if that unit is not a recognized
         volts family. An empty range (stop <= start) yields a length-0 array.
         """
-        column = _read_column(self._series, self._channel_index, start, stop)
-        scaled = column * float(self._series.conversion)
-        if self._series.channel_conversion is not None:
-            scaled = scaled * float(
-                self._series.channel_conversion[self._channel_index]
-            )
-        scaled = scaled + float(self._series.offset)
-        unit = str(self._series.unit).lower()
-        if unit not in UNIT_TO_UV:
-            raise ValueError(f"unsupported ElectricalSeries unit: {unit!r}")
-        return (scaled * UNIT_TO_UV[unit]).astype(np.float32)
+        return read_uv(self._series, self._channel_index, start, stop)
 
 
 class NwbTimeSeriesSource:
@@ -173,7 +131,7 @@ class NwbTimeSeriesSource:
         self._series = series
         self._channel_index = channel_index
         self._session_start_time = session_start_time
-        self._rate_hz = _require_rate(series)
+        self._rate_hz = require_rate(series)
         unit = str(series.unit)
         self._uv_factor = UNIT_TO_UV.get(unit.lower())
         self._unit = unit if self._uv_factor is None else "uV"
@@ -201,11 +159,16 @@ class NwbTimeSeriesSource:
 
     def start_us(self) -> int:
         """Return the wall-clock microseconds of sample index 0."""
-        return _start_us(self._series, self._session_start_time)
+        return start_us(self._series, self._session_start_time)
 
     def num_samples(self) -> int:
         """Return the length of the series' time axis, shared by every channel."""
         return int(self._series.data.shape[0])
+
+    def offset_uv(self) -> float:
+        """Return the series' declared DC offset in the channel's own unit."""
+        offset = float(self._series.offset)
+        return offset if self._uv_factor is None else offset * self._uv_factor
 
     def read_samples(self, start: int, stop: int) -> npt.NDArray[np.float32]:
         """Return the [start, stop) sample window as float32 in the channel unit.
@@ -214,7 +177,7 @@ class NwbTimeSeriesSource:
         factor when the unit is in the volts family. An empty range
         (stop <= start) yields a length-0 array.
         """
-        column = _read_column(self._series, self._channel_index, start, stop)
+        column = read_column(self._series, self._channel_index, start, stop)
         scaled = column * float(self._series.conversion) + float(
             self._series.offset
         )
@@ -223,7 +186,9 @@ class NwbTimeSeriesSource:
         return scaled.astype(np.float32)
 
 
-type ContinuousSource = NwbContinuousSource | NwbTimeSeriesSource
+type ContinuousSource = (
+    NwbContinuousSource | NwbTimeSeriesSource | NwbTimestampedSource
+)
 
 
 class NwbUnitSource:
@@ -231,7 +196,7 @@ class NwbUnitSource:
 
     Flattens the table's per-cluster rows into the per-event streams the
     bundle stores: all spikes merged into one timestamp series sorted
-    ascending, each event tagged with its cluster's dense uint8 id in table
+    ascending, each event tagged with its cluster's dense u2 label in table
     row order (not the upstream unit id) and carrying that cluster's
     waveform_mean.
     """
@@ -247,13 +212,16 @@ class NwbUnitSource:
         waveform_rate_hz is the sample rate within a waveform; the table
         carries no rate of its own. session_start_time places event timestamps
         in absolute microseconds. Raises ValueError if the table holds more
-        than 256 units, past the uint8 cluster-id range.
+        labels than the u2 column can address.
         """
         unit_count = len(units)
-        if unit_count > MAX_UNIT_CLUSTERS:
-            raise ValueError("a unit channel holds at most 256 clusters")
+        if unit_count > MAX_LABEL_VALUES:
+            raise ValueError(
+                f"an event channel holds at most {MAX_LABEL_VALUES} labels"
+            )
 
         self._id = str(units.name)
+        self._unit_count = unit_count
         self._rate_hz = float(waveform_rate_hz)
         self._start_us = round(
             session_start_time.timestamp() * MICROSECONDS_PER_SECOND
@@ -261,7 +229,7 @@ class NwbUnitSource:
 
         session_s = session_start_time.timestamp()
         times: list[npt.NDArray[np.float64]] = []
-        clusters: list[npt.NDArray[np.uint8]] = []
+        clusters: list[npt.NDArray[np.uint16]] = []
         waveforms: list[npt.NDArray[np.float32]] = []
         for cluster_id in range(unit_count):
             spike_times: npt.NDArray[np.float64] = np.asarray(
@@ -272,7 +240,7 @@ class NwbUnitSource:
             )
             count = spike_times.shape[0]
             times.append(spike_times)
-            clusters.append(np.full(count, cluster_id, dtype=np.uint8))
+            clusters.append(np.full(count, cluster_id, dtype=np.uint16))
             waveforms.append(np.broadcast_to(mean, (count, mean.shape[0])))
 
         all_times = np.concatenate(times)
@@ -282,7 +250,7 @@ class NwbUnitSource:
             .round()
             .astype(np.int64)
         )
-        self._units = np.concatenate(clusters)[order]
+        self._labels = np.concatenate(clusters)[order]
         self._waveforms = np.concatenate(waveforms)[order]
 
     @property
@@ -316,6 +284,14 @@ class NwbUnitSource:
         """Return the total number of spike events across all units."""
         return int(self._events.shape[0])
 
+    def num_labels(self) -> int:
+        """Return the number of clusters in the table.
+
+        The label space, not the labels seen: a cluster the sorter kept but
+        that fired nothing still owns a column of the count pyramid.
+        """
+        return self._unit_count
+
     def points_per_event(self) -> int:
         """Return the width of the waveform_mean template, shared by every event."""
         return int(self._waveforms.shape[1])
@@ -328,13 +304,13 @@ class NwbUnitSource:
         """
         return self._events[start:stop]
 
-    def read_units(self, start: int, stop: int) -> npt.NDArray[np.uint8]:
-        """Return the half-open [start, stop) window of per-event cluster ids.
+    def read_labels(self, start: int, stop: int) -> npt.NDArray[np.uint16]:
+        """Return the half-open [start, stop) window of per-event labels.
 
-        Aligned with the events at the same indices. An empty range yields a
-        length-0 array.
+        The cluster that produced each spike, aligned with the events at the
+        same indices. An empty range yields a length-0 array.
         """
-        return self._units[start:stop]
+        return self._labels[start:stop]
 
     def read_waveforms(self, start: int, stop: int) -> npt.NDArray[np.float32]:
         """Return float32 waveforms for events [start, stop).
@@ -409,6 +385,44 @@ def _require_unique_ids(
         seen.add(source.id)
 
 
+def _electrical_sources(
+    series: ElectricalSeries, session_start_time: datetime
+) -> list[ContinuousSource]:
+    """Return one source per channel of an ElectricalSeries.
+
+    A series carrying a rate is read directly. A series carrying timestamps
+    is a recording with breaks in it, and is placed on a uniform grid at a
+    rate derived from its own first gap-free run; the grid reports NaN where
+    nothing was recorded.
+    """
+    channels = range(channel_count(series))
+    if series.rate is not None:
+        return [
+            NwbContinuousSource(series, index, session_start_time)
+            for index in channels
+        ]
+
+    rate_hz = derive_rate_hz(series.timestamps)
+    logger.info(
+        "%s is sampled by timestamps; gridding at %.6f Hz derived from its "
+        "first gap-free run",
+        series.name,
+        rate_hz,
+    )
+    # One gap map for the whole series: every channel shares its timestamps.
+    segments = build_segments(series.timestamps, rate_hz)
+    return [
+        NwbTimestampedSource(
+            series,
+            index,
+            session_start_time,
+            rate_hz=rate_hz,
+            segments=segments,
+        )
+        for index in channels
+    ]
+
+
 def build_sources_from_nwb(
     nwbfile: NWBFile,
 ) -> tuple[list[ContinuousSource], list[NwbUnitSource]]:
@@ -430,14 +444,14 @@ def build_sources_from_nwb(
         if isinstance(acq, ElectricalSeries)
     ]
     continuous: list[ContinuousSource] = [
-        NwbContinuousSource(es, channel_index, session_start)
+        source
         for es in series
-        for channel_index in range(_channel_count(es))
+        for source in _electrical_sources(es, session_start)
     ]
     continuous.extend(
         NwbTimeSeriesSource(plain, channel_index, session_start)
         for plain in _iter_plain_series(nwbfile)
-        for channel_index in range(_channel_count(plain))
+        for channel_index in range(channel_count(plain))
     )
 
     units: list[NwbUnitSource] = []
@@ -449,3 +463,58 @@ def build_sources_from_nwb(
 
     _require_unique_ids([*continuous, *units])
     return continuous, units
+
+
+def _jsonable(value: object) -> object:
+    """Return value as something json.dumps can write, dates as ISO strings."""
+    return value.isoformat() if isinstance(value, date | datetime) else value
+
+
+def _present(fields: dict[str, object]) -> dict[str, object]:
+    """Drop the keys NWB left unset, so meta/ shows only what the file knew."""
+    return {
+        key: _jsonable(value)
+        for key, value in fields.items()
+        if value is not None
+    }
+
+
+def build_meta_from_nwb(nwbfile: NWBFile) -> RecordingMeta:
+    """Return the recording metadata for the bundle's meta/ group.
+
+    Everything identifying that this writer carries across from NWB lands here
+    and nowhere else, which is what makes deleting one directory a complete
+    de-identification. The content is deliberately unschematized, so the NWB
+    subject table crosses over nearly verbatim.
+
+    session.start_us is not set here. The bundle's onset is the earliest start
+    across every channel, which only the bundle knows.
+    """
+    subject = nwbfile.subject
+    return RecordingMeta(
+        subject=_present(
+            {
+                "subject_id": subject.subject_id,
+                "species": subject.species,
+                "sex": subject.sex,
+                "age": subject.age,
+                "description": subject.description,
+                "date_of_birth": subject.date_of_birth,
+            }
+            if subject is not None
+            else {}
+        ),
+        session=_present(
+            {
+                "session_id": nwbfile.session_id,
+                "description": nwbfile.session_description,
+                "identifier": nwbfile.identifier,
+            }
+        ),
+        source=_present(
+            {
+                "converter": "timeseries-zarr-py",
+                "devices": sorted(nwbfile.devices) or None,
+            }
+        ),
+    )

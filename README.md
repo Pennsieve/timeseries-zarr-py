@@ -10,8 +10,11 @@ min/max envelopes at ingest so readers only fetch the data needed to render the 
 over the visible time range.
 
 This repository is reference implementation of a bundle writer. The format is specified in
-[docs/bundle-format.md](./docs/bundle-format.md). The reference reader is
+[bundle-format.md](https://github.com/Pennsieve/timeseries-zarr-paper/blob/main/bundle-format.md), in the paper repository, which is its only
+source of truth. The reference reader is
 [`@pennsieve/timeseries-zarr-reader`](https://github.com/Pennsieve/timeseries-zarr-reader).
+
+The writer does not implement the current spec yet; that work is in progress.
 
 ## Usage
 
@@ -43,13 +46,13 @@ setting is optional.
 |---|---|---|
 | `ZARR_WRITER_STAGING_DIR` | scratch path for the atomic publish | alongside the output |
 | `ZARR_WRITER_ZSTD_LEVEL` | Zstd compression level | 5 |
-| `ZARR_WRITER_MAX_LEVELS` | most pyramid levels a channel can hold | 8 |
+| `ZARR_WRITER_MAX_LEVELS` | most level groups a channel can hold, above raw | 7 |
 | `ZARR_WRITER_MIN_BINS` | bin threshold for keeping a coarser pyramid level | 1024 |
 | `ZARR_WRITER_INNER_LEN` | inner Zarr chunk length in samples | 8192 |
 | `ZARR_WRITER_TARGET_SHARD_BYTES` | target outer shard size in bytes | 16 MiB |
 
-The last four override the pyramid and chunk parameters that
-[docs/bundle-format.md](./docs/bundle-format.md) specifies.
+The last four override the pyramid and chunk parameters that the
+[format spec](https://github.com/Pennsieve/timeseries-zarr-paper/blob/main/bundle-format.md) specifies.
 
 ## Development
 

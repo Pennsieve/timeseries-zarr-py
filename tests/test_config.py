@@ -81,8 +81,8 @@ def test_max_levels_below_one_raises():
 
 
 def test_max_levels_at_the_cap_is_accepted():
-    cfg = load_config({"ZARR_WRITER_MAX_LEVELS": "8"}, ["in.nwb", "out_bundle"])
-    assert cfg.opts.max_levels == 8
+    cfg = load_config({"ZARR_WRITER_MAX_LEVELS": "7"}, ["in.nwb", "out_bundle"])
+    assert cfg.opts.max_levels == 7
 
 
 def test_zero_positionals_raises():

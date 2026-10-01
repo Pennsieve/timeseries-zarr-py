@@ -12,11 +12,11 @@ from timeseries_zarr.planning import (
 @pytest.mark.parametrize(
     ("num_samples", "expected"),
     [
-        (0, 1),
-        (1, 1),
-        (500, 1),
-        (4095, 1),
-        (4096, 2),
+        (0, 0),
+        (1, 0),
+        (500, 0),
+        (4095, 0),
+        (4096, 1),
     ],
 )
 def test_level_count_default_thresholds(num_samples, expected):
@@ -24,7 +24,7 @@ def test_level_count_default_thresholds(num_samples, expected):
 
 
 def test_level_count_caps_at_max_levels():
-    assert level_count(10**12) == 8
+    assert level_count(10**12) == 7
 
 
 def test_level_count_custom_max_levels():
@@ -32,14 +32,14 @@ def test_level_count_custom_max_levels():
 
 
 def test_level_count_custom_min_bins():
-    assert level_count(400, min_bins=100) == 2
+    assert level_count(400, min_bins=100) == 1
 
 
 def test_level_count_threshold_off_by_one():
     # The gate counts complete bins: 399 samples make 99 and drop level 1, even
     # though level_num_bins keeps the partial bin and reports 100.
-    assert level_count(399, min_bins=100) == 1
-    assert level_count(400, min_bins=100) == 2
+    assert level_count(399, min_bins=100) == 0
+    assert level_count(400, min_bins=100) == 1
 
 
 @pytest.mark.parametrize(
@@ -70,7 +70,7 @@ def test_level_num_bins_exact_for_huge_num_samples():
 
 
 @pytest.mark.parametrize(
-    ("level0_period_us", "level", "expected"),
+    ("sample_period_us", "level", "expected"),
     [
         (31.25, 0, 31.25),
         (31.25, 1, 125.0),
@@ -79,15 +79,13 @@ def test_level_num_bins_exact_for_huge_num_samples():
         (1000.0, 1, 4000.0),
     ],
 )
-def test_level_period_us(level0_period_us, level, expected):
-    assert level_period_us(level0_period_us, level) == expected
+def test_level_period_us(sample_period_us, level, expected):
+    assert level_period_us(sample_period_us, level) == expected
 
 
 @pytest.mark.parametrize(
     ("num_samples", "level", "expected"),
     [
-        (1000, 0, (1000,)),
-        (0, 0, (0,)),
         (1000, 1, (250, 2)),
         (1000, 2, (63, 2)),
         (17, 2, (2, 2)),
@@ -102,28 +100,21 @@ def test_plan_levels_matches_building_blocks():
     n, p0 = 10_000_000, 31.25
     plan = plan_levels(n, p0)
     assert len(plan) == level_count(n)
-    for k, lp in enumerate(plan):
-        assert lp.level == k
-        assert lp.shape == level_shape(n, k)
-        assert lp.period_us == level_period_us(p0, k)
-        assert lp.is_raw == (k == 0)
+    for index, lp in enumerate(plan):
+        level = index + 1
+        assert lp.level == level
+        assert lp.shape == level_shape(n, level)
+        assert lp.period_us == level_period_us(p0, level)
 
 
-def test_plan_levels_small_n_single_level():
-    plan = plan_levels(500, 31.25)
-    assert len(plan) == 1
-    assert plan[0].level == 0
-    assert plan[0].shape == (500,)
-    assert plan[0].period_us == 31.25
-    assert plan[0].is_raw is True
+def test_plan_levels_small_n_has_no_levels():
+    # Too short for one level's worth of bins, so it carries raw alone.
+    assert plan_levels(500, 31.25) == []
 
 
-def test_plan_levels_concrete_two_levels():
+def test_plan_levels_concrete_one_level():
     plan = plan_levels(4096, 31.25)
-    assert len(plan) == 2
-    assert plan[0].shape == (4096,)
-    assert plan[0].period_us == 31.25
-    assert plan[0].is_raw is True
-    assert plan[1].shape == (1024, 2)
-    assert plan[1].period_us == 125.0
-    assert plan[1].is_raw is False
+    assert len(plan) == 1
+    assert plan[0].level == 1
+    assert plan[0].shape == (1024, 2)
+    assert plan[0].period_us == 125.0

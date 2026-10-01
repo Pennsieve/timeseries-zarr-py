@@ -20,6 +20,7 @@ class Config:
     """
 
     nwb_path: Path
+    annotation_paths: tuple[Path, ...]
     staging_dir: Path
     final_dir: Path
     properties_path: Path
@@ -42,6 +43,7 @@ def load_config(env: Mapping[str, str], argv: Sequence[str]) -> Config:
     MAX_LEVELS.
     """
     nwb_path, final_dir = _resolve_paths(env, argv)
+    annotation_paths = _resolve_annotation_paths(env, argv, nwb_path)
 
     defaults = WriteOpts()
     max_levels = _int_env(env, "ZARR_WRITER_MAX_LEVELS", defaults.max_levels)
@@ -71,6 +73,7 @@ def load_config(env: Mapping[str, str], argv: Sequence[str]) -> Config:
 
     return Config(
         nwb_path=nwb_path,
+        annotation_paths=annotation_paths,
         staging_dir=staging_dir,
         final_dir=final_dir,
         properties_path=final_dir.parent / properties_name,
@@ -131,3 +134,24 @@ def _int_env(env: Mapping[str, str], key: str, default: int) -> int:
     """
     raw = env.get(key)
     return default if raw is None else int(raw)
+
+
+def _resolve_annotation_paths(
+    env: Mapping[str, str], argv: Sequence[str], nwb_path: Path
+) -> tuple[Path, ...]:
+    """Return the annotation documents to write alongside the recording.
+
+    Any positional after the first two is one file. With none given, the
+    NWB's own directory is scanned for *.annotations.ndjson, which is the
+    convention the workflow runs on: the extractor branch drops its output
+    beside the recording at the merge and the writer picks it up without
+    being told.
+
+    One file is one event channel, and the order here is the order they are
+    indexed in.
+    """
+    explicit = [Path(argument) for argument in argv[2:]]
+    if explicit:
+        return tuple(explicit)
+    directory = Path(env.get("INPUT_DIR", "")) or nwb_path.parent
+    return tuple(sorted(directory.glob("*.annotations.ndjson")))

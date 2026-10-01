@@ -204,3 +204,34 @@ def test_consolidate_no_v2_sidecar(tmp_path):
 def test_consolidate_returns_none(tmp_path):
     path = tmp_path / "bundle"
     assert consolidate(_build_tree(path)) is None
+
+
+def test_create_array_declares_nan_fill_for_floats(tmp_path):
+    group = open_group(tmp_path / "bundle")
+    arr = create_array(group, "f", (8,), np.float32, (4,), (8,), {}, 5)
+    assert np.isnan(arr.fill_value)
+
+
+def test_create_array_declares_zero_fill_for_integers(tmp_path):
+    group = open_group(tmp_path / "bundle")
+    arr = create_array(group, "i", (8,), np.int64, (4,), (8,), {}, 5)
+    assert arr.fill_value == 0
+
+
+def test_unwritten_float_chunk_reads_back_as_no_data(tmp_path):
+    """The trap this closes: zarr-python's own default fill is 0.0.
+
+    A chunk nobody wrote would then read back as a zero-volt flatline, which a
+    viewer draws as a real recorded signal rather than as a gap.
+    """
+    group = open_group(tmp_path / "bundle")
+    arr = create_array(group, "f", (8,), np.float32, (4,), (8,), {}, 5)
+    assert np.all(np.isnan(arr[:]))
+
+
+def test_fill_value_reaches_the_written_metadata(tmp_path):
+    group = open_group(tmp_path / "bundle")
+    create_array(group, "f", (8,), np.float32, (4,), (8,), {}, 5)
+    node = json.loads((tmp_path / "bundle" / "f" / "zarr.json").read_text())
+    # JSON has no NaN literal, so Zarr writes it as the string "NaN".
+    assert node["fill_value"] == "NaN"

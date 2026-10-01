@@ -17,8 +17,10 @@ class ArrayContinuousSource:
         start_us=0,
         name="ch-0",
         unit="uV",
+        offset_uv=0.0,
     ):
         self._samples = np.asarray(samples, dtype=np.float32)
+        self._offset_uv = offset_uv
         self.id = id
         self.name = name
         self.unit = unit
@@ -34,6 +36,9 @@ class ArrayContinuousSource:
     def num_samples(self):
         return int(self._samples.shape[0])
 
+    def offset_uv(self):
+        return self._offset_uv
+
     def read_samples(self, start, stop):
         return self._samples[start:stop]
 
@@ -47,7 +52,7 @@ def continuous_source():
 class ArrayUnitSource:
     """In-memory UnitChannelSource backed by arrays.
 
-    events are int64 absolute microseconds. units and waveforms default
+    events are int64 absolute microseconds. labels and waveforms default
     to zeros when not given.
     """
 
@@ -55,9 +60,10 @@ class ArrayUnitSource:
         self,
         events,
         *,
-        units=None,
+        labels=None,
         waveforms=None,
         points_per_event=4,
+        num_labels=1,
         id="unit-0",
         rate_hz=32000.0,
         start_us=0,
@@ -67,10 +73,11 @@ class ArrayUnitSource:
         self._events = np.asarray(events, dtype=np.int64)
         n = int(self._events.shape[0])
         self._points_per_event = points_per_event
-        self._units = (
-            np.zeros(n, dtype=np.uint8)
-            if units is None
-            else np.asarray(units, dtype=np.uint8)
+        self._num_labels = num_labels
+        self._labels = (
+            np.zeros(n, dtype=np.uint16)
+            if labels is None
+            else np.asarray(labels, dtype=np.uint16)
         )
         self._waveforms = (
             np.zeros((n, points_per_event), dtype=np.float32)
@@ -92,14 +99,17 @@ class ArrayUnitSource:
     def num_events(self):
         return int(self._events.shape[0])
 
+    def num_labels(self):
+        return self._num_labels
+
     def points_per_event(self):
         return self._points_per_event
 
     def read_events(self, start, stop):
         return self._events[start:stop]
 
-    def read_units(self, start, stop):
-        return self._units[start:stop]
+    def read_labels(self, start, stop):
+        return self._labels[start:stop]
 
     def read_waveforms(self, start, stop):
         return self._waveforms[start:stop]
