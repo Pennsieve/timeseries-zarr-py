@@ -19,6 +19,7 @@ million bins across a hundred labels is gigabytes if you hold it, and the events
 arrive sorted, so the bins complete in order and can be written as they close.
 """
 
+import math
 from collections.abc import Iterable, Iterator
 
 import numpy as np
@@ -54,11 +55,17 @@ def base_period_us(
     makes this expensive: a hundred labels is a hundred times the bins for the
     same span. The floor stops a very short recording from asking for
     sub-microsecond bins.
+
+    The period is a whole number of microseconds because events are binned by
+    integer division. A fractional period would be declared but not used, and
+    readers would place each bin a little later than the last, adding up to
+    seconds by the end of a long recording. Rounded up so the level stays
+    within its byte budget.
     """
     budget_bins = max(
         1, target_bytes // (UINT32_BYTES * count_columns(n_labels))
     )
-    return max(floor_us, span_us / budget_bins)
+    return float(max(math.ceil(floor_us), -(-span_us // budget_bins)))
 
 
 def level_bins(span_us: int, period_us: float) -> int:

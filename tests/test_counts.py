@@ -276,3 +276,25 @@ def test_count_levels_are_onset_relative(tmp_path, unit_source):
     # Every event lands inside the span, none before bin 0.
     assert counts.sum() == 200
     assert counts[0].sum() >= 1
+
+
+def test_count_bins_start_where_period_us_says(tmp_path, unit_source):
+    """A reader puts bin i at offset_us + i * period_us, so counting must use that period."""
+    rng = np.random.default_rng(8)
+    # A span the bin budget does not divide, so an unrounded period is fractional.
+    events = np.sort(rng.integers(0, 10**8 + 12_345, size=2000)).astype(
+        np.int64
+    )
+    labels = rng.integers(0, 4, size=2000).astype(np.uint16)
+    grp = _write_channel(
+        tmp_path, unit_source(events, labels=labels, num_labels=4)
+    )
+    stored = grp["events"][:] - grp.attrs["offset_us"]
+    levels = sorted(int(k) for k in grp.group_keys())
+    assert levels
+    for level in levels:
+        period = grp[str(level)].attrs["period_us"]
+        counts = grp[str(level)]["counts"][:]
+        expected = np.bincount(stored // int(period), minlength=counts.shape[0])
+        assert float(period).is_integer()
+        assert np.array_equal(counts.sum(axis=1), expected)
