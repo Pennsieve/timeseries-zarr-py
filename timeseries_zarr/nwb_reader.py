@@ -15,7 +15,7 @@ from timeseries_zarr.constants import (
     MICROSECONDS_PER_SECOND,
     UNIT_TO_UV,
 )
-from timeseries_zarr.grid import derive_rate_hz
+from timeseries_zarr.grid import build_segments, derive_rate_hz
 from timeseries_zarr.nwb_series import (
     channel_count,
     electrode_id,
@@ -409,8 +409,16 @@ def _electrical_sources(
         series.name,
         rate_hz,
     )
+    # One gap map for the whole series: every channel shares its timestamps.
+    segments = build_segments(series.timestamps, rate_hz)
     return [
-        NwbTimestampedSource(series, index, session_start_time, rate_hz=rate_hz)
+        NwbTimestampedSource(
+            series,
+            index,
+            session_start_time,
+            rate_hz=rate_hz,
+            segments=segments,
+        )
         for index in channels
     ]
 

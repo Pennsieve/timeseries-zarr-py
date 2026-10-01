@@ -595,6 +595,27 @@ def test_build_reports_a_series_sampled_by_timestamps():
         build_sources_from_nwb(nwb)
 
 
+def test_build_reads_a_gapped_series_timestamps_once(monkeypatch):
+    """Every channel shares the timestamps, so the gap map is built once."""
+    nwb = mock_NWBFile()
+    timestamps = np.concatenate([np.arange(64), np.arange(80, 144)]) / 512.0
+    mock_ElectricalSeries(
+        nwbfile=nwb, data=np.zeros((128, 4)), timestamps=timestamps
+    )
+    calls = []
+    real = nwb_reader_module.build_segments
+    monkeypatch.setattr(
+        nwb_reader_module,
+        "build_segments",
+        lambda *args, **kwargs: calls.append(1) or real(*args, **kwargs),
+    )
+    continuous, _ = build_sources_from_nwb(nwb)
+    assert len(continuous) == 4
+    assert len(calls) == 1
+    # Each channel still sees the gap.
+    assert all(source.num_samples() == 144 for source in continuous)
+
+
 def test_build_meta_from_nwb_carries_the_subject_across():
     nwb = mock_NWBFile(
         subject=Subject(

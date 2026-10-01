@@ -42,19 +42,27 @@ class NwbTimestampedSource:
         session_start_time: datetime,
         *,
         rate_hz: float,
+        segments: list[Segment] | None = None,
     ) -> None:
         """Bind one channel of a timestamped ElectricalSeries as a source.
 
         rate_hz is required and never inferred here; the caller decides where
         it comes from, so every construction site states it. Raises ValueError
         when the timestamps do not map onto a grid at that rate.
+
+        segments is the series' gap map, built once and shared by every channel.
+        Building it reads every timestamp, 15 GB on a three-week recording, and
+        the channels of one series all share the same timestamps. Built here
+        when not given.
         """
         self._series = electrical_series
         self._channel_index = channel_index
         self._session_start_time = session_start_time
         self._rate_hz = rate_hz
-        self._segments: list[Segment] = build_segments(
-            electrical_series.timestamps, rate_hz
+        self._segments: list[Segment] = (
+            segments
+            if segments is not None
+            else build_segments(electrical_series.timestamps, rate_hz)
         )
         self._grid_length = grid_length(self._segments)
 
