@@ -111,18 +111,27 @@ def test_a_gap_reports_zero_while_its_bins_stay_full_width(
     assert grp["1"]["env"].shape[0] == 256
 
 
-def test_valid_is_full_everywhere_on_a_clean_recording(
-    tmp_path, continuous_source
-):
+def test_a_clean_recording_writes_no_valid(tmp_path, continuous_source):
+    """The spec writes valid only for channels containing non-finite samples."""
     samples = np.arange(1024, dtype=np.float32)
     grp = _write(tmp_path, continuous_source(samples, rate_hz=_RATE_HZ))
     for plan in _levels(samples.shape[0]):
-        span = DECIMATION_FACTOR**plan.level
-        assert np.all(grp[str(plan.level)]["valid"][:] == span)
+        assert "valid" not in grp[str(plan.level)].array_keys()
+
+
+def test_one_non_finite_sample_writes_valid_at_every_level(
+    tmp_path, continuous_source
+):
+    samples = np.arange(1024, dtype=np.float32)
+    samples[700] = np.inf
+    grp = _write(tmp_path, continuous_source(samples, rate_hz=_RATE_HZ))
+    for plan in _levels(samples.shape[0]):
+        assert "valid" in grp[str(plan.level)].array_keys()
 
 
 def test_valid_is_u2_and_fills_with_zero(tmp_path, continuous_source):
     samples = np.arange(1024, dtype=np.float32)
+    samples[0] = np.nan
     grp = _write(tmp_path, continuous_source(samples, rate_hz=_RATE_HZ))
     valid = grp["1"]["valid"]
     assert valid.dtype == np.uint16
@@ -134,12 +143,15 @@ def test_a_short_trailing_bin_reports_its_own_width(
     tmp_path, continuous_source
 ):
     samples = np.arange(1013, dtype=np.float32)
+    # One gap at the start, so the channel carries valid at all.
+    samples[0] = np.nan
     grp = _write(tmp_path, continuous_source(samples, rate_hz=_RATE_HZ))
     for plan in _levels(samples.shape[0]):
         span = DECIMATION_FACTOR**plan.level
         stored = grp[str(plan.level)]["valid"][:]
         assert stored[-1] == 1013 - (stored.shape[0] - 1) * span
-        assert np.all(stored[:-1] == span)
+        assert stored[0] == span - 1
+        assert np.all(stored[1:-1] == span)
 
 
 @pytest.mark.parametrize("nan_at", [0, 1, 2, 3])

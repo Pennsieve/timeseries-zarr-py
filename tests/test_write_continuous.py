@@ -96,7 +96,7 @@ def test_write_raw_chunk_and_shard_grid(tmp_path, continuous_source):
 def test_write_raw_returns_the_array(tmp_path, continuous_source):
     samples = np.arange(10, dtype=np.float32)
     group = open_group(tmp_path / "bundle")
-    result = write_raw(group, continuous_source(samples), _sizing(), 5)
+    result, _ = write_raw(group, continuous_source(samples), _sizing(), 5)
     assert isinstance(result, Array)
     assert result.shape == (10,)
 
@@ -280,7 +280,7 @@ def test_write_continuous_channel_level1_folds_from_raw(
     expected = fold_raw_block(grp["raw"][:])
     assert np.array_equal(grp["1"]["env"][:], _env(expected))
     assert np.array_equal(grp["1"]["mean"][:], _mean(expected))
-    assert np.array_equal(grp["1"]["valid"][:], _valid(expected))
+    assert "valid" not in grp["1"].array_keys()
 
 
 def test_write_continuous_channel_each_level_folds_from_below(
@@ -333,10 +333,9 @@ def test_write_continuous_channel_level_members_and_periods(
     for p in plan_levels(64, 31.25, 7, 2):
         level = grp[str(p.level)]
         assert dict(level.attrs) == {"period_us": p.period_us}
-        assert sorted(level.array_keys()) == ["env", "mean", "valid"]
+        assert sorted(level.array_keys()) == ["env", "mean"]
         assert level["env"].shape == p.shape
         assert level["mean"].shape == (p.shape[0],)
-        assert level["valid"].shape == (p.shape[0],)
 
 
 def test_write_continuous_channel_short_source_gets_raw_and_no_levels(

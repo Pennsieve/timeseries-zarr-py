@@ -201,8 +201,5 @@ def test_bundle_writes_mean_for_every_channel(
     )
     grp = open_group(final)["0"]
     for plan in _levels(samples.shape[0]):
-        assert sorted(grp[str(plan.level)].array_keys()) == [
-            "env",
-            "mean",
-            "valid",
-        ]
+        # A clean channel has no valid: the spec writes it only where there are gaps.
+        assert sorted(grp[str(plan.level)].array_keys()) == ["env", "mean"]

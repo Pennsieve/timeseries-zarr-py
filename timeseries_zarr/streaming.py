@@ -138,7 +138,7 @@ def iter_offset_removed_blocks(
 def iter_level_stat_blocks(
     env: BlockReadableArray,
     mean: BlockReadableArray,
-    valid: BlockReadableArray,
+    valid: BlockReadableArray | None,
     num_samples: int,
     level: int,
     block_len: int,
@@ -147,8 +147,9 @@ def iter_level_stat_blocks(
 
     Reassembles what the write narrowed. env, mean and valid come back from
     their arrays; only the count is rebuilt, because a bin's time support is
-    fixed by its level while how much of it was finite is not. Raises
-    ValueError if block_len is not positive.
+    fixed by its level while how much of it was finite is not. valid is None on
+    a channel with no gaps, where every bin is full and valid equals the count.
+    Raises ValueError if block_len is not positive.
     """
     if block_len <= 0:
         raise ValueError("block_len must be positive")
@@ -159,5 +160,7 @@ def iter_level_stat_blocks(
         out[:, MIN_COL : MAX_COL + 1] = env[start:stop]
         out[:, MEAN_COL] = mean[start:stop]
         out[:, COUNT_COL] = bin_counts(num_samples, level, start, stop)
-        out[:, VALID_COL] = valid[start:stop]
+        out[:, VALID_COL] = (
+            out[:, COUNT_COL] if valid is None else valid[start:stop]
+        )
         yield out

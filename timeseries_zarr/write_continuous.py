@@ -3,7 +3,7 @@
 A channel is the raw samples plus a ladder of level groups above them. Raw is
 written first and from the source; each level is folded from the one below,
 level 1 from raw. A level group holds one array per statistic over a shared bin
-axis: env, mean and valid today.
+axis: env, mean and, on a channel with gaps, valid.
 
 The fold carries every statistic in one stream of stat blocks and the write
 splits that stream into its member arrays, so raw is read once no matter how
@@ -77,7 +77,7 @@ def _write_blocks(
 def _write_stat_blocks(
     env: ZarrArray,
     mean: ZarrArray,
-    valid: ZarrArray,
+    valid: ZarrArray | None,
     blocks: Iterable[npt.NDArray[np.float64]],
 ) -> None:
     """Split a stream of stat blocks across a level's member arrays.
@@ -94,7 +94,8 @@ def _write_stat_blocks(
             env, start, block[:, MIN_COL : MAX_COL + 1].astype(np.float32)
         )
         write_region(mean, start, block[:, MEAN_COL].astype(np.float32))
-        write_region(valid, start, block[:, VALID_COL].astype(np.uint16))
+        if valid is not None:
+            write_region(valid, start, block[:, VALID_COL].astype(np.uint16))
         start += rows
 
 
@@ -103,13 +104,17 @@ def write_raw(
     source: ContinuousChannelSource,
     sizing: ChunkShard,
     zstd_level: int,
-) -> ZarrArray:
+) -> tuple[ZarrArray, bool]:
     """Create the raw array under group and stream the source's samples into it.
 
     Rank-1 float32 under the key "raw", with no attributes: the sample period is
     the channel's rate_hz and restating it here would be a second place to keep
     it right. The samples keep their DC offset; only the statistics above them
     have it removed.
+
+    Returns the array and whether any sample was non-finite. The spec writes
+    valid only on channels that have gaps, and raw is the one pass that sees
+    every sample.
     """
     array = create_array(
         group,
@@ -121,8 +126,20 @@ def write_raw(
         {},
         zstd_level,
     )
-    _write_blocks(array, iter_raw_blocks(source, sizing.shard_shape[0]))
-    return array
+    has_gaps = False
+
+    def _noting_gaps(
+        blocks: Iterable[npt.NDArray[np.float32]],
+    ) -> Iterator[npt.NDArray[np.float32]]:
+        nonlocal has_gaps
+        for block in blocks:
+            has_gaps = has_gaps or not np.isfinite(block).all()
+            yield block
+
+    _write_blocks(
+        array, _noting_gaps(iter_raw_blocks(source, sizing.shard_shape[0]))
+    )
+    return array, has_gaps
 
 
 def write_level(
@@ -131,12 +148,15 @@ def write_level(
     plan: LevelPlan,
     sizing: ChunkShard,
     zstd_level: int,
-) -> tuple[ZarrArray, ZarrArray, ZarrArray]:
+    *,
+    write_valid: bool = True,
+) -> tuple[ZarrArray, ZarrArray, ZarrArray | None]:
     """Create the level group named plan.level and stream stat blocks into it.
 
     The group carries period_us and holds one array per statistic over a shared
-    bin axis. Returns (env, mean, valid), which the next level folds from.
-    Raises ValueError if plan describes a level below 1.
+    bin axis. Returns (env, mean, valid), which the next level folds from; valid
+    is None when write_valid is false. Raises ValueError if plan describes a
+    level below 1.
     """
     if plan.level < 1:
         raise ValueError("levels are numbered from 1; raw is not a level")
@@ -164,15 +184,19 @@ def write_level(
         {},
         zstd_level,
     )
-    valid = create_array(
-        group,
-        VALID_KEY,
-        (plan.shape[0],),
-        np.uint16,
-        (sizing.chunk_shape[0],),
-        (sizing.shard_shape[0],),
-        {},
-        zstd_level,
+    valid = (
+        create_array(
+            group,
+            VALID_KEY,
+            (plan.shape[0],),
+            np.uint16,
+            (sizing.chunk_shape[0],),
+            (sizing.shard_shape[0],),
+            {},
+            zstd_level,
+        )
+        if write_valid
+        else None
     )
     _write_stat_blocks(env, mean, valid, blocks)
     return env, mean, valid
@@ -191,7 +215,8 @@ def write_continuous_channel(
     1. Create the channel group with its continuous-kind attributes.
     2. Write the raw samples from the source.
     3. Fold level 1 from raw, with the channel's DC offset removed, and each
-       level after it from the one written below.
+       level after it from the one written below. valid is written only if
+       raw held a non-finite sample.
 
     The pyramid is planned from the source's sample count and rate; every array
     is sized and compressed per opts. A channel too short to fill one level gets
@@ -222,14 +247,14 @@ def write_continuous_channel(
         )
 
     num_samples = source.num_samples()
-    raw = write_raw(
+    raw, has_gaps = write_raw(
         group=group,
         source=source,
         sizing=_sizing(raw_shape(num_samples)),
         zstd_level=opts.zstd_level,
     )
 
-    previous: tuple[ZarrArray, ZarrArray, ZarrArray, int] | None = None
+    previous: tuple[ZarrArray, ZarrArray, ZarrArray | None, int] | None = None
     for plan in plan_levels(
         num_samples,
         sample_period_us(source.rate_hz()),
@@ -251,7 +276,7 @@ def write_continuous_channel(
             below = iter_level_stat_blocks(
                 cast("BlockReadableArray", prev_env),
                 cast("BlockReadableArray", prev_mean),
-                cast("BlockReadableArray", prev_valid),
+                cast("BlockReadableArray | None", prev_valid),
                 num_samples,
                 prev_level,
                 read_len,
@@ -262,5 +287,6 @@ def write_continuous_channel(
             plan=plan,
             sizing=sizing,
             zstd_level=opts.zstd_level,
+            write_valid=has_gaps,
         )
         previous = (env, mean, valid, plan.level)
