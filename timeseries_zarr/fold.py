@@ -1,6 +1,6 @@
 """Pyramid folding: reduce a level to the next coarser one in blocks of 4.
 
-A folded level travels as a float64 stat block of STAT_COLUMNS columns: min,
+A folded level travels as a float64 stat block of STATISTIC_COLUMNS columns: min,
 max, mean, population variance, and the count of finite samples. Every
 statistic uses the plain reduction, so a NaN propagates into the bin holding
 it; only the count stays finite.
@@ -10,14 +10,14 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.constants import (
-    COUNT_COL,
+    COUNT_COLUMN,
     DECIMATION_FACTOR,
     ENVELOPE_PAIR_SIZE,
-    MAX_COL,
-    MEAN_COL,
-    MIN_COL,
-    STAT_COLUMNS,
-    VAR_COL,
+    MAX_COLUMN,
+    MEAN_COLUMN,
+    MIN_COLUMN,
+    STATISTIC_COLUMNS,
+    VAR_COLUMN,
 )
 
 
@@ -41,11 +41,11 @@ def _reduce_into(
     finite: npt.NDArray[np.bool_],
 ) -> None:
     """Fill out's rows with the statistics of each row of values."""
-    out[:, MIN_COL] = values.min(axis=1)
-    out[:, MAX_COL] = values.max(axis=1)
-    out[:, MEAN_COL] = values.mean(axis=1)
-    out[:, VAR_COL] = values.var(axis=1)
-    out[:, COUNT_COL] = finite.sum(axis=1)
+    out[:, MIN_COLUMN] = values.min(axis=1)
+    out[:, MAX_COLUMN] = values.max(axis=1)
+    out[:, MEAN_COLUMN] = values.mean(axis=1)
+    out[:, VAR_COLUMN] = values.var(axis=1)
+    out[:, COUNT_COLUMN] = finite.sum(axis=1)
 
 
 def fold_raw_block(raw: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
@@ -66,7 +66,7 @@ def fold_raw_block(raw: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
     finite = np.isfinite(values)
     values[~finite] = np.nan
     out = np.empty(
-        (n_full + (1 if tail_len else 0), STAT_COLUMNS), dtype=np.float64
+        (n_full + (1 if tail_len else 0), STATISTIC_COLUMNS), dtype=np.float64
     )
     if n_full:
         _reduce_into(
@@ -85,20 +85,20 @@ def _combine_into(
     out: npt.NDArray[np.float64], children: npt.NDArray[np.float64]
 ) -> None:
     """Fill out's rows by combining each row's children, shaped (rows, k, 5)."""
-    counts = children[:, :, COUNT_COL]
-    means = children[:, :, MEAN_COL]
+    counts = children[:, :, COUNT_COLUMN]
+    means = children[:, :, MEAN_COLUMN]
     n = counts.sum(axis=1)
     with np.errstate(invalid="ignore", divide="ignore"):
         parent_mean = (counts * means).sum(axis=1) / n
         spread = means - parent_mean[:, None]
-        parent_var = (counts * (children[:, :, VAR_COL] + spread**2)).sum(
+        parent_var = (counts * (children[:, :, VAR_COLUMN] + spread**2)).sum(
             axis=1
         ) / n
-    out[:, MIN_COL] = children[:, :, MIN_COL].min(axis=1)
-    out[:, MAX_COL] = children[:, :, MAX_COL].max(axis=1)
-    out[:, MEAN_COL] = parent_mean
-    out[:, VAR_COL] = parent_var
-    out[:, COUNT_COL] = n
+    out[:, MIN_COLUMN] = children[:, :, MIN_COLUMN].min(axis=1)
+    out[:, MAX_COLUMN] = children[:, :, MAX_COLUMN].max(axis=1)
+    out[:, MEAN_COLUMN] = parent_mean
+    out[:, VAR_COLUMN] = parent_var
+    out[:, COUNT_COLUMN] = n
 
 
 def fold_stat_block(stats: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -113,21 +113,22 @@ def fold_stat_block(stats: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
     statistics NaN, and so do children whose counts sum to 0; the count is
     the plain sum in every case. A final partial block of 1 to 3 rows becomes
     one row. An empty input yields zero rows. Raises ValueError if stats is
-    not rank 2 with STAT_COLUMNS columns.
+    not rank 2 with STATISTIC_COLUMNS columns.
     """
-    if stats.shape[1:] != (STAT_COLUMNS,):
+    if stats.shape[1:] != (STATISTIC_COLUMNS,):
         raise ValueError(
-            f"a stat block has shape (rows, {STAT_COLUMNS}), got {stats.shape}"
+            f"a stat block has shape (rows, {STATISTIC_COLUMNS}), got {stats.shape}"
         )
     block = DECIMATION_FACTOR
     n_full, tail_len = _block_split(stats.shape[0], block)
     split = n_full * block
     out = np.empty(
-        (n_full + (1 if tail_len else 0), STAT_COLUMNS), dtype=np.float64
+        (n_full + (1 if tail_len else 0), STATISTIC_COLUMNS), dtype=np.float64
     )
     if n_full:
         _combine_into(
-            out[:n_full], stats[:split].reshape(n_full, block, STAT_COLUMNS)
+            out[:n_full],
+            stats[:split].reshape(n_full, block, STATISTIC_COLUMNS),
         )
     if tail_len:
         _combine_into(out[n_full:], stats[split:][None, :, :])
@@ -167,7 +168,9 @@ def fold_block(arr: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
     """
     match arr.ndim:
         case 1:
-            return fold_raw_block(arr)[:, [MIN_COL, MAX_COL]].astype(np.float32)
+            return fold_raw_block(arr)[:, [MIN_COLUMN, MAX_COLUMN]].astype(
+                np.float32
+            )
         case 2:
             return fold_pair_block(arr)
         case _:

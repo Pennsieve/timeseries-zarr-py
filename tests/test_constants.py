@@ -2,25 +2,25 @@ import numpy as np
 
 from timeseries_zarr.constants import (
     CANVAS_PIXELS,
-    COUNT_COL,
+    COUNT_COLUMN,
     COUNT_LADDER_BASE_US,
     DECIMATION_FACTOR,
     EVENT_LEVEL_THRESHOLD,
     FLOAT32_BYTES,
     FORMAT_VERSION,
     INT64_BYTES,
-    MAX_COL,
+    MAX_COLUMN,
     MAX_LABELS,
     MAX_LEVELS,
-    MEAN_COL,
-    MIN_COL,
+    MEAN_COLUMN,
+    MIN_COLUMN,
     RASTER_BUDGET,
-    STAT_COLUMNS,
+    STATISTIC_COLUMNS,
     UINT8_BYTES,
     UINT16_BYTES,
     UINT32_BYTES,
     UNIT_TO_UV,
-    VAR_COL,
+    VAR_COLUMN,
 )
 
 
@@ -35,8 +35,8 @@ def test_max_levels_is_the_last_level_whose_bin_count_fits_uint32():
 
 
 def test_stat_columns_are_distinct_and_cover_the_block():
-    columns = [MIN_COL, MAX_COL, MEAN_COL, VAR_COL, COUNT_COL]
-    assert sorted(columns) == list(range(STAT_COLUMNS))
+    columns = [MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN, COUNT_COLUMN]
+    assert sorted(columns) == list(range(STATISTIC_COLUMNS))
 
 
 def test_max_labels_is_the_uint16_range():
