@@ -6,10 +6,16 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from pynwb.epoch import TimeIntervals
+from pynwb.event import EventsTable
 from pynwb.testing.mock.ecephys import mock_ElectricalSeries
 from pynwb.testing.mock.file import mock_NWBFile
 
-from timeseries_zarr.nwb_events import UNTAGGED, NwbIntervalSource, _json_value
+from timeseries_zarr.nwb_events import (
+    UNTAGGED,
+    NwbEventsTableSource,
+    NwbIntervalSource,
+    _json_value,
+)
 from timeseries_zarr.protocols import EventChannelSource
 
 STARTED = datetime(2021, 6, 1, 12, 0, tzinfo=UTC)
@@ -190,7 +196,7 @@ def test_a_table_without_free_form_columns_has_no_text():
     src = _source(_epochs([(0.0, 1.0, ["a"], False)]))
     assert "text" not in src.columns()
     assert src.text_width() == 0
-    with pytest.raises(ValueError, match="no free-form"):
+    with pytest.raises(ValueError, match="no text column"):
         src.read_text(0, 1)
 
 
@@ -319,3 +325,131 @@ def test_a_reference_without_a_series_applies_to_no_channel():
     src = NwbIntervalSource(_FakeTable(), STARTED, _IDS)
     assert "channels" not in src.columns()
     assert src.read_events(0, 1).tolist() == [STARTED_US + 1_000_000]
+
+
+def _marks(rows, **kwargs):
+    table = EventsTable(name="marks", description="d")
+    for row in rows:
+        table.add_row(**row)
+    return NwbEventsTableSource(table, STARTED, **kwargs)
+
+
+def test_events_table_times_are_session_start_plus_timestamp_sorted_stably():
+    src = _marks(
+        [
+            {"timestamp": 2.0, "annotation": "b"},
+            {"timestamp": 0.5, "annotation": "a"},
+            {"timestamp": 2.0, "annotation": "c"},
+        ]
+    )
+    assert src.read_events(0, 3).tolist() == [
+        STARTED_US + 500_000,
+        STARTED_US + 2_000_000,
+        STARTED_US + 2_000_000,
+    ]
+    assert src.read_text(0, 3) == ["a", "b", "c"]
+
+
+def test_events_table_durations_are_microseconds_in_time_order():
+    src = _marks(
+        [
+            {"timestamp": 2.0, "duration": 0.25},
+            {"timestamp": 1.0, "duration": 1.5},
+        ]
+    )
+    assert src.read_durations(0, 2).tolist() == [1_500_000, 250_000]
+    assert src.max_duration_us() == 1_500_000
+    assert src.columns() == {"durations"}
+
+
+def test_events_table_annotation_text_is_kept_as_written():
+    word = "caf\N{LATIN SMALL LETTER E WITH ACUTE} onset"
+    src = _marks([{"timestamp": 0.0, "annotation": word}])
+    assert src.read_text(0, 1) == [word]
+    assert src.text_width() == len(word.encode("utf-8"))
+    assert src.columns() == {"text"}
+
+
+def test_events_table_with_duration_and_annotation_offers_both():
+    src = _marks([{"timestamp": 1.0, "duration": 0.5, "annotation": "x"}])
+    assert src.columns() == {"durations", "text"}
+
+
+def test_events_table_with_only_timestamps_offers_no_optional_column():
+    src = _marks([{"timestamp": 1.0}, {"timestamp": 2.0}])
+    assert src.columns() == frozenset()
+    assert src.max_duration_us() is None
+    assert src.text_width() == 0
+    with pytest.raises(ValueError, match="no durations"):
+        src.read_durations(0, 1)
+    with pytest.raises(ValueError, match="no text column"):
+        src.read_text(0, 1)
+
+
+def test_events_table_has_no_labels_or_channels_or_snippets():
+    src = _marks([{"timestamp": 1.0, "annotation": "x"}])
+    assert src.label_names() is None
+    assert src.num_labels() == 0
+    with pytest.raises(ValueError, match="no tags"):
+        src.read_labels(0, 1)
+    with pytest.raises(ValueError, match="no row references"):
+        src.read_channel_ids(0, 1)
+    with pytest.raises(ValueError, match="no waveform_mean"):
+        src.waveform_mean()
+
+
+def test_events_table_other_columns_are_ignored_with_a_warning(caplog):
+    table = EventsTable(name="marks", description="d")
+    table.add_column(name="severity", description="s")
+    table.add_row(timestamp=1.0, annotation="x", severity=3)
+    with caplog.at_level(logging.WARNING):
+        src = NwbEventsTableSource(table, STARTED)
+    assert "['severity'] are not carried" in caplog.text
+    assert src.columns() == {"text"}
+
+
+def test_events_table_is_named_by_its_table_and_has_no_unit():
+    src = _marks([{"timestamp": 1.0}])
+    assert (src.id, src.name, src.unit) == ("marks", "marks", None)
+    assert isinstance(src, EventChannelSource)
+
+
+def test_events_table_start_is_the_session_start_or_an_earlier_first_event():
+    assert _marks([{"timestamp": 5.0}]).start_us() == STARTED_US
+    assert _marks([{"timestamp": -3.0}]).start_us() == STARTED_US - 3_000_000
+
+
+def test_events_table_with_no_rows_offers_no_columns():
+    table = EventsTable(name="empty", description="d")
+    table.add_column(name="annotation", description="a")
+    src = NwbEventsTableSource(table, STARTED)
+    assert src.num_events() == 0
+    assert src.columns() == frozenset()
+
+
+def test_events_table_rejects_a_negative_duration():
+    with pytest.raises(ValueError, match="row 1 of marks has a negative"):
+        _marks(
+            [
+                {"timestamp": 1.0, "duration": 0.5},
+                {"timestamp": 2.0, "duration": -0.5},
+            ]
+        )
+
+
+@pytest.mark.parametrize("column", ["timestamp", "duration"])
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_events_table_rejects_a_value_that_is_not_finite(column, bad):
+    row = {"timestamp": 1.0, "duration": 0.5, column: bad}
+    with pytest.raises(
+        ValueError, match=f"has a {column} that is not a finite"
+    ):
+        _marks([row])
+
+
+@pytest.mark.parametrize("which", ["start", "stop"])
+def test_interval_table_rejects_a_time_that_is_not_finite(which):
+    nan = float("nan")
+    rows = [(nan, 2.0, ["a"])] if which == "start" else [(1.0, nan, ["a"])]
+    with pytest.raises(ValueError, match="not a finite number"):
+        _source(_table(rows))
