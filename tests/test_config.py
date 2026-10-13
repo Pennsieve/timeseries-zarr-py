@@ -59,6 +59,7 @@ def test_env_settings_override_defaults():
             "ZARR_WRITER_MIN_BINS": "512",
             "ZARR_WRITER_INNER_LEN": "1024",
             "ZARR_WRITER_TARGET_SHARD_BYTES": "2048",
+            "ZARR_WRITER_VAR": "1",
         },
         ["in.nwb", "out_bundle"],
     )
@@ -68,6 +69,7 @@ def test_env_settings_override_defaults():
         min_bins=512,
         inner_len=1024,
         target_shard_bytes=2048,
+        write_var=True,
     )
 
 
@@ -139,3 +141,20 @@ def test_non_integer_setting_raises():
         load_config(
             {"ZARR_WRITER_ZSTD_LEVEL": "high"}, ["in.nwb", "out_bundle"]
         )
+
+
+def test_var_is_off_when_the_variable_is_unset():
+    cfg = load_config({}, ["in.nwb", "out_bundle"])
+    assert cfg.opts.write_var is False
+
+
+@pytest.mark.parametrize(("value", "expected"), [("1", True), ("0", False)])
+def test_var_follows_a_zero_or_one_flag(value, expected):
+    cfg = load_config({"ZARR_WRITER_VAR": value}, ["in.nwb", "out_bundle"])
+    assert cfg.opts.write_var is expected
+
+
+@pytest.mark.parametrize("value", ["", "true", "yes", "2", " 1", "01"])
+def test_var_rejects_any_value_but_zero_or_one(value):
+    with pytest.raises(ValueError, match="ZARR_WRITER_VAR must be 0 or 1"):
+        load_config({"ZARR_WRITER_VAR": value}, ["in.nwb", "out_bundle"])

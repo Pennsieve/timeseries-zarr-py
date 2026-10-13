@@ -38,8 +38,8 @@ def load_config(env: Mapping[str, str], argv: Sequence[str]) -> Config:
     from final_dir. ASSET_PROPERTIES_FILE names the output properties file
     beside the bundle. Raises ValueError on a bad invocation: one positional,
     INPUT_DIR or OUTPUT_DIR unset, an INPUT_DIR without exactly one *.nwb
-    file, a non-integer setting, or ZARR_WRITER_MAX_LEVELS outside 1 through
-    MAX_LEVELS.
+    file, a non-integer setting, ZARR_WRITER_MAX_LEVELS outside 1 through
+    MAX_LEVELS, or ZARR_WRITER_VAR other than 0 or 1.
     """
     nwb_path, final_dir = _resolve_paths(env, argv)
 
@@ -58,6 +58,7 @@ def load_config(env: Mapping[str, str], argv: Sequence[str]) -> Config:
         target_shard_bytes=_int_env(
             env, "ZARR_WRITER_TARGET_SHARD_BYTES", defaults.target_shard_bytes
         ),
+        write_var=_flag_env(env, "ZARR_WRITER_VAR", defaults.write_var),
     )
 
     staging_raw = env.get("ZARR_WRITER_STAGING_DIR")
@@ -131,3 +132,17 @@ def _int_env(env: Mapping[str, str], key: str, default: int) -> int:
     """
     raw = env.get(key)
     return default if raw is None else int(raw)
+
+
+def _flag_env(env: Mapping[str, str], key: str, default: bool) -> bool:
+    """Return the flag env value for key, or default if it is unset.
+
+    A flag is "0" for off or "1" for on. Raises ValueError for any other
+    value, including an empty one.
+    """
+    raw = env.get(key)
+    if raw is None:
+        return default
+    if raw not in ("0", "1"):
+        raise ValueError(f"{key} must be 0 or 1, got {raw!r}")
+    return raw == "1"
