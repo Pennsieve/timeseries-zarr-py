@@ -1,6 +1,9 @@
 """Count levels for event channels: per-bin event counts on a shared ladder."""
 
+from collections.abc import Iterable, Iterator
+
 import numpy as np
+import numpy.typing as npt
 
 from timeseries_zarr.constants import (
     CANVAS_PIXELS,
@@ -11,6 +14,11 @@ from timeseries_zarr.constants import (
     RASTER_BUDGET,
 )
 from timeseries_zarr.types import LevelPlan
+
+type EventBlock = tuple[npt.NDArray[np.int64], npt.NDArray[np.uint16] | None]
+"""One window of event times in microseconds from the origin, with the labels.
+
+The labels are None for a channel that has none."""
 
 
 def level1_period_us(n_events: int, last_event_us: int) -> int:
@@ -101,3 +109,97 @@ def plan_count_levels(
         bins = -(-bins // DECIMATION_FACTOR)
         period *= DECIMATION_FACTOR
     return plans
+
+
+def _check_event_block(
+    times: npt.NDArray[np.int64],
+    labels: npt.NDArray[np.uint16] | None,
+    columns: int,
+    previous_bin: int,
+    period_us: int,
+    bins: int,
+) -> npt.NDArray[np.int64]:
+    """Return the bin of each event, raising ValueError if the block is bad."""
+    if labels is not None and labels.shape != times.shape:
+        raise ValueError(
+            f"labels have shape {labels.shape} but times have {times.shape}"
+        )
+    index = times // period_us
+    if index[0] < max(previous_bin, 0) or (index[1:] < index[:-1]).any():
+        raise ValueError("event times must be non-decreasing and at least 0")
+    if index[-1] >= bins:
+        raise ValueError(
+            f"an event falls in bin {int(index[-1])}, past the {bins} bins"
+        )
+    if labels is not None and int(labels.max()) >= columns:
+        raise ValueError(
+            f"a label {int(labels.max())} is outside the {columns} columns"
+        )
+    return index
+
+
+def iter_count_blocks(
+    event_blocks: Iterable[EventBlock],
+    n_labels: int,
+    period_us: int,
+    bins: int,
+    block_bins: int,
+) -> Iterator[npt.NDArray[np.uint32]]:
+    """Yield level 1 counts in blocks of block_bins rows, covering every bin.
+
+    Event i with time t counts in bin t // period_us, in the column of its
+    label. The counts have max(1, n_labels) columns, and a block without
+    labels counts every event in column 0. The blocks are contiguous and
+    cover the whole axis of bins rows, including stretches no event falls in:
+    every block has block_bins rows except the last, which holds the
+    remainder. An axis of no bins yields nothing. Times must be non-decreasing
+    across all blocks, so a block is complete, and is written out, as soon as
+    an event lands past it; only one block of counts is held at a time. A
+    block of no events is skipped. Raises ValueError if block_bins or
+    period_us is below 1, bins or n_labels is negative, a time is negative or
+    decreases, an event falls past the last bin, a label is outside the
+    columns, or labels and times differ in shape.
+    """
+    if block_bins < 1:
+        raise ValueError(f"block_bins must be at least 1, got {block_bins}")
+    if period_us < 1:
+        raise ValueError(f"period_us must be at least 1, got {period_us}")
+    if bins < 0:
+        raise ValueError(f"bins must be at least 0, got {bins}")
+    if n_labels < 0:
+        raise ValueError(f"n_labels must be at least 0, got {n_labels}")
+    columns = max(1, n_labels)
+    buffer = np.zeros((block_bins, columns), dtype=np.uint32)
+    base = 0
+    previous_bin = 0
+    for times, labels in event_blocks:
+        if not times.shape[0]:
+            continue
+        index = _check_event_block(
+            times, labels, columns, previous_bin, period_us, bins
+        )
+        previous_bin = int(index[-1])
+        column = (
+            np.zeros(index.shape[0], dtype=np.int64)
+            if labels is None
+            else labels.astype(np.int64)
+        )
+        while index.shape[0]:
+            taken = int(np.searchsorted(index, base + block_bins))
+            if taken:
+                flat = (index[:taken] - base) * columns + column[:taken]
+                buffer += (
+                    np.bincount(flat, minlength=block_bins * columns)
+                    .reshape(block_bins, columns)
+                    .astype(np.uint32)
+                )
+            if taken == index.shape[0]:
+                break
+            yield buffer.copy()
+            base += block_bins
+            buffer[:] = 0
+            index, column = index[taken:], column[taken:]
+    while base < bins:
+        yield buffer[: min(block_bins, bins - base)].copy()
+        base += block_bins
+        buffer[:] = 0
