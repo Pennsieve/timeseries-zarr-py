@@ -1,7 +1,7 @@
 import pytest
 
 from timeseries_zarr.constants import COUNT_LADDER_BASE_US
-from timeseries_zarr.counts import level1_period_us
+from timeseries_zarr.counts import count_bins, level1_period_us
 
 _SPAN_PER_WIDTH = 200
 """Microseconds of span per microsecond of width when n_events is 1000.
@@ -82,3 +82,56 @@ def test_level1_period_us_rejects_fewer_than_one_event(n_events):
 def test_level1_period_us_rejects_a_negative_last_event_time():
     with pytest.raises(ValueError, match="last_event_us"):
         level1_period_us(10, -1)
+
+
+@pytest.mark.parametrize(
+    ("last_us", "period_us", "expected"),
+    [
+        (2500, 1000, 3),
+        (2999, 1000, 3),
+        (3000, 1000, 4),
+        (3001, 1000, 4),
+        (1000, 1000, 2),
+        (999, 1000, 1),
+        (0, 1000, 1),
+        (0, 1, 1),
+        (7, 1, 8),
+    ],
+)
+def test_count_bins_holds_the_bin_of_the_last_event_plus_one(
+    last_us, period_us, expected
+):
+    assert count_bins(last_us, period_us) == expected
+
+
+def test_count_bins_keeps_an_event_on_a_period_boundary():
+    # A ceiling of span over period would give 3 and drop the event at 3000.
+    assert count_bins(3000, 1000) == 4
+
+
+def test_count_bins_lone_event_at_the_origin_has_one_bin():
+    assert count_bins(0, 256_000) == 1
+
+
+def test_count_bins_is_exact_for_spans_beyond_float_precision():
+    assert count_bins(2**62, 1000) == 2**62 // 1000 + 1
+
+
+@pytest.mark.parametrize("period_us", [1, 1000, 4000, 256_000, 1_024_000])
+@pytest.mark.parametrize(
+    "last_us", [0, 1, 999, 1000, 3_999_999, 86_400 * 10**6]
+)
+def test_count_bins_last_event_falls_inside_the_last_bin(last_us, period_us):
+    bins = count_bins(last_us, period_us)
+    assert (bins - 1) * period_us <= last_us < bins * period_us
+
+
+@pytest.mark.parametrize("period_us", [0, -1])
+def test_count_bins_rejects_a_period_below_one(period_us):
+    with pytest.raises(ValueError, match="period_us"):
+        count_bins(1000, period_us)
+
+
+def test_count_bins_rejects_a_negative_last_event_time():
+    with pytest.raises(ValueError, match="last_event_us"):
+        count_bins(-1, 1000)

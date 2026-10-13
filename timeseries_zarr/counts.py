@@ -34,3 +34,22 @@ def level1_period_us(n_events: int, last_event_us: int) -> int:
     while period * DECIMATION_FACTOR <= width_us:
         period *= DECIMATION_FACTOR
     return period
+
+
+def count_bins(last_event_us: int, period_us: int) -> int:
+    """Return the number of bins that cover an event channel's last event.
+
+    The bin axis starts at the bundle origin, and bin i spans the times from
+    i * period_us up to but not including (i + 1) * period_us. The result is
+    the bin holding the last event plus one, so an event that sits exactly on
+    a bin boundary is counted in the bin it opens and is never dropped. A
+    channel whose only event is at the origin has 1 bin. Raises ValueError if
+    period_us is below 1 or last_event_us is negative.
+    """
+    if period_us < 1:
+        raise ValueError(f"period_us must be at least 1, got {period_us}")
+    if last_event_us < 0:
+        raise ValueError(
+            f"last_event_us must be at least 0, got {last_event_us}"
+        )
+    return last_event_us // period_us + 1
