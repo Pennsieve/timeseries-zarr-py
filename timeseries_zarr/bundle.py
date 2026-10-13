@@ -57,11 +57,14 @@ def write_all_channels(
     Each (index, source) pair becomes its own channel group beneath root,
     governed by opts.
     """
+    origin_us = min((source.start_us() for _, source in indexed), default=0)
     for index, source in indexed:
         if isinstance(source, UnitChannelSource):
             write_unit_channel(root, index, source, opts=opts)
         else:
-            write_continuous_channel(root, index, source, opts=opts)
+            write_continuous_channel(
+                root, index, source, origin_us=origin_us, opts=opts
+            )
 
 
 def write_bundle(

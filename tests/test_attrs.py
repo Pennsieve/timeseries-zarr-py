@@ -4,7 +4,6 @@ from timeseries_zarr.attrs import (
     channel_group_attrs,
     continuous_channel_attrs,
     event_channel_attrs,
-    level_array_attrs,
     level_group_attrs,
     root_attrs,
     waveform_array_attrs,
@@ -137,8 +136,3 @@ def test_channel_group_attrs(kind):
         "name": "channel one",
         "unit": "uV",
     }
-
-
-@pytest.mark.parametrize("period_us", [31.25, 125.0, 512000.0])
-def test_level_array_attrs(period_us):
-    assert level_array_attrs(period_us) == {"period_us": period_us}

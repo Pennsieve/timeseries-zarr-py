@@ -133,11 +133,3 @@ def channel_group_attrs(
         "name": name,
         "unit": unit,
     }
-
-
-def level_array_attrs(period_us: float) -> dict[str, object]:
-    """Return the level-array attributes of the superseded format.
-
-    period_us is the microseconds one bin spans at this level.
-    """
-    return {"period_us": period_us}
