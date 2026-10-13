@@ -6,6 +6,7 @@ import pytest
 from timeseries_zarr.bundle import (
     assign_indices,
     atomic_publish,
+    origin_us,
     write_all_channels,
     write_bundle,
 )
@@ -179,3 +180,45 @@ def test_write_all_channels_places_continuous_channels_relative_to_the_earliest_
     g = open_group(tmp_path / "bundle")
     assert dict(g["0"].attrs)["tsz"]["offset_us"] == 0
     assert dict(g["1"].attrs)["tsz"]["offset_us"] == 4_000
+
+
+def test_origin_us_is_the_earliest_start_of_any_source(
+    continuous_source, event_source
+):
+    sources = [
+        continuous_source(np.zeros(4, np.float32), start_us=5_000),
+        event_source([2_000, 9_000]),
+        continuous_source(np.zeros(4, np.float32), start_us=7_000),
+    ]
+    assert origin_us(sources) == 2_000
+
+
+def test_origin_us_is_the_session_start_when_it_is_earliest(continuous_source):
+    sources = [continuous_source(np.zeros(4, np.float32), start_us=5_000)]
+    assert origin_us(sources, session_start_us=1_000) == 1_000
+
+
+def test_origin_us_is_a_source_start_when_the_session_starts_later(
+    continuous_source,
+):
+    sources = [continuous_source(np.zeros(4, np.float32), start_us=5_000)]
+    assert origin_us(sources, session_start_us=9_000) == 5_000
+
+
+def test_origin_us_with_only_a_session_start_is_that_start():
+    assert origin_us([], session_start_us=42) == 42
+
+
+def test_origin_us_of_nothing_is_zero():
+    assert origin_us([]) == 0
+
+
+def test_origin_us_counts_an_empty_event_channel_by_its_start(event_source):
+    assert origin_us([event_source([], start_us=77)]) == 77
+
+
+def test_origin_us_may_be_negative_for_a_start_before_the_epoch(
+    continuous_source,
+):
+    sources = [continuous_source(np.zeros(4, np.float32), start_us=-5)]
+    assert origin_us(sources) == -5

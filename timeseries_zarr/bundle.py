@@ -4,7 +4,11 @@ import shutil
 from collections.abc import Sequence
 from pathlib import Path
 
-from timeseries_zarr.protocols import ContinuousChannelSource, UnitChannelSource
+from timeseries_zarr.protocols import (
+    ContinuousChannelSource,
+    EventChannelSource,
+    UnitChannelSource,
+)
 from timeseries_zarr.types import WriteOpts
 from timeseries_zarr.write_continuous import write_continuous_channel
 from timeseries_zarr.write_unit import write_unit_channel
@@ -21,6 +25,27 @@ def assign_indices(
     channel-group directories. Sources keep their input order within each kind.
     """
     return list(enumerate([*continuous, *units]))
+
+
+def origin_us(
+    sources: Sequence[
+        ContinuousChannelSource | EventChannelSource | UnitChannelSource
+    ],
+    session_start_us: int | None = None,
+) -> int:
+    """Return the bundle origin: the earliest wall-clock instant it holds.
+
+    Every channel and event is placed in microseconds from this instant, so it
+    is the minimum of the session start, when given, and the start of every
+    source. No offset or event time is then negative. The origin is the one
+    wall-clock value the writer maps to the time zero of the bundle. A bundle
+    with neither a session start nor a channel has no instant to count from and
+    reports 0.
+    """
+    starts = [source.start_us() for source in sources]
+    if session_start_us is not None:
+        starts.append(session_start_us)
+    return min(starts, default=0)
 
 
 def atomic_publish(staging_dir: Path, final_dir: Path) -> None:
@@ -57,13 +82,13 @@ def write_all_channels(
     Each (index, source) pair becomes its own channel group beneath root,
     governed by opts.
     """
-    origin_us = min((source.start_us() for _, source in indexed), default=0)
+    origin = origin_us([source for _, source in indexed])
     for index, source in indexed:
         if isinstance(source, UnitChannelSource):
             write_unit_channel(root, index, source, opts=opts)
         else:
             write_continuous_channel(
-                root, index, source, origin_us=origin_us, opts=opts
+                root, index, source, origin_us=origin, opts=opts
             )
 
 
