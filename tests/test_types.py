@@ -102,7 +102,7 @@ def test_chunkshard_frozen_rejects_mutation():
 
 
 def test_channelkind_literal_values():
-    assert get_args(ChannelKind.__value__) == ("continuous", "unit")
+    assert get_args(ChannelKind.__value__) == ("continuous", "event")
 
 
 def test_eventcolumn_literal_values():

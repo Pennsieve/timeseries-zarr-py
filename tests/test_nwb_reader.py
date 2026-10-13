@@ -17,7 +17,7 @@ from timeseries_zarr.nwb_reader import (
     NwbUnitSource,
     build_sources_from_nwb,
 )
-from timeseries_zarr.protocols import EventChannelSource, UnitChannelSource
+from timeseries_zarr.protocols import EventChannelSource
 
 STARTED = datetime(2021, 6, 1, 12, 0, tzinfo=UTC)
 
@@ -228,16 +228,6 @@ def test_unit_num_events_sums_all_units_spikes():
     assert src.num_events() == 5
 
 
-def test_unit_points_per_event_is_waveform_mean_width():
-    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
-    assert src.points_per_event() == 4
-
-
-def test_unit_rate_hz_is_the_passed_rate():
-    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
-    assert src.rate_hz() == 30000.0
-
-
 def test_unit_start_us_is_session_start_in_microseconds():
     src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
     assert src.start_us() == round(STARTED.timestamp() * 1_000_000)
@@ -257,9 +247,9 @@ def test_unit_name_is_the_table_name():
     assert src.name == "probeA"
 
 
-def test_unit_unit_is_microvolts():
+def test_unit_has_no_unit_because_spikes_have_no_measurement():
     src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
-    assert src.unit == "uV"
+    assert src.unit is None
 
 
 def test_unit_read_events_is_ascending_absolute_microseconds():
@@ -280,38 +270,9 @@ def test_unit_read_events_window_is_a_subset():
     assert np.array_equal(src.read_events(1, 3), src.read_events(0, 5)[1:3])
 
 
-def test_unit_read_units_are_dense_cluster_ids_aligned_with_events():
-    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
-    units = src.read_units(0, 5)
-    assert units.dtype == np.uint8
-    assert np.array_equal(units, np.array(_SORTED_CLUSTERS, dtype=np.uint8))
-
-
-def test_unit_read_waveforms_broadcasts_each_clusters_mean():
-    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
-    waveforms = src.read_waveforms(0, 5)
-    assert waveforms.dtype == np.float32
-    assert waveforms.shape == (5, 4)
-    assert np.array_equal(
-        waveforms, np.array(_SORTED_WAVEFORMS, dtype=np.float32)
-    )
-
-
 def test_unit_read_events_empty_range_is_length_zero():
     src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
     assert src.read_events(2, 2).shape == (0,)
-
-
-def test_unit_read_waveforms_empty_range_keeps_point_axis():
-    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
-    assert src.read_waveforms(2, 2).shape == (0, 4)
-
-
-def test_unit_read_units_rejects_more_than_256_units():
-    specs = [([float(i)], [0.0]) for i in range(257)]
-    src = NwbUnitSource(_make_units(specs), 30000.0, STARTED)
-    with pytest.raises(ValueError, match="at most 256"):
-        src.read_units(0, 5)
 
 
 def test_unit_init_rejects_more_units_than_a_uint16_label_holds(monkeypatch):
@@ -321,10 +282,9 @@ def test_unit_init_rejects_more_units_than_a_uint16_label_holds(monkeypatch):
         NwbUnitSource(_make_units(specs), 30000.0, STARTED)
 
 
-def test_unit_source_serves_both_the_event_and_the_unit_protocol():
+def test_unit_source_serves_the_event_protocol():
     src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
     assert isinstance(src, EventChannelSource)
-    assert isinstance(src, UnitChannelSource)
 
 
 def test_unit_read_labels_are_dense_uint16_indices_in_time_order():
@@ -377,11 +337,8 @@ def test_unit_without_a_waveform_mean_column_offers_only_labels():
     units.add_unit(spike_times=[0.1, 0.2])
     src = NwbUnitSource(units, 30000.0, STARTED)
     assert src.columns() == {"labels"}
-    assert src.points_per_event() == 0
     with pytest.raises(ValueError, match="no waveform_mean"):
         src.waveform_mean()
-    with pytest.raises(ValueError, match="no waveform_mean"):
-        src.read_waveforms(0, 2)
 
 
 def test_unit_spikes_carry_no_durations_text_or_channels():
@@ -434,7 +391,7 @@ def test_build_yields_unit_source_with_first_series_rate():
     nwb.units = _make_units(_TWO_UNITS, name="units")
     continuous, units = build_sources_from_nwb(nwb)
     assert len(units) == 1
-    assert units[0].rate_hz() == 30000.0
+    assert units[0].waveform_period_us() == 1_000_000 / 30000.0
     assert units[0].num_events() == 5
 
 

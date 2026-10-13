@@ -39,9 +39,6 @@ VAR_COLUMN: Final = 3
 COUNT_COLUMN: Final = 4
 """Column of a statistics block holding a bin's count of finite samples."""
 
-MAX_UNIT_CLUSTERS: Final = 256
-"""Most distinct clusters a unit channel can hold (the uint8 cluster-id range)."""
-
 MAX_LABELS: Final = 2**16
 """Most distinct labels an event channel can hold (the uint16 label range)."""
 

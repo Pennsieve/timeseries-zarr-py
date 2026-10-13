@@ -15,6 +15,18 @@ from timeseries_zarr.bundle import (
 from timeseries_zarr.types import WriteOpts
 from timeseries_zarr.zarr_io import open_group
 
+
+def _write_all(root, indexed, opts=None):
+    sources = [source for _, source in indexed]
+    write_all_channels(
+        root,
+        indexed,
+        origin_us(sources),
+        channel_keys(indexed),
+        opts or _OPTS,
+    )
+
+
 _OPTS = WriteOpts(
     min_bins=2, max_levels=8, inner_len=16, target_shard_bytes=256
 )
@@ -24,7 +36,7 @@ def test_assign_indices_empty():
     assert assign_indices([], []) == []
 
 
-def test_assign_indices_continuous_then_unit(continuous_source):
+def test_assign_indices_continuous_then_event(continuous_source):
     c0 = continuous_source(np.zeros(4, dtype=np.float32), id="c0")
     c1 = continuous_source(np.zeros(4, dtype=np.float32), id="c1")
     # assign_indices does not inspect its sources.
@@ -42,7 +54,7 @@ def test_assign_indices_only_continuous(continuous_source):
     assert assign_indices([c0], []) == [(0, c0)]
 
 
-def test_assign_indices_only_units():
+def test_assign_indices_only_events():
     u0 = object()
     assert assign_indices([], [u0]) == [(0, u0)]
 
@@ -91,22 +103,22 @@ def test_atomic_publish_restores_final_on_failure(tmp_path):
 
 
 def test_write_all_channels_dispatches_by_type(
-    tmp_path, continuous_source, unit_source
+    tmp_path, continuous_source, event_source
 ):
     root = open_group(tmp_path / "bundle")
     cont = continuous_source(np.arange(64, dtype=np.float32), id="c0")
-    unit = unit_source(np.arange(5, dtype=np.int64), id="u0")
-    write_all_channels(root, assign_indices([cont], [unit]), _OPTS)
+    event = event_source([5, 6, 7], id="e0")
+    _write_all(root, assign_indices([cont], [event]))
     g = open_group(tmp_path / "bundle")
     assert dict(g["0"].attrs)["tsz"]["kind"] == "continuous"
     assert "raw" in list(g["0"].array_keys())
-    assert dict(g["1"].attrs)["kind"] == "unit"
-    assert sorted(g["1"].array_keys()) == ["events", "units", "waveforms"]
+    assert dict(g["1"].attrs)["tsz"]["kind"] == "event"
+    assert list(g["1"].array_keys()) == ["events"]
 
 
 def test_write_all_channels_empty(tmp_path):
     root = open_group(tmp_path / "bundle")
-    write_all_channels(root, [], _OPTS)
+    write_all_channels(root, [], 0, {}, _OPTS)
     assert list(open_group(tmp_path / "bundle").group_keys()) == []
 
 
@@ -115,27 +127,68 @@ def test_write_all_channels_returns_none(tmp_path, continuous_source):
     indexed = assign_indices(
         [continuous_source(np.arange(8, dtype=np.float32))], []
     )
-    assert write_all_channels(root, indexed, _OPTS) is None
+    result = write_all_channels(root, indexed, 0, channel_keys(indexed), _OPTS)
+    assert result is None
+
+
+def test_write_all_channels_resolves_event_channel_ids_through_the_keys(
+    tmp_path, continuous_source, event_source
+):
+    root = open_group(tmp_path / "bundle")
+    first = continuous_source(np.zeros(8, np.float32), id="c0")
+    second = continuous_source(np.zeros(8, np.float32), id="c1")
+    event = event_source([5, 6], id="e0", channel_ids=[["c1"], ["c0", "c1"]])
+    _write_all(root, assign_indices([first, second], [event]))
+    channels = open_group(tmp_path / "bundle")["2"]["channels"][:]
+    assert channels.tolist() == [[2], [3]]
 
 
 def test_write_bundle_publishes_mixed_bundle(
-    tmp_path, continuous_source, unit_source
+    tmp_path, continuous_source, event_source
 ):
     staging = tmp_path / "staging"
     final = tmp_path / "bundle"
     samples = np.arange(64, dtype=np.float32)
     cont = continuous_source(samples, id="c0")
-    unit = unit_source(np.arange(5, dtype=np.int64), id="u0")
+    event = event_source([5, 6, 7], id="e0")
     write_bundle(
-        [cont], [unit], staging_dir=staging, final_dir=final, opts=_OPTS
+        [cont], [event], staging_dir=staging, final_dir=final, opts=_OPTS
     )
     assert final.exists()
     assert not staging.exists()
     g = open_group(final)
     assert dict(g["0"].attrs)["tsz"]["kind"] == "continuous"
-    assert dict(g["1"].attrs)["kind"] == "unit"
+    assert dict(g["1"].attrs)["tsz"]["kind"] == "event"
     assert np.array_equal(g["0"]["raw"][:], samples)
-    assert sorted(g["1"].array_keys()) == ["events", "units", "waveforms"]
+    assert g["1"]["events"].shape == (3,)
+
+
+def test_write_bundle_counts_every_time_from_the_earliest_start(
+    tmp_path, continuous_source, event_source
+):
+    cont = continuous_source(np.zeros(8, np.float32), id="c0", start_us=1_000)
+    event = event_source([500, 700], id="e0")
+    final = tmp_path / "bundle"
+    write_bundle(
+        [cont], [event], staging_dir=tmp_path / "s", final_dir=final, opts=_OPTS
+    )
+    g = open_group(final)
+    assert dict(g["0"].attrs)["tsz"]["offset_us"] == 500
+    assert g["1"]["events"][:].tolist() == [0, 200]
+
+
+def test_write_bundle_rejects_two_channels_with_one_id_before_writing(
+    tmp_path, continuous_source, event_source
+):
+    staging, final = tmp_path / "staging", tmp_path / "bundle"
+    cont = continuous_source(np.zeros(8, np.float32), id="same")
+    event = event_source([1], id="same")
+    with pytest.raises(ValueError, match="share the id"):
+        write_bundle(
+            [cont], [event], staging_dir=staging, final_dir=final, opts=_OPTS
+        )
+    assert not staging.exists()
+    assert not final.exists()
 
 
 def test_write_bundle_consolidates_root_inline(tmp_path, continuous_source):
@@ -178,7 +231,7 @@ def test_write_all_channels_places_continuous_channels_relative_to_the_earliest_
     late = continuous_source(
         np.arange(8, dtype=np.float32), id="b", start_us=5_000
     )
-    write_all_channels(root, assign_indices([early, late], []), _OPTS)
+    _write_all(root, assign_indices([early, late], []))
     g = open_group(tmp_path / "bundle")
     assert dict(g["0"].attrs)["tsz"]["offset_us"] == 0
     assert dict(g["1"].attrs)["tsz"]["offset_us"] == 4_000
@@ -227,16 +280,15 @@ def test_origin_us_may_be_negative_for_a_start_before_the_epoch(
 
 
 def test_channel_keys_maps_every_id_to_its_index(
-    continuous_source, event_source, unit_source
+    continuous_source, event_source
 ):
     indexed = assign_indices(
         [
             continuous_source(np.zeros(4, np.float32), id="LA1"),
             continuous_source(np.zeros(4, np.float32), id="LA2"),
         ],
-        [unit_source([1], id="units")],
+        [event_source([1], id="units"), event_source([1], id="marks")],
     )
-    indexed.append((3, event_source([1], id="marks")))
     assert channel_keys(indexed) == {"LA1": 0, "LA2": 1, "units": 2, "marks": 3}
 
 

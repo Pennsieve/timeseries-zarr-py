@@ -12,7 +12,6 @@ from pynwb.misc import Units
 
 from timeseries_zarr.constants import (
     MAX_LABELS,
-    MAX_UNIT_CLUSTERS,
     MICROSECONDS_PER_SECOND,
     UNIT_TO_UV,
 )
@@ -236,8 +235,7 @@ class NwbUnitSource:
     bundle stores: all spikes merged into one timestamp series sorted
     ascending, each event labeled with its cluster's dense index in table row
     order (not the upstream unit id). The table's waveform_mean column, when it
-    has one, becomes the per-label mean snippets. The source serves both the
-    event channel protocol and the unit channel protocol it is replacing.
+    has one, becomes the per-label mean snippets.
     """
 
     def __init__(
@@ -313,17 +311,13 @@ class NwbUnitSource:
         return self._id
 
     @property
-    def unit(self) -> str:
-        """Always "uV".
+    def unit(self) -> str | None:
+        """Always None, because spikes have no measurement.
 
-        waveform_mean carries no unit metadata, so the amplitudes are stored
+        waveform_mean carries no unit metadata, so its amplitudes are stored
         unscaled.
         """
-        return "uV"
-
-    def rate_hz(self) -> float:
-        """Return the waveform sample rate in hertz, as bound at construction."""
-        return self._rate_hz
+        return None
 
     def start_us(self) -> int:
         """Return the earliest wall-clock microseconds the channel holds.
@@ -362,10 +356,6 @@ class NwbUnitSource:
         """Return 0, because spikes carry no text."""
         return 0
 
-    def points_per_event(self) -> int:
-        """Return the width of the waveform_mean template, or 0 without one."""
-        return 0 if self._means is None else int(self._means.shape[1])
-
     def read_events(self, start: int, stop: int) -> npt.NDArray[np.int64]:
         """Return the half-open [start, stop) window of event timestamps.
 
@@ -377,28 +367,6 @@ class NwbUnitSource:
     def read_labels(self, start: int, stop: int) -> npt.NDArray[np.uint16]:
         """Return the [start, stop) window of dense unit indices as uint16."""
         return self._labels[start:stop]
-
-    def read_units(self, start: int, stop: int) -> npt.NDArray[np.uint8]:
-        """Return the half-open [start, stop) window of cluster ids as uint8.
-
-        Aligned with the events at the same indices. An empty range yields a
-        length-0 array. Raises ValueError if the table holds more than
-        MAX_UNIT_CLUSTERS units, which a uint8 cannot index.
-        """
-        if self.num_labels() > MAX_UNIT_CLUSTERS:
-            raise ValueError(
-                f"a uint8 cluster id indexes at most {MAX_UNIT_CLUSTERS} units"
-            )
-        return self._labels[start:stop].astype(np.uint8)
-
-    def read_waveforms(self, start: int, stop: int) -> npt.NDArray[np.float32]:
-        """Return float32 waveforms for events [start, stop).
-
-        Row k is the waveform_mean of the cluster that produced event k. An
-        empty range yields a (0, points_per_event) array. Raises ValueError if
-        the table has no waveform_mean column.
-        """
-        return self.waveform_mean()[self._labels[start:stop]]
 
     def read_durations(self, start: int, stop: int) -> npt.NDArray[np.int64]:
         """Raise ValueError, because spikes have no durations column."""

@@ -4,7 +4,6 @@ import pytest
 from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
-    UnitChannelSource,
 )
 
 
@@ -103,90 +102,6 @@ def test_missing_id_attr_is_not_recognized():
     assert not isinstance(MissingId(), ContinuousChannelSource)
 
 
-class FakeUnit:
-    id = "u-0"
-    name = "Unit 0"
-    unit = "uV"
-
-    def rate_hz(self):
-        return 30000.0
-
-    def start_us(self):
-        return 0
-
-    def num_events(self):
-        return 3
-
-    def points_per_event(self):
-        return 32
-
-    def read_events(self, start, stop):
-        return np.zeros(stop - start, dtype=np.int64)
-
-    def read_units(self, start, stop):
-        return np.zeros(stop - start, dtype=np.uint8)
-
-    def read_waveforms(self, start, stop):
-        return np.zeros((stop - start, 32), dtype=np.float32)
-
-
-def test_conforming_unit_instance_is_recognized():
-    assert isinstance(FakeUnit(), UnitChannelSource)
-
-
-def test_unit_missing_name_or_unit_is_not_recognized():
-    class MissingNameUnit:
-        id = "u-0"
-
-        def rate_hz(self):
-            return 30000.0
-
-        def start_us(self):
-            return 0
-
-        def num_events(self):
-            return 3
-
-        def points_per_event(self):
-            return 32
-
-        def read_events(self, start, stop):
-            return np.zeros(stop - start, dtype=np.int64)
-
-        def read_units(self, start, stop):
-            return np.zeros(stop - start, dtype=np.uint8)
-
-        def read_waveforms(self, start, stop):
-            return np.zeros((stop - start, 32), dtype=np.float32)
-
-    assert not isinstance(MissingNameUnit(), UnitChannelSource)
-
-
-def test_unit_missing_method_is_not_recognized():
-    class MissingReadWaveforms:
-        id = "u-0"
-
-        def rate_hz(self):
-            return 30000.0
-
-        def start_us(self):
-            return 0
-
-        def num_events(self):
-            return 3
-
-        def points_per_event(self):
-            return 32
-
-        def read_events(self, start, stop):
-            return np.zeros(stop - start, dtype=np.int64)
-
-        def read_units(self, start, stop):
-            return np.zeros(stop - start, dtype=np.uint8)
-
-    assert not isinstance(MissingReadWaveforms(), UnitChannelSource)
-
-
 def _event_members():
     """Return every member of a conforming event source, by name."""
     return {
@@ -230,10 +145,9 @@ def test_continuous_source_is_not_an_event_source():
     assert not isinstance(FakeContinuous(), EventChannelSource)
 
 
-def test_event_source_is_not_a_continuous_or_unit_source():
+def test_event_source_is_not_a_continuous_source():
     fake = type("Fake", (), _event_members())()
     assert not isinstance(fake, ContinuousChannelSource)
-    assert not isinstance(fake, UnitChannelSource)
 
 
 def test_array_event_source_satisfies_the_protocol(event_source):
