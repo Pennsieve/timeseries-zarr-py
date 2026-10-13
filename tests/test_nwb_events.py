@@ -7,13 +7,16 @@ import numpy as np
 import pytest
 from pynwb.epoch import TimeIntervals
 from pynwb.event import EventsTable
+from pynwb.misc import AnnotationSeries
 from pynwb.testing.mock.ecephys import mock_ElectricalSeries
 from pynwb.testing.mock.file import mock_NWBFile
 
 from timeseries_zarr.nwb_events import (
     UNTAGGED,
+    NwbAnnotationSeriesSource,
     NwbEventsTableSource,
     NwbIntervalSource,
+    _as_text,
     _json_value,
 )
 from timeseries_zarr.protocols import EventChannelSource
@@ -453,3 +456,106 @@ def test_interval_table_rejects_a_time_that_is_not_finite(which):
     rows = [(nan, 2.0, ["a"])] if which == "start" else [(1.0, nan, ["a"])]
     with pytest.raises(ValueError, match="not a finite number"):
         _source(_table(rows))
+
+
+_DEPRECATED = pytest.mark.filterwarnings(
+    "ignore:AnnotationSeries is deprecated:UserWarning"
+)
+
+
+def _annotations(data, timestamps, name="marks"):
+    return AnnotationSeries(name=name, data=data, timestamps=timestamps)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (b"caf\xc3\xa9", "caf\N{LATIN SMALL LETTER E WITH ACUTE}"),
+        ("text", "text"),
+        (np.str_("numpy"), "numpy"),
+        (7, "7"),
+    ],
+)
+def test_as_text_decodes_bytes_and_stringifies_the_rest(value, expected):
+    assert _as_text(value) == expected
+
+
+@_DEPRECATED
+def test_annotation_series_events_are_session_start_plus_timestamps_in_order():
+    series = _annotations(["b", "a", "c"], [2.0, 0.5, 2.0])
+    src = NwbAnnotationSeriesSource(series, STARTED)
+    assert src.read_events(0, 3).tolist() == [
+        STARTED_US + 500_000,
+        STARTED_US + 2_000_000,
+        STARTED_US + 2_000_000,
+    ]
+    assert src.read_text(0, 3) == ["a", "b", "c"]
+
+
+@_DEPRECATED
+def test_annotation_series_offers_only_text():
+    src = NwbAnnotationSeriesSource(
+        _annotations(["x", "yy"], [1.0, 2.0]), STARTED
+    )
+    assert src.columns() == {"text"}
+    assert src.text_width() == 2
+    assert src.max_duration_us() is None
+    with pytest.raises(ValueError, match="no durations"):
+        src.read_durations(0, 1)
+
+
+@_DEPRECATED
+def test_annotation_series_keeps_utf8_text_and_counts_its_bytes():
+    word = "caf\N{LATIN SMALL LETTER E WITH ACUTE}"
+    src = NwbAnnotationSeriesSource(_annotations([word], [1.0]), STARTED)
+    assert src.read_text(0, 1) == [word]
+    assert src.text_width() == len(word.encode("utf-8"))
+
+
+@_DEPRECATED
+def test_annotation_series_is_named_by_its_series_and_serves_the_protocol():
+    src = NwbAnnotationSeriesSource(
+        _annotations(["x"], [1.0], name="notes"), STARTED
+    )
+    assert (src.id, src.name, src.unit) == ("notes", "notes", None)
+    assert isinstance(src, EventChannelSource)
+
+
+@_DEPRECATED
+def test_annotation_series_start_is_the_session_start_or_an_earlier_event():
+    later = NwbAnnotationSeriesSource(_annotations(["x"], [5.0]), STARTED)
+    earlier = NwbAnnotationSeriesSource(_annotations(["x"], [-2.0]), STARTED)
+    assert later.start_us() == STARTED_US
+    assert earlier.start_us() == STARTED_US - 2_000_000
+
+
+@_DEPRECATED
+def test_annotation_series_with_no_samples_offers_no_columns():
+    src = NwbAnnotationSeriesSource(_annotations([], []), STARTED)
+    assert src.num_events() == 0
+    assert src.columns() == frozenset()
+
+
+@_DEPRECATED
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_annotation_series_rejects_a_timestamp_that_is_not_finite(bad):
+    with pytest.raises(ValueError, match="not a finite number"):
+        NwbAnnotationSeriesSource(_annotations(["x"], [bad]), STARTED)
+
+
+def test_annotation_series_without_timestamps_is_rejected():
+    series = SimpleNamespace(name="rated", timestamps=None, data=["x"])
+    with pytest.raises(ValueError, match="needs timestamps"):
+        NwbAnnotationSeriesSource(series, STARTED)
+
+
+def test_annotation_series_whose_data_and_timestamps_differ_is_rejected():
+    series = SimpleNamespace(name="odd", timestamps=[1.0], data=["x", "y"])
+    with pytest.raises(ValueError, match="2 texts but 1 timestamps"):
+        NwbAnnotationSeriesSource(series, STARTED)
+
+
+def test_annotation_series_decodes_byte_strings_from_a_file():
+    series = SimpleNamespace(name="bytes", timestamps=[1.0], data=[b"onset"])
+    src = NwbAnnotationSeriesSource(series, STARTED)
+    assert src.read_text(0, 1) == ["onset"]
