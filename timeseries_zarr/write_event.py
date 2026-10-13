@@ -23,6 +23,9 @@ from timeseries_zarr.zarr_io import (
 EVENTS_KEY: Final = "events"
 """Key of the event time array within an event channel group."""
 
+DURATIONS_KEY: Final = "durations"
+"""Key of the per-event duration array within an event channel group."""
+
 EVENT_DIMENSION: Final = "event"
 """Dimension name of the per-event axis."""
 
@@ -100,5 +103,52 @@ def write_events_array(
 
     _write_source_blocks(
         array, source.num_events(), sizing.shard_shape[0], read, check
+    )
+    return array
+
+
+def write_durations_array(
+    group: ZarrGroup,
+    source: EventChannelSource,
+    sizing: ChunkShard,
+    zstd_level: int,
+) -> ZarrArray:
+    """Create the durations array under group and stream the durations into it.
+
+    A rank-1 int64 array named "durations" of microseconds, with the dimension
+    name "event" and no attributes. A duration of 0 is a point event. Raises
+    ValueError if the source reports no max_duration_us, a duration is
+    negative, or a duration exceeds max_duration_us, which the channel declares
+    as a bound on every duration.
+    """
+    bound = source.max_duration_us()
+    if bound is None:
+        raise ValueError("a source with durations must report max_duration_us")
+    array = create_array(
+        group,
+        DURATIONS_KEY,
+        (source.num_events(),),
+        np.int64,
+        sizing.chunk_shape,
+        sizing.shard_shape,
+        {},
+        zstd_level,
+        dimension_names=(EVENT_DIMENSION,),
+    )
+
+    def check(block: npt.NDArray[np.int64]) -> None:
+        if block.min() < 0:
+            raise ValueError(f"a duration is negative: {int(block.min())}")
+        if block.max() > bound:
+            raise ValueError(
+                f"a duration {int(block.max())} exceeds max_duration_us {bound}"
+            )
+
+    _write_source_blocks(
+        array,
+        source.num_events(),
+        sizing.shard_shape[0],
+        source.read_durations,
+        check,
     )
     return array
