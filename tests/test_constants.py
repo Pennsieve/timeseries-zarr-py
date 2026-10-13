@@ -34,7 +34,7 @@ def test_max_levels_is_the_last_level_whose_bin_count_fits_uint32():
     assert limit < DECIMATION_FACTOR ** (MAX_LEVELS + 1)
 
 
-def test_stat_columns_are_distinct_and_cover_the_block():
+def test_statistic_columns_are_distinct_and_cover_the_block():
     columns = [MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN, COUNT_COLUMN]
     assert sorted(columns) == list(range(STATISTIC_COLUMNS))
 
