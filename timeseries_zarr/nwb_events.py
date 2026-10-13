@@ -11,6 +11,7 @@ import numpy as np
 import numpy.typing as npt
 from pynwb.epoch import TimeIntervals
 from pynwb.event import EventsTable
+from pynwb.misc import AnnotationSeries
 
 from timeseries_zarr.columns import text_width
 from timeseries_zarr.constants import MAX_LABELS, MICROSECONDS_PER_SECOND
@@ -39,6 +40,13 @@ def _json_value(value: object) -> object:
         return value.decode("utf-8", errors="replace")
     if isinstance(value, str | int | float | bool) or value is None:
         return value
+    return str(value)
+
+
+def _as_text(value: object) -> str:
+    """Return a table or series string as text, decoding bytes as UTF-8."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
     return str(value)
 
 
@@ -359,7 +367,7 @@ class NwbEventsTableSource(_EventArrays):
             durations = lengths[order]
         texts = None
         if "annotation" in table.colnames and len(stamps):
-            notes = [str(note) for note in table["annotation"][:]]
+            notes = [_as_text(note) for note in table["annotation"][:]]
             texts = [notes[i] for i in order]
         ignored = [
             c
@@ -374,4 +382,46 @@ class NwbEventsTableSource(_EventArrays):
             (session_us + offsets)[order],
             durations,
             texts=texts,
+        )
+
+
+class NwbAnnotationSeriesSource(_EventArrays):
+    """An event channel backed by one NWB AnnotationSeries.
+
+    Each sample is one event at its timestamp, and its string is the text.
+    The events have no duration. pynwb deprecates the AnnotationSeries in
+    favor of the EventsTable, but files still hold it.
+    """
+
+    def __init__(
+        self,
+        series: AnnotationSeries,
+        session_start_time: datetime,
+    ) -> None:
+        """Bind an AnnotationSeries as an event channel.
+
+        session_start_time places the series' timestamps, which count from it
+        in seconds, in absolute microseconds. Raises ValueError if the series
+        has no timestamps, its data and timestamps differ in length, or a
+        timestamp is not finite.
+        """
+        name = str(series.name)
+        if series.timestamps is None:
+            raise ValueError(f"{name} needs timestamps, not a sampling rate")
+        stamps = np.asarray(series.timestamps[:], dtype=np.float64)
+        notes = [_as_text(note) for note in series.data[:]]
+        if len(notes) != len(stamps):
+            raise ValueError(
+                f"{name} has {len(notes)} texts but {len(stamps)} timestamps"
+            )
+        session_us = round(
+            session_start_time.timestamp() * MICROSECONDS_PER_SECOND
+        )
+        offsets = _to_microseconds(stamps, "timestamp", name)
+        order = np.argsort(stamps, kind="stable")
+        super().__init__(
+            name,
+            session_us,
+            (session_us + offsets)[order],
+            texts=[notes[i] for i in order] if len(stamps) else None,
         )
