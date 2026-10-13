@@ -16,6 +16,7 @@ from timeseries_zarr.fold import (
     fold_block,
     fold_pair_block,
     fold_raw_block,
+    fold_stat_block,
 )
 
 
@@ -142,6 +143,125 @@ def test_fold_raw_block_leaves_the_input_unchanged():
     before = raw.copy()
     fold_raw_block(raw)
     assert np.array_equal(raw, before)
+
+
+def _reduce(a, width, fn):
+    """The generator's block reduction: fn over consecutive rows, tail kept."""
+    n = (a.shape[0] // width) * width
+    out = fn(a[:n].reshape(-1, width, *a.shape[1:]), axis=1)
+    if a.shape[0] > n:
+        out = np.concatenate([out, np.asarray(fn(a[n:], axis=0))[None]])
+    return out
+
+
+def _generator_fold(stats):
+    """The reference generator's fold, column by column, in float64."""
+    mn, mx, mean, var, count = (stats[:, c] for c in range(STAT_COLUMNS))
+    n = _reduce(count, 4, np.sum)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        m = _reduce(count * mean, 4, np.sum) / n
+        parent = np.repeat(m, 4)[: len(mean)]
+        v = _reduce(count * (var + (mean - parent) ** 2), 4, np.sum) / n
+    return np.stack(
+        [_reduce(mn, 4, np.min), _reduce(mx, 4, np.max), m, v, n], axis=1
+    )
+
+
+def _gappy_series(length, seed=0):
+    rng = np.random.default_rng(seed)
+    raw = (5000.0 + 8.0 * rng.standard_normal(length)).astype(np.float32)
+    raw[5] = np.nan
+    raw[20:24] = np.nan
+    raw[40] = np.inf
+    raw[41] = -np.inf
+    raw[100:260] = np.nan
+    return raw
+
+
+def test_fold_stat_block_matches_the_generator_fold():
+    stats = fold_raw_block(_gappy_series(4133))
+    out = fold_stat_block(stats)
+    want = _generator_fold(stats)
+    assert np.array_equal(np.isnan(out), np.isnan(want))
+    assert np.allclose(out, want, rtol=1e-12, atol=0.0, equal_nan=True)
+
+
+def test_fold_stat_block_composes_to_the_direct_definition_over_levels():
+    raw = _gappy_series(4133)
+    stats = fold_raw_block(raw)
+    for level in range(2, 7):
+        stats = fold_stat_block(stats)
+        want = _direct(raw, 4**level)
+        assert stats.shape == want.shape
+        assert np.array_equal(np.isnan(stats), np.isnan(want))
+        assert np.array_equal(
+            stats[:, [MIN_COL, MAX_COL]], want[:, :2], equal_nan=True
+        )
+        assert np.array_equal(stats[:, COUNT_COL], want[:, COUNT_COL])
+        assert np.allclose(
+            stats[:, [MEAN_COL, VAR_COL]],
+            want[:, [MEAN_COL, VAR_COL]],
+            rtol=1e-9,
+            atol=0.0,
+            equal_nan=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("m", "expected_rows"),
+    [(0, 0), (1, 1), (2, 1), (3, 1), (4, 1), (5, 2), (17, 5)],
+)
+def test_fold_stat_block_shape(m, expected_rows):
+    out = fold_stat_block(fold_raw_block(np.arange(4 * m, dtype=np.float32)))
+    assert out.shape == (expected_rows, STAT_COLUMNS)
+    assert out.dtype == np.float64
+
+
+def test_fold_stat_block_weights_a_partial_child_by_its_count():
+    raw = np.array([0.0] * 12 + [8.0], dtype=np.float32)
+    children = fold_raw_block(raw)
+    assert children[:, MEAN_COL].mean() == 2.0
+    out = fold_stat_block(children)
+    want = _direct(raw, 16)
+    assert out.shape == (1, STAT_COLUMNS)
+    assert np.allclose(out, want, rtol=1e-12, atol=0.0)
+    assert out[0, MEAN_COL] == 8.0 / 13.0
+
+
+def test_fold_stat_block_one_nan_child_makes_the_parent_nan():
+    raw = np.array([1, 2, np.nan, 4] + list(range(12)), dtype=np.float32)
+    out = fold_stat_block(fold_raw_block(raw))
+    assert np.isnan(out[0, [MIN_COL, MAX_COL, MEAN_COL, VAR_COL]]).all()
+    assert out[0, COUNT_COL] == 15.0
+
+
+def test_fold_stat_block_all_nan_children_give_count_zero_without_warning():
+    raw = np.full(16, np.nan, dtype=np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = fold_stat_block(fold_raw_block(raw))
+    assert np.isnan(out[0, :COUNT_COL]).all()
+    assert out[0, COUNT_COL] == 0.0
+
+
+def test_fold_stat_block_raises_no_warning_on_finite_input():
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        fold_stat_block(fold_raw_block(np.arange(64, dtype=np.float32)))
+
+
+def test_fold_stat_block_tail_of_one_child_is_that_child():
+    raw = np.arange(20, dtype=np.float32)
+    children = fold_raw_block(raw)
+    out = fold_stat_block(children)
+    assert out.shape == (2, STAT_COLUMNS)
+    assert np.array_equal(out[1], children[4])
+
+
+@pytest.mark.parametrize("shape", [(8,), (8, 2), (2, 4, 5)])
+def test_fold_stat_block_rejects_a_non_stat_block(shape):
+    with pytest.raises(ValueError, match="stat block"):
+        fold_stat_block(np.zeros(shape, dtype=np.float64))
 
 
 def test_fold_pair_block_matches_reshape_reduce():
