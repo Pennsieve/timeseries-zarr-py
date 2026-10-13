@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 from timeseries_zarr.attrs import channel_group_attrs
-from timeseries_zarr.planning import level0_period_us
+from timeseries_zarr.planning import sample_period_us
 from timeseries_zarr.types import ChunkShard, WriteOpts
 from timeseries_zarr.write_unit import (
     write_events_array,
@@ -227,7 +227,7 @@ def test_write_unit_channel_writes_waveforms_with_period(tmp_path, unit_source):
     )
     wf = open_group(tmp_path / "bundle")["0"]["waveforms"]
     assert np.array_equal(wf[:], waveforms)
-    assert dict(wf.attrs) == {"tsz": {"period_us": level0_period_us(32000.0)}}
+    assert dict(wf.attrs) == {"tsz": {"period_us": sample_period_us(32000.0)}}
 
 
 def test_write_unit_channel_returns_none(tmp_path, unit_source):

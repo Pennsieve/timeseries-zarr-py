@@ -12,7 +12,7 @@ import numpy.typing as npt
 
 from timeseries_zarr.attrs import channel_group_attrs, waveform_array_attrs
 from timeseries_zarr.constants import FLOAT32_BYTES, INT64_BYTES, UINT8_BYTES
-from timeseries_zarr.planning import level0_period_us
+from timeseries_zarr.planning import sample_period_us
 from timeseries_zarr.protocols import UnitChannelSource
 from timeseries_zarr.sizing import chunk_and_shard
 from timeseries_zarr.types import ChunkShard, WriteOpts
@@ -206,7 +206,7 @@ def write_unit_channel(
     write_waveforms_array(
         group,
         source,
-        level0_period_us(source.rate_hz()),
+        sample_period_us(source.rate_hz()),
         _sizing((n, source.points_per_event()), FLOAT32_BYTES),
         opts.zstd_level,
     )
