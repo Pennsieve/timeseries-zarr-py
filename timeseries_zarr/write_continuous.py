@@ -6,7 +6,7 @@ and writes nothing.
 """
 
 from collections.abc import Iterable
-from typing import cast
+from typing import Final, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -18,7 +18,7 @@ from timeseries_zarr.constants import (
     FLOAT32_BYTES,
 )
 from timeseries_zarr.fold import fold_block
-from timeseries_zarr.planning import plan_levels, sample_period_us
+from timeseries_zarr.planning import plan_levels, raw_shape, sample_period_us
 from timeseries_zarr.protocols import ContinuousChannelSource
 from timeseries_zarr.sizing import chunk_and_shard
 from timeseries_zarr.streaming import (
@@ -55,6 +55,41 @@ def _write_blocks(
     for block in blocks:
         write_region(array, start, block)
         start += block.shape[0]
+
+
+RAW_KEY: Final = "raw"
+"""Key of the full-resolution sample array within a channel group."""
+
+
+def write_raw(
+    group: ZarrGroup,
+    source: ContinuousChannelSource,
+    sizing: ChunkShard,
+    zstd_level: int,
+) -> ZarrArray:
+    """Create the raw array under group and stream the source's samples into it.
+
+    A rank-1 float32 array named "raw" of shape (num_samples,), with the
+    dimension name "time" and no attributes: the sample period is the
+    channel's rate_hz, which the channel group carries. The samples are stored
+    as the source gives them, so a non-finite sample stays a gap and a DC
+    offset stays in. They are read in shard-sized blocks, so every write covers
+    a whole shard. An empty source creates a zero-length array and writes
+    nothing.
+    """
+    array = create_array(
+        group,
+        RAW_KEY,
+        raw_shape(source.num_samples()),
+        np.float32,
+        sizing.chunk_shape,
+        sizing.shard_shape,
+        {},
+        zstd_level,
+        dimension_names=("time",),
+    )
+    _write_blocks(array, iter_raw_blocks(source, sizing.shard_shape[0]))
+    return array
 
 
 def write_level0(
