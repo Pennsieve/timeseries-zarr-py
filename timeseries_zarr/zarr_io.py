@@ -17,13 +17,21 @@ type ZarrGroup = Group
 type ZarrArray = Array[Any]
 
 
-def open_group(path: Path) -> Group:
+def open_group(path: Path, attrs: dict[str, object] | None = None) -> Group:
     """Create or open the Zarr v3 group rooted at a local filesystem path.
 
     Creates the directory and group metadata when path is empty or absent, and
-    opens the existing group in place otherwise.
+    opens the existing group in place otherwise. attrs becomes the group's
+    attributes verbatim when the group is created and is ignored when the
+    group already exists, so reopening a bundle never rewrites its root
+    attributes.
     """
-    return zarr.open_group(store=LocalStore(path), mode="a", zarr_format=3)
+    return zarr.open_group(
+        store=LocalStore(path),
+        mode="a",
+        zarr_format=3,
+        attributes=cast("dict[str, JSON] | None", attrs),
+    )
 
 
 def create_group_with_attrs(
