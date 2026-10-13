@@ -6,6 +6,8 @@ import pytest
 from timeseries_zarr.bundle import (
     assign_indices,
     atomic_publish,
+    channel_keys,
+    max_key,
     origin_us,
     write_all_channels,
     write_bundle,
@@ -222,3 +224,61 @@ def test_origin_us_may_be_negative_for_a_start_before_the_epoch(
 ):
     sources = [continuous_source(np.zeros(4, np.float32), start_us=-5)]
     assert origin_us(sources) == -5
+
+
+def test_channel_keys_maps_every_id_to_its_index(
+    continuous_source, event_source, unit_source
+):
+    indexed = assign_indices(
+        [
+            continuous_source(np.zeros(4, np.float32), id="LA1"),
+            continuous_source(np.zeros(4, np.float32), id="LA2"),
+        ],
+        [unit_source([1], id="units")],
+    )
+    indexed.append((3, event_source([1], id="marks")))
+    assert channel_keys(indexed) == {"LA1": 0, "LA2": 1, "units": 2, "marks": 3}
+
+
+def test_channel_keys_of_no_channels_is_empty():
+    assert channel_keys([]) == {}
+
+
+def test_channel_keys_rejects_two_channels_with_one_id(continuous_source):
+    indexed = assign_indices(
+        [
+            continuous_source(np.zeros(4, np.float32), id="same"),
+            continuous_source(np.zeros(4, np.float32), id="other"),
+            continuous_source(np.zeros(4, np.float32), id="same"),
+        ],
+        [],
+    )
+    with pytest.raises(
+        ValueError, match="channels 0 and 2 share the id 'same'"
+    ):
+        channel_keys(indexed)
+
+
+def test_channel_keys_rejects_a_continuous_and_an_event_channel_sharing_an_id(
+    continuous_source, event_source
+):
+    indexed = [
+        (0, continuous_source(np.zeros(4, np.float32), id="x")),
+        (1, event_source([1], id="x")),
+    ]
+    with pytest.raises(ValueError, match="share the id 'x'"):
+        channel_keys(indexed)
+
+
+def test_max_key_is_the_largest_index(continuous_source):
+    sources = [continuous_source(np.zeros(4, np.float32)) for _ in range(5)]
+    assert max_key(assign_indices(sources, [])) == 4
+
+
+def test_max_key_does_not_assume_contiguous_keys(continuous_source):
+    src = continuous_source(np.zeros(4, np.float32))
+    assert max_key([(2, src), (9, src), (5, src)]) == 9
+
+
+def test_max_key_of_no_channels_is_zero():
+    assert max_key([]) == 0
