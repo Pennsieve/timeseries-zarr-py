@@ -1,7 +1,12 @@
 import numpy as np
 import pytest
 
-from timeseries_zarr.columns import text_rows, text_width
+from timeseries_zarr.columns import (
+    channels_rows,
+    channels_width,
+    text_rows,
+    text_width,
+)
 
 
 def _reference_rows(strings, width):
@@ -118,3 +123,111 @@ def test_text_rows_rejects_a_negative_width():
 def test_text_rows_rejects_a_string_that_cannot_be_encoded():
     with pytest.raises(ValueError):
         text_rows(["\ud800"], 8)
+
+
+def _reference_channels(key_sets, max_key):
+    """The reference generator's bitmask encoder."""
+    out = np.zeros((len(key_sets), (max_key + 1 + 7) // 8), np.uint8)
+    for i, keys in enumerate(key_sets):
+        for k in keys:
+            out[i, k // 8] |= 1 << (k % 8)
+    return out
+
+
+@pytest.mark.parametrize(
+    ("max_key", "expected"),
+    [(0, 1), (1, 1), (7, 1), (8, 2), (15, 2), (16, 3), (255, 32), (256, 33)],
+)
+def test_channels_width_is_one_bit_per_key_rounded_up_to_bytes(
+    max_key, expected
+):
+    assert channels_width(max_key) == expected
+
+
+def test_channels_width_rejects_a_negative_max_key():
+    with pytest.raises(ValueError, match="max_key"):
+        channels_width(-1)
+
+
+def test_channels_rows_equals_the_reference_encoder():
+    key_sets = [(0,), (), (1, 3), (0, 5, 9, 17), (4,), tuple(range(18))]
+    assert np.array_equal(
+        channels_rows(key_sets, 17), _reference_channels(key_sets, 17)
+    )
+
+
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [
+        ([0], [1, 0]),
+        ([7], [128, 0]),
+        ([8], [0, 1]),
+        ([0, 1, 9], [3, 2]),
+        ([15], [0, 128]),
+        ([], [0, 0]),
+    ],
+)
+def test_channels_rows_places_key_k_at_bit_k_mod_8_of_byte_k_div_8(
+    keys, expected
+):
+    assert channels_rows([keys], 15).tolist() == [expected]
+
+
+def test_channels_rows_unpacks_back_to_the_keys_least_significant_bit_first():
+    key_sets = [[0, 3, 12], [9], [], [1, 2]]
+    rows = channels_rows(key_sets, 12)
+    bits = np.unpackbits(rows, axis=1, bitorder="little")
+    keys = [np.flatnonzero(row).tolist() for row in bits]
+    assert keys == [[0, 3, 12], [9], [], [1, 2]]
+
+
+def test_channels_rows_empty_list_is_a_row_of_zeros_meaning_the_whole_recording():
+    rows = channels_rows([[], [2], []], 7)
+    assert rows.tolist() == [[0], [4], [0]]
+
+
+def test_channels_rows_repeated_and_unordered_keys_set_each_bit_once():
+    assert channels_rows([[5, 1, 5, 1, 1]], 7).tolist() == [[34]]
+
+
+def test_channels_rows_accepts_the_largest_key():
+    rows = channels_rows([[16]], 16)
+    assert rows.shape == (1, 3)
+    assert rows.tolist() == [[0, 0, 1]]
+
+
+def test_channels_rows_shape_and_dtype():
+    rows = channels_rows([[0], [1], []], 20)
+    assert rows.shape == (3, 3)
+    assert rows.dtype == np.uint8
+
+
+def test_channels_rows_empty_sequence_yields_zero_rows():
+    assert channels_rows([], 9).shape == (0, 2)
+
+
+def test_channels_rows_accepts_numpy_integer_keys_and_generators():
+    rows = channels_rows([np.array([0, 9]), (k for k in (1, 2))], 9)
+    assert rows.tolist() == [[1, 2], [6, 0]]
+
+
+def test_channels_rows_equals_the_reference_on_many_random_key_sets():
+    rng = np.random.default_rng(1)
+    key_sets = [
+        tuple(rng.integers(0, 40, int(rng.integers(0, 6))).tolist())
+        for _ in range(3000)
+    ]
+    assert np.array_equal(
+        channels_rows(key_sets, 39), _reference_channels(key_sets, 39)
+    )
+
+
+@pytest.mark.parametrize("keys", [[-1], [0, 8], [5, 100]])
+def test_channels_rows_rejects_a_key_outside_zero_to_max_key(keys):
+    with pytest.raises(ValueError, match="between 0 and 7"):
+        channels_rows([keys], 7)
+
+
+def test_channels_rows_rejects_a_negative_max_key():
+    with pytest.raises(ValueError, match="max_key"):
+        channels_rows([[0]], -1)
