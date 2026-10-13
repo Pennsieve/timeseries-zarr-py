@@ -4,15 +4,19 @@ import numpy as np
 import pytest
 
 from timeseries_zarr.columns import channels_rows
-from timeseries_zarr.types import ChunkShard
+from timeseries_zarr.counts import plan_count_levels
+from timeseries_zarr.types import ChunkShard, WriteOpts
 from timeseries_zarr.write_event import (
     CHANNELS_KEY,
+    COUNT_KEY,
     DURATIONS_KEY,
     EVENTS_KEY,
     LABELS_KEY,
     TEXT_KEY,
     WAVEFORM_MEAN_KEY,
+    _count_sizing,
     write_channels_array,
+    write_count_levels,
     write_durations_array,
     write_events_array,
     write_labels_array,
@@ -688,3 +692,194 @@ def test_write_waveform_mean_array_rejects_a_non_positive_period(
     with pytest.raises(ValueError, match="period_us"):
         _write_means(tmp_path, source)
     assert list(open_group(tmp_path / "bundle").array_keys()) == []
+
+
+_COUNT_OPTS = WriteOpts(
+    min_bins=256, max_levels=8, inner_len=256, target_shard_bytes=4096
+)
+_SPAN_US = 700_000_000
+
+
+def _dense(event_source, n=70_000, labelled=True, start_us=0, seed=0):
+    """Return times, labels, and a source with n events over 700 seconds."""
+    rng = np.random.default_rng(seed)
+    times = np.sort(rng.integers(0, _SPAN_US, n)).astype(np.int64)
+    times[-1] = _SPAN_US
+    labels = rng.integers(0, 3, n)
+    extra = {"labels": labels, "label_names": ["u0", "u1", "u2"]}
+    source = event_source(times + start_us, **(extra if labelled else {}))
+    return times, (labels if labelled else None), source
+
+
+def _direct_counts(times, labels, columns, period_us, bins):
+    counts = np.zeros((bins, columns), dtype=np.uint32)
+    column = np.zeros(len(times), dtype=np.int64) if labels is None else labels
+    np.add.at(counts, (times // period_us, column), 1)
+    return counts
+
+
+def _write_counts(tmp_path, source, origin_us=0, opts=_COUNT_OPTS):
+    group = open_group(tmp_path / "bundle")
+    write_count_levels(group, source, origin_us, opts)
+    return open_group(tmp_path / "bundle")
+
+
+def test_write_count_levels_equal_the_direct_count_at_every_level(
+    tmp_path, event_source
+):
+    times, labels, source = _dense(event_source)
+    group = _write_counts(tmp_path, source)
+    plans = plan_count_levels(len(times), _SPAN_US, 8, 256)
+    assert len(plans) == 4
+    for plan in plans:
+        want = _direct_counts(times, labels, 3, int(plan.period_us), plan.bins)
+        assert np.array_equal(group[str(plan.level)][COUNT_KEY][:], want)
+
+
+def test_write_count_levels_groups_carry_the_period_and_one_count_array(
+    tmp_path, event_source
+):
+    times, _, source = _dense(event_source)
+    group = _write_counts(tmp_path, source)
+    plans = plan_count_levels(len(times), _SPAN_US, 8, 256)
+    assert sorted(group.group_keys()) == [str(p.level) for p in plans]
+    for plan in plans:
+        level = group[str(plan.level)]
+        assert dict(level.attrs) == {"tsz": {"period_us": plan.period_us}}
+        assert list(level.array_keys()) == [COUNT_KEY]
+
+
+def test_write_count_levels_array_shape_dtype_dimensions_and_fill(
+    tmp_path, event_source
+):
+    times, _, source = _dense(event_source)
+    group = _write_counts(tmp_path, source)
+    first = plan_count_levels(len(times), _SPAN_US, 8, 256)[0]
+    arr = group["1"][COUNT_KEY]
+    assert arr.shape == (first.bins, 3)
+    assert arr.dtype == np.uint32
+    assert arr.metadata.dimension_names == ("time", None)
+    assert arr.fill_value == 0
+    assert dict(arr.attrs) == {}
+
+
+def test_write_count_levels_without_labels_has_a_single_column(
+    tmp_path, event_source
+):
+    times, _, source = _dense(event_source, labelled=False)
+    group = _write_counts(tmp_path, source)
+    for plan in plan_count_levels(len(times), _SPAN_US, 8, 256):
+        want = _direct_counts(times, None, 1, int(plan.period_us), plan.bins)
+        assert np.array_equal(group[str(plan.level)][COUNT_KEY][:], want)
+
+
+def test_write_count_levels_every_level_keeps_the_event_totals(
+    tmp_path, event_source
+):
+    times, labels, source = _dense(event_source)
+    group = _write_counts(tmp_path, source)
+    totals = np.bincount(labels, minlength=3)
+    for level in group.group_keys():
+        assert (
+            group[level][COUNT_KEY][:].sum(axis=0).tolist() == totals.tolist()
+        )
+
+
+def test_write_count_levels_counts_from_the_origin(tmp_path, event_source):
+    times, labels, source = _dense(event_source, start_us=5_000_000)
+    group = _write_counts(tmp_path, source, origin_us=5_000_000)
+    plan = plan_count_levels(len(times), _SPAN_US, 8, 256)[0]
+    want = _direct_counts(times, labels, 3, int(plan.period_us), plan.bins)
+    assert np.array_equal(group["1"][COUNT_KEY][:], want)
+
+
+@pytest.mark.parametrize("n", [0, 1, 1000, 64_000])
+def test_write_count_levels_few_events_create_no_levels(
+    tmp_path, event_source, n
+):
+    times = np.arange(n, dtype=np.int64)
+    group = _write_counts(tmp_path, event_source(times))
+    assert list(group.group_keys()) == []
+
+
+def test_write_count_levels_level_one_under_min_bins_creates_none(
+    tmp_path, event_source
+):
+    times = np.arange(70_000, dtype=np.int64) * 3
+    assert plan_count_levels(70_000, int(times[-1]), 8, 256) == []
+    group = _write_counts(tmp_path, event_source(times))
+    assert list(group.group_keys()) == []
+
+
+def test_write_count_levels_every_write_covers_a_whole_shard(
+    tmp_path, event_source, monkeypatch
+):
+    writes = []
+
+    def spy(array, start, block):
+        writes.append(
+            (array.name, start, block.shape[0], array.shape[0], array.shards[0])
+        )
+        write_region(array, start, block)
+
+    monkeypatch.setattr("timeseries_zarr.write_event.write_region", spy)
+    _, _, source = _dense(event_source)
+    _write_counts(tmp_path, source)
+    assert len(writes) > 20
+    for name, start, rows, length, shard_rows in writes:
+        assert start % shard_rows == 0, name
+        assert rows == min(shard_rows, length - start), name
+
+
+def test_write_count_levels_writes_every_shard_even_where_no_event_falls(
+    tmp_path, event_source
+):
+    times = np.concatenate(
+        [np.zeros(64_000, dtype=np.int64), np.full(2_000, _SPAN_US)]
+    )
+    group = _write_counts(tmp_path, event_source(times))
+    arr = group["1"][COUNT_KEY]
+    shards = [
+        f
+        for f in (tmp_path / "bundle" / "1" / COUNT_KEY).rglob("*")
+        if f.is_file() and f.name != "zarr.json"
+    ]
+    assert len(shards) == -(-arr.shape[0] // arr.shards[0])
+    assert int(arr[:].sum()) == 66_000
+
+
+def test_write_count_levels_rejects_times_that_decrease(tmp_path, event_source):
+    times, labels, _ = _dense(event_source)
+    times[30_000], times[30_001] = times[30_001] + 10_000_000, times[30_000]
+    source = event_source(times, labels=labels, label_names=["u0", "u1", "u2"])
+    with pytest.raises(ValueError, match="non-decreasing"):
+        _write_counts(tmp_path, source)
+
+
+def test_write_count_levels_rejects_an_event_before_the_origin(
+    tmp_path, event_source
+):
+    times, _, source = _dense(event_source)
+    with pytest.raises(ValueError, match="at least 0"):
+        _write_counts(tmp_path, source, origin_us=int(times[0]) + 1)
+
+
+def test_write_count_levels_rejects_a_label_outside_the_categories(
+    tmp_path, event_source
+):
+    times, labels, _ = _dense(event_source)
+    source = event_source(times, labels=labels, label_names=["u0", "u1"])
+    with pytest.raises(ValueError, match="outside"):
+        _write_counts(tmp_path, source)
+
+
+def test_count_sizing_keeps_the_label_axis_whole_and_the_chunk_within_a_shard():
+    narrow = _count_sizing(1000, 1, _COUNT_OPTS)
+    assert narrow == ChunkShard(chunk_shape=(256, 1), shard_shape=(1024, 1))
+    wide = _count_sizing(1000, 300, _COUNT_OPTS)
+    assert wide == ChunkShard(chunk_shape=(3, 300), shard_shape=(3, 300))
+
+
+def test_count_sizing_takes_one_row_chunks_when_a_row_exceeds_the_shard_target():
+    sizing = _count_sizing(1000, 2000, _COUNT_OPTS)
+    assert sizing == ChunkShard(chunk_shape=(1, 2000), shard_shape=(1, 2000))
