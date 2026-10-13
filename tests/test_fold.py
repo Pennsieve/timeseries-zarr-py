@@ -4,12 +4,12 @@ import numpy as np
 import pytest
 
 from timeseries_zarr.constants import (
-    COUNT_COL,
-    MAX_COL,
-    MEAN_COL,
-    MIN_COL,
-    STAT_COLUMNS,
-    VAR_COL,
+    COUNT_COLUMN,
+    MAX_COLUMN,
+    MEAN_COLUMN,
+    MIN_COLUMN,
+    STATISTIC_COLUMNS,
+    VAR_COLUMN,
 )
 from timeseries_zarr.fold import (
     _block_split,
@@ -66,7 +66,7 @@ def _direct(raw, width=4):
                 bin_finite.sum(),
             ]
         )
-    return np.array(rows, dtype=np.float64).reshape(-1, STAT_COLUMNS)
+    return np.array(rows, dtype=np.float64).reshape(-1, STATISTIC_COLUMNS)
 
 
 def test_fold_raw_block_matches_the_direct_definition():
@@ -78,7 +78,7 @@ def test_fold_raw_block_matches_the_direct_definition():
     raw[41] = -np.inf
     out = fold_raw_block(raw)
     want = _direct(raw)
-    assert out.shape == (17, STAT_COLUMNS)
+    assert out.shape == (17, STATISTIC_COLUMNS)
     assert np.array_equal(np.isnan(out), np.isnan(want))
     assert np.allclose(out, want, rtol=1e-12, equal_nan=True)
 
@@ -89,19 +89,19 @@ def test_fold_raw_block_matches_the_direct_definition():
 )
 def test_fold_raw_block_shape(m, expected_rows):
     out = fold_raw_block(np.arange(m, dtype=np.float32))
-    assert out.shape == (expected_rows, STAT_COLUMNS)
+    assert out.shape == (expected_rows, STATISTIC_COLUMNS)
 
 
 def test_fold_raw_block_tail_folds_partial_block():
     out = fold_raw_block(np.array([0, 1, 2, 3, 4], dtype=np.float32))
-    assert out.shape == (2, STAT_COLUMNS)
+    assert out.shape == (2, STATISTIC_COLUMNS)
     assert tuple(out[0]) == (0.0, 3.0, 1.5, 1.25, 4.0)
     assert tuple(out[1]) == (4.0, 4.0, 4.0, 0.0, 1.0)
 
 
 def test_fold_raw_block_empty():
     out = fold_raw_block(np.array([], dtype=np.float32))
-    assert out.shape == (0, STAT_COLUMNS)
+    assert out.shape == (0, STATISTIC_COLUMNS)
     assert out.dtype == np.float64
 
 
@@ -119,16 +119,18 @@ def test_fold_raw_block_dtype_is_float64():
 def test_fold_raw_block_one_non_finite_sample_makes_stats_nan(bad):
     raw = np.array([1, 2, bad, 4, 5, 6, 7, 8], dtype=np.float32)
     out = fold_raw_block(raw)
-    assert np.isnan(out[0, [MIN_COL, MAX_COL, MEAN_COL, VAR_COL]]).all()
-    assert out[0, COUNT_COL] == 3.0
+    assert np.isnan(
+        out[0, [MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN]]
+    ).all()
+    assert out[0, COUNT_COLUMN] == 3.0
     assert tuple(out[1]) == (5.0, 8.0, 6.5, 1.25, 4.0)
 
 
 def test_fold_raw_block_all_non_finite_bin_has_count_zero():
     raw = np.array([np.nan, np.inf, np.nan, -np.inf], dtype=np.float32)
     out = fold_raw_block(raw)
-    assert np.isnan(out[0, :COUNT_COL]).all()
-    assert out[0, COUNT_COL] == 0.0
+    assert np.isnan(out[0, :COUNT_COLUMN]).all()
+    assert out[0, COUNT_COLUMN] == 0.0
 
 
 def test_fold_raw_block_raises_no_warning_on_non_finite_input():
@@ -156,7 +158,7 @@ def _reduce(a, width, fn):
 
 def _generator_fold(stats):
     """The reference generator's fold, column by column, in float64."""
-    mn, mx, mean, var, count = (stats[:, c] for c in range(STAT_COLUMNS))
+    mn, mx, mean, var, count = (stats[:, c] for c in range(STATISTIC_COLUMNS))
     n = _reduce(count, 4, np.sum)
     with np.errstate(invalid="ignore", divide="ignore"):
         m = _reduce(count * mean, 4, np.sum) / n
@@ -195,12 +197,12 @@ def test_fold_stat_block_composes_to_the_direct_definition_over_levels():
         assert stats.shape == want.shape
         assert np.array_equal(np.isnan(stats), np.isnan(want))
         assert np.array_equal(
-            stats[:, [MIN_COL, MAX_COL]], want[:, :2], equal_nan=True
+            stats[:, [MIN_COLUMN, MAX_COLUMN]], want[:, :2], equal_nan=True
         )
-        assert np.array_equal(stats[:, COUNT_COL], want[:, COUNT_COL])
+        assert np.array_equal(stats[:, COUNT_COLUMN], want[:, COUNT_COLUMN])
         assert np.allclose(
-            stats[:, [MEAN_COL, VAR_COL]],
-            want[:, [MEAN_COL, VAR_COL]],
+            stats[:, [MEAN_COLUMN, VAR_COLUMN]],
+            want[:, [MEAN_COLUMN, VAR_COLUMN]],
             rtol=1e-9,
             atol=0.0,
             equal_nan=True,
@@ -213,26 +215,28 @@ def test_fold_stat_block_composes_to_the_direct_definition_over_levels():
 )
 def test_fold_stat_block_shape(m, expected_rows):
     out = fold_stat_block(fold_raw_block(np.arange(4 * m, dtype=np.float32)))
-    assert out.shape == (expected_rows, STAT_COLUMNS)
+    assert out.shape == (expected_rows, STATISTIC_COLUMNS)
     assert out.dtype == np.float64
 
 
 def test_fold_stat_block_weights_a_partial_child_by_its_count():
     raw = np.array([0.0] * 12 + [8.0], dtype=np.float32)
     children = fold_raw_block(raw)
-    assert children[:, MEAN_COL].mean() == 2.0
+    assert children[:, MEAN_COLUMN].mean() == 2.0
     out = fold_stat_block(children)
     want = _direct(raw, 16)
-    assert out.shape == (1, STAT_COLUMNS)
+    assert out.shape == (1, STATISTIC_COLUMNS)
     assert np.allclose(out, want, rtol=1e-12, atol=0.0)
-    assert out[0, MEAN_COL] == 8.0 / 13.0
+    assert out[0, MEAN_COLUMN] == 8.0 / 13.0
 
 
 def test_fold_stat_block_one_nan_child_makes_the_parent_nan():
     raw = np.array([1, 2, np.nan, 4] + list(range(12)), dtype=np.float32)
     out = fold_stat_block(fold_raw_block(raw))
-    assert np.isnan(out[0, [MIN_COL, MAX_COL, MEAN_COL, VAR_COL]]).all()
-    assert out[0, COUNT_COL] == 15.0
+    assert np.isnan(
+        out[0, [MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN]]
+    ).all()
+    assert out[0, COUNT_COLUMN] == 15.0
 
 
 def test_fold_stat_block_all_nan_children_give_count_zero_without_warning():
@@ -240,8 +244,8 @@ def test_fold_stat_block_all_nan_children_give_count_zero_without_warning():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         out = fold_stat_block(fold_raw_block(raw))
-    assert np.isnan(out[0, :COUNT_COL]).all()
-    assert out[0, COUNT_COL] == 0.0
+    assert np.isnan(out[0, :COUNT_COLUMN]).all()
+    assert out[0, COUNT_COLUMN] == 0.0
 
 
 def test_fold_stat_block_raises_no_warning_on_finite_input():
@@ -254,7 +258,7 @@ def test_fold_stat_block_tail_of_one_child_is_that_child():
     raw = np.arange(20, dtype=np.float32)
     children = fold_raw_block(raw)
     out = fold_stat_block(children)
-    assert out.shape == (2, STAT_COLUMNS)
+    assert out.shape == (2, STATISTIC_COLUMNS)
     assert np.array_equal(out[1], children[4])
 
 
@@ -353,7 +357,7 @@ def test_fold_block_rank1_reduces_raw_to_float32_pairs():
     out = fold_block(raw)
     assert out.dtype == np.float32
     assert np.array_equal(
-        out, fold_raw_block(raw)[:, [MIN_COL, MAX_COL]].astype(np.float32)
+        out, fold_raw_block(raw)[:, [MIN_COLUMN, MAX_COLUMN]].astype(np.float32)
     )
 
 

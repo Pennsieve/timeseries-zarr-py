@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from timeseries_zarr.constants import STAT_COLUMNS
+from timeseries_zarr.constants import STATISTIC_COLUMNS
 from timeseries_zarr.fold import fold_pair_block, fold_raw_block
 from timeseries_zarr.streaming import (
     _rebuffer_and_fold,
@@ -113,7 +113,7 @@ def test_rebuffer_and_fold_empty_stream_yields_nothing():
 def test_rebuffer_and_fold_single_short_block():
     arr = np.array([3, 1], dtype=np.float32)
     out = _folded([arr], fold_raw_block)
-    assert out.shape == (1, STAT_COLUMNS)
+    assert out.shape == (1, STATISTIC_COLUMNS)
     assert np.array_equal(out, fold_raw_block(arr))
 
 
