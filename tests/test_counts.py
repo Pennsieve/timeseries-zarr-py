@@ -1,7 +1,15 @@
 import pytest
 
-from timeseries_zarr.constants import COUNT_LADDER_BASE_US
-from timeseries_zarr.counts import count_bins, level1_period_us
+from timeseries_zarr.constants import (
+    COUNT_LADDER_BASE_US,
+    EVENT_LEVEL_THRESHOLD,
+    MAX_LEVELS,
+)
+from timeseries_zarr.counts import (
+    count_bins,
+    level1_period_us,
+    plan_count_levels,
+)
 
 _SPAN_PER_WIDTH = 200
 """Microseconds of span per microsecond of width when n_events is 1000.
@@ -135,3 +143,95 @@ def test_count_bins_rejects_a_period_below_one(period_us):
 def test_count_bins_rejects_a_negative_last_event_time():
     with pytest.raises(ValueError, match="last_event_us"):
         count_bins(-1, 1000)
+
+
+_DAY_US = 86_400 * 1_000_000
+
+
+def _summary(plans):
+    return [(plan.level, plan.bins, plan.period_us) for plan in plans]
+
+
+def test_plan_count_levels_million_spikes_over_a_day_has_five_levels():
+    plans = plan_count_levels(10**6, _DAY_US)
+    assert _summary(plans) == [
+        (1, 337_501, 256_000.0),
+        (2, 84_376, 1_024_000.0),
+        (3, 21_094, 4_096_000.0),
+        (4, 5_274, 16_384_000.0),
+        (5, 1_319, 65_536_000.0),
+    ]
+
+
+def test_plan_count_levels_threshold_channel_gets_none_and_one_more_gets_three():
+    assert plan_count_levels(EVENT_LEVEL_THRESHOLD, 600 * 10**6) == []
+    plans = plan_count_levels(EVENT_LEVEL_THRESHOLD + 1, 600 * 10**6)
+    assert _summary(plans) == [
+        (1, 37_501, 16_000.0),
+        (2, 9_376, 64_000.0),
+        (3, 2_344, 256_000.0),
+    ]
+
+
+@pytest.mark.parametrize("n_events", [0, 1, 1000, EVENT_LEVEL_THRESHOLD])
+def test_plan_count_levels_small_channel_gets_no_levels(n_events):
+    assert plan_count_levels(n_events, _DAY_US) == []
+
+
+def test_plan_count_levels_level_one_under_min_bins_gets_none():
+    assert plan_count_levels(100_000, 500_000) == []
+
+
+def test_plan_count_levels_honors_min_bins():
+    plans = plan_count_levels(100_000, 500_000, min_bins=256)
+    assert _summary(plans) == [(1, 501, 1000.0)]
+
+
+@pytest.mark.parametrize(
+    ("max_levels", "expected"), [(0, 0), (1, 1), (2, 2), (MAX_LEVELS, 5)]
+)
+def test_plan_count_levels_honors_max_levels(max_levels, expected):
+    plans = plan_count_levels(10**6, _DAY_US, max_levels=max_levels)
+    assert len(plans) == expected
+
+
+@pytest.mark.parametrize("n_events", [64_001, 10**6, 10**8])
+@pytest.mark.parametrize("last_us", [10**9, 600 * 10**6, _DAY_US, 7 * _DAY_US])
+@pytest.mark.parametrize("min_bins", [256, 1024])
+def test_plan_count_levels_follows_the_ladder_rules(
+    n_events, last_us, min_bins
+):
+    plans = plan_count_levels(n_events, last_us, min_bins=min_bins)
+    for plan in plans:
+        assert plan.bins >= min_bins
+    for below, above in zip(plans, plans[1:], strict=False):
+        assert above.level == below.level + 1
+        assert above.period_us == 4 * below.period_us
+        assert above.bins == -(-below.bins // 4)
+    if plans:
+        assert plans[0].bins == count_bins(
+            last_us, level1_period_us(n_events, last_us)
+        )
+        assert -(-plans[-1].bins // 4) < min_bins or len(plans) == MAX_LEVELS
+
+
+def test_plan_count_levels_accepts_the_largest_uint32_event_count():
+    plans = plan_count_levels(2**32 - 1, _DAY_US)
+    assert plans
+    assert plans[0].period_us == COUNT_LADDER_BASE_US
+
+
+def test_plan_count_levels_rejects_more_events_than_a_uint32_count_holds():
+    with pytest.raises(ValueError, match="uint32"):
+        plan_count_levels(2**32, _DAY_US)
+
+
+def test_plan_count_levels_rejects_a_negative_event_count():
+    with pytest.raises(ValueError, match="n_events"):
+        plan_count_levels(-1, _DAY_US)
+
+
+@pytest.mark.parametrize("n_events", [0, 10, 10**6])
+def test_plan_count_levels_rejects_a_negative_last_event_time(n_events):
+    with pytest.raises(ValueError, match="last_event_us"):
+        plan_count_levels(n_events, -1)
