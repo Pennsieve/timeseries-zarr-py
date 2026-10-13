@@ -11,6 +11,7 @@ from typing import Final
 import numpy as np
 import numpy.typing as npt
 
+from timeseries_zarr.columns import text_rows
 from timeseries_zarr.constants import MAX_LABELS
 from timeseries_zarr.protocols import EventChannelSource
 from timeseries_zarr.types import ChunkShard
@@ -29,6 +30,9 @@ DURATIONS_KEY: Final = "durations"
 
 LABELS_KEY: Final = "labels"
 """Key of the per-event label array within an event channel group."""
+
+TEXT_KEY: Final = "text"
+"""Key of the per-event text array within an event channel group."""
 
 EVENT_DIMENSION: Final = "event"
 """Dimension name of the per-event axis."""
@@ -202,5 +206,53 @@ def write_labels_array(
         sizing.shard_shape[0],
         source.read_labels,
         check,
+    )
+    return array
+
+
+def write_text_array(
+    group: ZarrGroup,
+    source: EventChannelSource,
+    sizing: ChunkShard,
+    zstd_level: int,
+) -> ZarrArray:
+    """Create the text array under group and stream the event texts into it.
+
+    A uint8 array named "text" shaped (num_events, W), with W the source's
+    text_width(), and the dimension names "event" and None. Row i holds the
+    UTF-8 bytes of event i's text followed by zero bytes. The array is stored
+    without a compression codec, so a shard object is the rows as plain text
+    followed by the shard index, which a text tool can read and redact.
+    sizing is the sizing of the (num_events, W) shape, with the width axis
+    whole. Raises ValueError if text_width() is below 1, a text is longer than
+    the width or holds a NUL character, or the source returns a different
+    number of texts than requested.
+    """
+    width = source.text_width()
+    if width < 1:
+        raise ValueError(f"text_width must be at least 1, got {width}")
+    array = create_array(
+        group,
+        TEXT_KEY,
+        (source.num_events(), width),
+        np.uint8,
+        sizing.chunk_shape,
+        sizing.shard_shape,
+        {},
+        zstd_level,
+        dimension_names=(EVENT_DIMENSION, None),
+        compress=False,
+    )
+
+    def read(start: int, stop: int) -> npt.NDArray[np.uint8]:
+        texts = source.read_text(start, stop)
+        if len(texts) != stop - start:
+            raise ValueError(
+                f"read_text returned {len(texts)} texts for {stop - start} events"
+            )
+        return text_rows(texts, width)
+
+    _write_source_blocks(
+        array, source.num_events(), sizing.shard_shape[0], read
     )
     return array
