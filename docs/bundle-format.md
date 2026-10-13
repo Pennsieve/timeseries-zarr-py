@@ -171,7 +171,7 @@ with scores, and clinical marks with durations and free text. Every column has l
 | `text` | MAY | `(n, W)` | uint8 | Free text of each event as UTF-8, zero-padded to width `W`. |
 | `channels` | MAY | `(n, M)` | uint8 | Bitmask of the channel keys each event applies to. |
 | `waveforms` | MAY | `(n, P)` | float32 | `P` samples around each event. |
-| `waveform_mean` | MAY | `(L, P)` | float32 | Mean of the `waveforms` rows whose label is `j`, for each label `j`. Requires `labels` and `waveforms`. |
+| `waveform_mean` | MAY | `(L, P)` | float32 | Mean snippet of the events whose label is `j`, for each label `j`. Equals the mean of the `waveforms` rows when `waveforms` exists. Requires `labels`. |
 | `<k>/count` | MUST per count level | `(bins, L)` | uint32 | Number of events in bin `i`, per label category. |
 
 Equal times are allowed. A reader finds a window by binary search over `events`.
@@ -471,7 +471,7 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - `events` is non-decreasing. Every per-event column has length `n`. `durations`
   values lie between 0 and `max_duration_us`. `labels` values are below `L`.
 - `waveforms` and `waveform_mean` carry `period_us`. `waveform_mean` requires
-  `labels` and `waveforms`.
+  `labels`.
 - Every row of `text` is valid UTF-8 followed by zero bytes. `M` equals
   `ceil((max_key + 1) / 8)`, and every set bit in `channels` names a channel group
   in the bundle.
