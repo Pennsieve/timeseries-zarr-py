@@ -12,6 +12,17 @@ RECORDING_FILE = "recording.json"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
+def session_start_us(meta: RecordingMeta) -> int:
+    """Return the session start in microseconds since the Unix epoch.
+
+    The arithmetic is exact in integers. Raises ValueError if meta.start has
+    no UTC offset.
+    """
+    if meta.start.utcoffset() is None:
+        raise ValueError("meta.start must carry a UTC offset")
+    return (meta.start - _EPOCH) // timedelta(microseconds=1)
+
+
 def recording_document(
     meta: RecordingMeta, origin_us: int
 ) -> dict[str, object]:
