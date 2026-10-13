@@ -9,9 +9,11 @@ from timeseries_zarr.fold import fold_block
 from timeseries_zarr.planning import plan_levels, sample_period_us
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
 from timeseries_zarr.write_continuous import (
+    RAW_KEY,
     write_continuous_channel,
     write_level0,
     write_level_from_previous,
+    write_raw,
 )
 from timeseries_zarr.zarr_io import create_array, open_group, write_region
 
@@ -351,3 +353,93 @@ def test_write_level_from_previous_writes_one_whole_shard_per_write(
     assert np.array_equal(
         open_group(tmp_path / "bundle")["1"][:], fold_block(data)
     )
+
+
+def _gappy_samples(n=26):
+    rng = np.random.default_rng(0)
+    samples = (5000.0 + 8.0 * rng.standard_normal(n)).astype(np.float32)
+    samples[3] = np.nan
+    samples[10] = np.inf
+    samples[11] = -np.inf
+    return samples
+
+
+def test_write_raw_round_trips_samples_unchanged(tmp_path, continuous_source):
+    samples = _gappy_samples()
+    group = open_group(tmp_path / "bundle")
+    write_raw(group, continuous_source(samples), _sizing(), 5)
+    stored = open_group(tmp_path / "bundle")[RAW_KEY][:]
+    assert stored.dtype == np.float32
+    assert np.array_equal(stored, samples, equal_nan=True)
+
+
+def test_write_raw_creates_one_array_named_raw_with_no_attributes(
+    tmp_path, continuous_source
+):
+    group = open_group(tmp_path / "bundle")
+    write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
+    stored = open_group(tmp_path / "bundle")
+    assert list(stored.array_keys()) == ["raw"]
+    assert dict(stored["raw"].attrs) == {}
+
+
+def test_write_raw_declares_shape_time_dimension_and_nan_fill(
+    tmp_path, continuous_source
+):
+    group = open_group(tmp_path / "bundle")
+    write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
+    arr = open_group(tmp_path / "bundle")["raw"]
+    assert arr.shape == (26,)
+    assert arr.metadata.dimension_names == ("time",)
+    assert np.isnan(arr.fill_value)
+
+
+def test_write_raw_chunk_and_shard_grid(tmp_path, continuous_source):
+    group = open_group(tmp_path / "bundle")
+    write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
+    arr = open_group(tmp_path / "bundle")["raw"]
+    assert arr.chunks == (4,)
+    assert arr.shards == (8,)
+
+
+def test_write_raw_returns_the_array(tmp_path, continuous_source):
+    group = open_group(tmp_path / "bundle")
+    result = write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
+    assert isinstance(result, Array)
+    assert result.shape == (26,)
+
+
+def test_write_raw_empty_source_creates_a_zero_length_array(
+    tmp_path, continuous_source
+):
+    group = open_group(tmp_path / "bundle")
+    write_raw(group, continuous_source(np.empty(0, np.float32)), _sizing(), 5)
+    arr = open_group(tmp_path / "bundle")["raw"]
+    assert arr.shape == (0,)
+    assert arr[:].shape == (0,)
+
+
+def test_write_raw_writes_one_whole_shard_per_write(
+    tmp_path, continuous_source, monkeypatch
+):
+    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
+    samples = _gappy_samples(26)
+    group = open_group(tmp_path / "bundle")
+    write_raw(group, continuous_source(samples), _sizing(), 5)
+    assert writes == [(0, 8), (8, 8), (16, 8), (24, 2)]
+    stored = open_group(tmp_path / "bundle")["raw"][:]
+    assert np.array_equal(stored, samples, equal_nan=True)
+
+
+def test_write_raw_writes_every_shard_of_an_all_gap_source(
+    tmp_path, continuous_source
+):
+    samples = np.full(20, np.nan, dtype=np.float32)
+    group = open_group(tmp_path / "bundle")
+    write_raw(group, continuous_source(samples), _sizing(), 5)
+    shards = [
+        f
+        for f in (tmp_path / "bundle" / "raw").rglob("*")
+        if f.is_file() and f.name != "zarr.json"
+    ]
+    assert len(shards) == 3
