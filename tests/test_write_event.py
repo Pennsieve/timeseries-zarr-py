@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 
 from timeseries_zarr.types import ChunkShard
-from timeseries_zarr.write_event import EVENTS_KEY, write_events_array
+from timeseries_zarr.write_event import (
+    DURATIONS_KEY,
+    EVENTS_KEY,
+    write_durations_array,
+    write_events_array,
+)
 from timeseries_zarr.zarr_io import open_group, write_region
 
 
@@ -119,3 +124,100 @@ def test_write_events_array_rejects_a_time_before_the_origin_in_a_later_block(
     times = [1000] * 8 + [999]
     with pytest.raises(ValueError, match="origin"):
         _write(tmp_path, event_source(times), origin_us=1000)
+
+
+def _write_durations(tmp_path, source, sizing=None):
+    group = open_group(tmp_path / "bundle")
+    write_durations_array(group, source, sizing or _sizing(), 5)
+    return open_group(tmp_path / "bundle")
+
+
+def test_write_durations_array_round_trips_microseconds(tmp_path, event_source):
+    durations = [0, 5_000_000, 12, 0, 90_000_000]
+    source = event_source([1, 2, 3, 4, 5], durations=durations)
+    stored = _write_durations(tmp_path, source)[DURATIONS_KEY][:]
+    assert stored.tolist() == durations
+    assert stored.dtype == np.int64
+
+
+def test_write_durations_array_declares_the_event_dimension_and_zero_fill(
+    tmp_path, event_source
+):
+    source = event_source([1, 2], durations=[3, 4])
+    arr = _write_durations(tmp_path, source)[DURATIONS_KEY]
+    assert arr.shape == (2,)
+    assert dict(arr.attrs) == {}
+    assert arr.metadata.dimension_names == ("event",)
+    assert arr.fill_value == 0
+
+
+def test_write_durations_array_empty_source_creates_a_zero_length_array(
+    tmp_path, event_source
+):
+    source = event_source([], durations=[], max_duration_us=0)
+    arr = _write_durations(tmp_path, source)[DURATIONS_KEY]
+    assert arr.shape == (0,)
+
+
+def test_write_durations_array_accepts_a_duration_equal_to_the_bound(
+    tmp_path, event_source
+):
+    source = event_source([1, 2], durations=[0, 9], max_duration_us=9)
+    assert _write_durations(tmp_path, source)[DURATIONS_KEY][:].tolist() == [
+        0,
+        9,
+    ]
+
+
+def test_write_durations_array_writes_one_whole_shard_per_write(
+    tmp_path, event_source, monkeypatch
+):
+    writes = []
+
+    def spy(array, start, block):
+        writes.append((start, block.shape[0]))
+        write_region(array, start, block)
+
+    monkeypatch.setattr("timeseries_zarr.write_event.write_region", spy)
+    durations = np.arange(26, dtype=np.int64)
+    source = event_source(np.arange(26), durations=durations)
+    stored = _write_durations(tmp_path, source)[DURATIONS_KEY][:]
+    assert writes == [(0, 8), (8, 8), (16, 8), (24, 2)]
+    assert np.array_equal(stored, durations)
+
+
+def test_write_durations_array_rejects_a_negative_duration(
+    tmp_path, event_source
+):
+    source = event_source([1, 2, 3], durations=[4, -1, 2], max_duration_us=10)
+    with pytest.raises(ValueError, match="negative: -1"):
+        _write_durations(tmp_path, source)
+
+
+def test_write_durations_array_rejects_a_duration_above_the_bound(
+    tmp_path, event_source
+):
+    source = event_source([1, 2, 3], durations=[4, 11, 2], max_duration_us=10)
+    with pytest.raises(ValueError, match="11 exceeds max_duration_us 10"):
+        _write_durations(tmp_path, source)
+
+
+def test_write_durations_array_rejects_a_bad_duration_in_a_later_block(
+    tmp_path, event_source
+):
+    durations = [1] * 8 + [50]
+    source = event_source(np.arange(9), durations=durations, max_duration_us=10)
+    with pytest.raises(ValueError, match="exceeds"):
+        _write_durations(tmp_path, source)
+
+
+def test_write_durations_array_rejects_a_source_without_a_duration_bound(
+    tmp_path, event_source
+):
+    class Unbounded(type(event_source([0], durations=[0]))):
+        def max_duration_us(self):
+            return None
+
+    with pytest.raises(ValueError, match="max_duration_us"):
+        _write_durations(tmp_path, Unbounded([1], durations=[0]))
+    assert list(open_group(tmp_path / "bundle").array_keys()) == []
