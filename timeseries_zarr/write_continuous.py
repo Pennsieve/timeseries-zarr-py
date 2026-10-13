@@ -11,23 +11,27 @@ from typing import Final, cast
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.attrs import channel_group_attrs, level_array_attrs
+from timeseries_zarr.attrs import (
+    channel_group_attrs,
+    level_array_attrs,
+    level_group_attrs,
+)
 from timeseries_zarr.constants import (
     DECIMATION_FACTOR,
     ENVELOPE_PAIR_SIZE,
     FLOAT32_BYTES,
 )
-from timeseries_zarr.fold import fold_block
+from timeseries_zarr.fold import fold_block, split_members
 from timeseries_zarr.planning import plan_levels, raw_shape, sample_period_us
 from timeseries_zarr.protocols import ContinuousChannelSource
-from timeseries_zarr.sizing import chunk_and_shard
+from timeseries_zarr.sizing import chunk_and_shard, member_sizing
 from timeseries_zarr.streaming import (
     BlockReadableArray,
     _rebuffer_and_fold,
     iter_array_blocks,
     iter_raw_blocks,
 )
-from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
+from timeseries_zarr.types import ChunkShard, LevelMembers, LevelPlan, WriteOpts
 from timeseries_zarr.zarr_io import (
     ZarrArray,
     ZarrGroup,
@@ -60,6 +64,21 @@ def _write_blocks(
 RAW_KEY: Final = "raw"
 """Key of the full-resolution sample array within a channel group."""
 
+MINMAX_KEY: Final = "minmax"
+"""Key of the (bins, 2) minimum and maximum member of a level group."""
+
+MEAN_KEY: Final = "mean"
+"""Key of the per-bin mean member of a level group."""
+
+VAR_KEY: Final = "var"
+"""Key of the optional per-bin variance member of a level group."""
+
+COUNT_KEY: Final = "count"
+"""Key of the per-bin count of finite samples member of a level group."""
+
+TIME_DIMENSION: Final = "time"
+"""Dimension name of a sample axis or a bin axis."""
+
 
 def write_raw(
     group: ZarrGroup,
@@ -86,10 +105,95 @@ def write_raw(
         sizing.shard_shape,
         {},
         zstd_level,
-        dimension_names=("time",),
+        dimension_names=(TIME_DIMENSION,),
     )
     _write_blocks(array, iter_raw_blocks(source, sizing.shard_shape[0]))
     return array
+
+
+def create_level(
+    parent: ZarrGroup,
+    plan: LevelPlan,
+    sizing: ChunkShard,
+    zstd_level: int,
+    write_var: bool,
+) -> LevelMembers[ZarrArray]:
+    """Create the level group named by plan.level with its member arrays.
+
+    The group carries period_us. It holds minmax shaped (bins, 2), and mean
+    and count shaped (bins,), plus var when write_var is true. The float
+    members are float32 and count is uint32. sizing is the sizing of minmax,
+    and the other members take its row counts, so one block of rows fills one
+    shard of every member. Every member names its bin axis "time". Raises
+    ValueError if plan.level is below 1.
+    """
+    if plan.level < 1:
+        raise ValueError("levels are numbered from 1; raw is not a level")
+    group = create_group_with_attrs(
+        parent, plan.name, level_group_attrs(plan.period_us)
+    )
+    member_rows = member_sizing(sizing)
+
+    def member(
+        key: str,
+        dtype: type[np.generic],
+        shape: tuple[int, ...],
+        array_sizing: ChunkShard,
+        dimension_names: tuple[str | None, ...],
+    ) -> ZarrArray:
+        return create_array(
+            group,
+            key,
+            shape,
+            dtype,
+            array_sizing.chunk_shape,
+            array_sizing.shard_shape,
+            {},
+            zstd_level,
+            dimension_names=dimension_names,
+        )
+
+    bins_shape = (plan.bins,)
+    time_only = (TIME_DIMENSION,)
+    return LevelMembers(
+        minmax=member(
+            MINMAX_KEY,
+            np.float32,
+            (plan.bins, ENVELOPE_PAIR_SIZE),
+            sizing,
+            (TIME_DIMENSION, None),
+        ),
+        mean=member(MEAN_KEY, np.float32, bins_shape, member_rows, time_only),
+        var=(
+            member(VAR_KEY, np.float32, bins_shape, member_rows, time_only)
+            if write_var
+            else None
+        ),
+        count=member(COUNT_KEY, np.uint32, bins_shape, member_rows, time_only),
+    )
+
+
+def write_statistics_blocks(
+    members: LevelMembers[ZarrArray],
+    blocks: Iterable[npt.NDArray[np.float64]],
+) -> None:
+    """Write a stream of statistics blocks into a level's member arrays.
+
+    Each block is split into the members and written at a running row offset,
+    so the blocks must arrive in level order and cover the level from row 0.
+    Blocks of shard_shape[0] rows make every write cover a whole shard of
+    every member, and only the last block may be shorter. A level without a
+    var member drops the variance column. An empty stream writes nothing.
+    """
+    start = 0
+    for block in blocks:
+        minmax, mean, var, count = split_members(block, members.var is not None)
+        write_region(members.minmax, start, minmax)
+        write_region(members.mean, start, mean)
+        if members.var is not None and var is not None:
+            write_region(members.var, start, var)
+        write_region(members.count, start, count)
+        start += block.shape[0]
 
 
 def write_level0(
