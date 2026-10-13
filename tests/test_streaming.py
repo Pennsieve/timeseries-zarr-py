@@ -4,7 +4,6 @@ import pytest
 from timeseries_zarr.constants import STATISTIC_COLUMNS, VAR_COLUMN
 from timeseries_zarr.fold import (
     assemble_statistics,
-    fold_pair_block,
     fold_raw_block,
     fold_statistics_block,
     split_members,
@@ -57,12 +56,13 @@ def test_rebuffer_and_fold_raw_is_split_invariant(seed):
 
 
 @pytest.mark.parametrize("seed", range(5))
-def test_rebuffer_and_fold_pairs_is_split_invariant(seed):
+def test_rebuffer_and_fold_statistics_is_split_invariant(seed):
     rng = np.random.default_rng(seed + 100)
-    arr = rng.standard_normal((29, 2)).astype(np.float32)
-    blocks = _split(arr, _random_sizes(rng, arr.shape[0]))
+    statistics = fold_raw_block(rng.standard_normal(4 * 29).astype(np.float32))
+    blocks = _split(statistics, _random_sizes(rng, statistics.shape[0]))
     assert np.array_equal(
-        _folded(blocks, fold_pair_block), fold_pair_block(arr)
+        _folded(blocks, fold_statistics_block),
+        fold_statistics_block(statistics),
     )
 
 

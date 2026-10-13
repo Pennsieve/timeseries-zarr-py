@@ -95,8 +95,8 @@ def test_write_all_channels_dispatches_by_type(
     unit = unit_source(np.arange(5, dtype=np.int64), id="u0")
     write_all_channels(root, assign_indices([cont], [unit]), _OPTS)
     g = open_group(tmp_path / "bundle")
-    assert dict(g["0"].attrs)["kind"] == "continuous"
-    assert "0" in list(g["0"].array_keys())
+    assert dict(g["0"].attrs)["tsz"]["kind"] == "continuous"
+    assert "raw" in list(g["0"].array_keys())
     assert dict(g["1"].attrs)["kind"] == "unit"
     assert sorted(g["1"].array_keys()) == ["events", "units", "waveforms"]
 
@@ -129,9 +129,9 @@ def test_write_bundle_publishes_mixed_bundle(
     assert final.exists()
     assert not staging.exists()
     g = open_group(final)
-    assert dict(g["0"].attrs)["kind"] == "continuous"
+    assert dict(g["0"].attrs)["tsz"]["kind"] == "continuous"
     assert dict(g["1"].attrs)["kind"] == "unit"
-    assert np.array_equal(g["0"]["0"][:], samples)
+    assert np.array_equal(g["0"]["raw"][:], samples)
     assert sorted(g["1"].array_keys()) == ["events", "units", "waveforms"]
 
 
@@ -163,3 +163,19 @@ def test_write_bundle_returns_none(tmp_path, continuous_source):
         opts=_OPTS,
     )
     assert result is None
+
+
+def test_write_all_channels_places_continuous_channels_relative_to_the_earliest_start(
+    tmp_path, continuous_source
+):
+    root = open_group(tmp_path / "bundle")
+    early = continuous_source(
+        np.arange(8, dtype=np.float32), id="a", start_us=1_000
+    )
+    late = continuous_source(
+        np.arange(8, dtype=np.float32), id="b", start_us=5_000
+    )
+    write_all_channels(root, assign_indices([early, late], []), _OPTS)
+    g = open_group(tmp_path / "bundle")
+    assert dict(g["0"].attrs)["tsz"]["offset_us"] == 0
+    assert dict(g["1"].attrs)["tsz"]["offset_us"] == 4_000
