@@ -1,6 +1,7 @@
 """Count levels for event channels: per-bin event counts on a shared ladder."""
 
 from collections.abc import Iterable, Iterator
+from typing import Final
 
 import numpy as np
 import numpy.typing as npt
@@ -14,6 +15,9 @@ from timeseries_zarr.constants import (
     RASTER_BUDGET,
 )
 from timeseries_zarr.types import LevelPlan
+
+COUNT_BLOCK_RANK: Final = 2
+"""Rank of a block of counts: one axis of bins, one of label columns."""
 
 type EventBlock = tuple[npt.NDArray[np.int64], npt.NDArray[np.uint16] | None]
 """One window of event times in microseconds from the origin, with the labels.
@@ -203,3 +207,31 @@ def iter_count_blocks(
         yield buffer[: min(block_bins, bins - base)].copy()
         base += block_bins
         buffer[:] = 0
+
+
+def fold_count_block(
+    counts: npt.NDArray[np.uint32],
+) -> npt.NDArray[np.uint32]:
+    """Fold a block of counts into the next coarser level over blocks of 4 rows.
+
+    Each output row is the column-wise sum of up to 4 input rows, so a coarse
+    bin holds exactly the events of its span. A final partial group of 1 to 3
+    rows becomes one row. An empty input yields zero rows. The sums stay in
+    uint32, which holds them because plan_count_levels caps the event count at
+    the uint32 range. Raises ValueError if counts is not shaped (rows,
+    columns).
+    """
+    if len(counts.shape) != COUNT_BLOCK_RANK:
+        raise ValueError(
+            f"counts have shape (rows, columns), got {counts.shape}"
+        )
+    n_full, tail_len = divmod(counts.shape[0], DECIMATION_FACTOR)
+    split = n_full * DECIMATION_FACTOR
+    columns = counts.shape[1]
+    out = np.empty((n_full + (1 if tail_len else 0), columns), dtype=np.uint32)
+    if n_full:
+        grouped = counts[:split].reshape(n_full, DECIMATION_FACTOR, columns)
+        out[:n_full] = grouped.sum(axis=1, dtype=np.uint32)
+    if tail_len:
+        out[n_full] = counts[split:].sum(axis=0, dtype=np.uint32)
+    return out

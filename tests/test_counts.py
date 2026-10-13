@@ -8,10 +8,12 @@ from timeseries_zarr.constants import (
 )
 from timeseries_zarr.counts import (
     count_bins,
+    fold_count_block,
     iter_count_blocks,
     level1_period_us,
     plan_count_levels,
 )
+from timeseries_zarr.streaming import _rebuffer_and_fold
 
 _SPAN_PER_WIDTH = 200
 """Microseconds of span per microsecond of width when n_events is 1000.
@@ -421,3 +423,69 @@ def test_iter_count_blocks_rejects_bad_geometry(
 ):
     with pytest.raises(ValueError, match=name):
         _collect([], n_labels, period_us, bins, block_bins)
+
+
+def _level1(seed=0, bins=1000, n_labels=4):
+    times, labels = _events(seed, count=900, bins=bins, n_labels=n_labels)
+    return times, labels, _direct(times, labels, n_labels, 1000, bins)
+
+
+@pytest.mark.parametrize("level", [2, 3, 4, 5])
+def test_fold_count_block_equals_the_direct_count_at_every_level(level):
+    times, labels, counts = _level1()
+    for _ in range(level - 1):
+        counts = fold_count_block(counts)
+    period_us = 1000 * 4 ** (level - 1)
+    bins = -(-1000 // 4 ** (level - 1))
+    assert counts.shape == (bins, 4)
+    assert np.array_equal(counts, _direct(times, labels, 4, period_us, bins))
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [(0, 0), (1, 1), (3, 1), (4, 1), (5, 2), (8, 2), (9, 3), (17, 5)],
+)
+def test_fold_count_block_shape(rows, expected):
+    out = fold_count_block(np.ones((rows, 3), dtype=np.uint32))
+    assert out.shape == (expected, 3)
+    assert out.dtype == np.uint32
+
+
+def test_fold_count_block_sums_a_partial_tail_into_one_row():
+    counts = np.arange(10, dtype=np.uint32).reshape(5, 2)
+    assert fold_count_block(counts).tolist() == [[12, 16], [8, 9]]
+
+
+def test_fold_count_block_keeps_the_total_of_every_column():
+    counts = np.random.default_rng(3).integers(0, 50, (37, 6)).astype(np.uint32)
+    assert np.array_equal(
+        fold_count_block(counts).sum(axis=0), counts.sum(axis=0)
+    )
+
+
+def test_fold_count_block_is_exact_at_the_top_of_the_uint32_range():
+    counts = np.array([[2**30], [2**30], [2**30], [2**30 - 1]], dtype=np.uint32)
+    assert fold_count_block(counts)[0, 0] == 2**32 - 1
+
+
+def test_fold_count_block_leaves_the_input_unchanged():
+    counts = np.arange(12, dtype=np.uint32).reshape(6, 2)
+    before = counts.copy()
+    fold_count_block(counts)
+    assert np.array_equal(counts, before)
+
+
+@pytest.mark.parametrize("size", [1, 2, 3, 5, 7, 13])
+def test_streamed_count_folds_equal_the_whole_fold(size):
+    _, _, counts = _level1(seed=4)
+    pieces = [counts[i : i + size] for i in range(0, len(counts), size)]
+    level2 = _rebuffer_and_fold(pieces, fold_count_block)
+    level3 = list(_rebuffer_and_fold(level2, fold_count_block))
+    want = fold_count_block(fold_count_block(counts))
+    assert np.array_equal(np.concatenate(level3), want)
+
+
+@pytest.mark.parametrize("shape", [(8,), (2, 4, 3)])
+def test_fold_count_block_rejects_counts_that_are_not_rows_by_columns(shape):
+    with pytest.raises(ValueError, match="rows, columns"):
+        fold_count_block(np.zeros(shape, dtype=np.uint32))
