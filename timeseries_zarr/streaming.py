@@ -28,19 +28,19 @@ class BlockReadableArray(Protocol):
         ...
 
 
-def _rebuffer_and_fold(
-    blocks: Iterable[npt.NDArray[np.float32]],
-    fold_fn: Callable[[npt.NDArray[np.float32]], npt.NDArray[np.float32]],
+def _rebuffer_and_fold[TIn: np.generic, TOut: np.generic](
+    blocks: Iterable[npt.NDArray[TIn]],
+    fold_fn: Callable[[npt.NDArray[TIn]], npt.NDArray[TOut]],
     group: int = DECIMATION_FACTOR,
-) -> Iterator[npt.NDArray[np.float32]]:
+) -> Iterator[npt.NDArray[TOut]]:
     """Fold a stream of blocks into the next coarser level.
 
-    Blocks are rank-1 raw runs or rank-2 (min, max) runs. The concatenation of
-    the yielded arrays equals fold_fn applied to the whole concatenated input,
-    computed in bounded memory: at most group-1 rows are carried across a block
-    boundary.
+    Blocks are sliced and joined along axis 0 only, whatever their rank and
+    dtype. The concatenation of the yielded arrays equals fold_fn applied to
+    the whole concatenated input, computed in bounded memory: at most group-1
+    rows are carried across a block boundary.
     """
-    carry: npt.NDArray[np.float32] | None = None
+    carry: npt.NDArray[TIn] | None = None
     for block in blocks:
         # An exhausted carry still concatenates to the block itself, so skip the
         # copy: with shard-aligned inputs that is every iteration but the last.
@@ -77,8 +77,8 @@ def iter_raw_blocks(
 
 def iter_level0_to_level1(
     source: ContinuousChannelSource, block_samples: int
-) -> Iterator[npt.NDArray[np.float32]]:
-    """Yield level-1 (min, max) pairs folded from the source's raw samples.
+) -> Iterator[npt.NDArray[np.float64]]:
+    """Yield level-1 stat blocks folded from the source's raw samples.
 
     One row per 4 raw samples, keep-tail. The concatenated output equals
     folding the whole series at once, whatever block_samples is. Raises
