@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from timeseries_zarr.constants import (
@@ -7,6 +8,7 @@ from timeseries_zarr.constants import (
 )
 from timeseries_zarr.counts import (
     count_bins,
+    iter_count_blocks,
     level1_period_us,
     plan_count_levels,
 )
@@ -235,3 +237,187 @@ def test_plan_count_levels_rejects_a_negative_event_count():
 def test_plan_count_levels_rejects_a_negative_last_event_time(n_events):
     with pytest.raises(ValueError, match="last_event_us"):
         plan_count_levels(n_events, -1)
+
+
+def _direct(times, labels, n_labels, period_us, bins):
+    """Counts straight from the definition with an unbuffered scatter add."""
+    counts = np.zeros((bins, max(1, n_labels)), dtype=np.uint32)
+    column = np.zeros(len(times), dtype=np.int64) if labels is None else labels
+    np.add.at(counts, (times // period_us, column), 1)
+    return counts
+
+
+def _blocks(times, labels, sizes):
+    """Split events into blocks of the given sizes, which may be zero."""
+    out, start = [], 0
+    for size in sizes:
+        stop = start + size
+        out.append(
+            (times[start:stop], None if labels is None else labels[start:stop])
+        )
+        start = stop
+    return out
+
+
+def _collect(event_blocks, n_labels, period_us, bins, block_bins):
+    return list(
+        iter_count_blocks(event_blocks, n_labels, period_us, bins, block_bins)
+    )
+
+
+def _events(seed, count=300, period_us=1000, bins=137, n_labels=5):
+    rng = np.random.default_rng(seed)
+    times = np.sort(rng.integers(0, bins * period_us, count)).astype(np.int64)
+    labels = rng.integers(0, max(1, n_labels), count).astype(np.uint16)
+    return times, labels
+
+
+@pytest.mark.parametrize("block_bins", [1, 3, 4, 7, 64, 1000])
+@pytest.mark.parametrize("seed", range(3))
+def test_iter_count_blocks_equals_the_direct_count(block_bins, seed):
+    times, labels = _events(seed)
+    rng = np.random.default_rng(seed + 50)
+    sizes = []
+    left = len(times)
+    while left:
+        size = int(rng.integers(0, min(left, 40) + 1))
+        sizes.append(size)
+        left -= size
+    got = _collect(_blocks(times, labels, sizes), 5, 1000, 137, block_bins)
+    assert np.array_equal(
+        np.concatenate(got), _direct(times, labels, 5, 1000, 137)
+    )
+
+
+def test_iter_count_blocks_every_block_but_the_last_has_block_bins_rows():
+    times, labels = _events(1)
+    got = _collect(_blocks(times, labels, [len(times)]), 5, 1000, 137, 20)
+    assert [block.shape[0] for block in got] == [20] * 6 + [17]
+    assert all(block.shape == (20, 5) for block in got[:-1])
+    assert got[-1].dtype == np.uint32
+
+
+def test_iter_count_blocks_bins_not_divisible_by_block_bins_end_with_a_remainder():
+    got = _collect([], 0, 1000, 10, 4)
+    assert [block.shape for block in got] == [(4, 1), (4, 1), (2, 1)]
+
+
+def test_iter_count_blocks_with_no_events_covers_the_axis_with_zeros():
+    got = _collect([], 3, 1000, 9, 4)
+    assert all(not block.any() for block in got)
+    assert np.concatenate(got).shape == (9, 3)
+
+
+def test_iter_count_blocks_an_axis_of_no_bins_yields_nothing():
+    assert _collect([], 0, 1000, 0, 4) == []
+
+
+def test_iter_count_blocks_counts_events_after_the_last_block_boundary():
+    times = np.array([0, 9_500], dtype=np.int64)
+    got = _collect([(times, None)], 0, 1000, 10, 4)
+    counts = np.concatenate(got)
+    assert counts[:, 0].tolist() == [1, 0, 0, 0, 0, 0, 0, 0, 0, 1]
+
+
+def test_iter_count_blocks_event_on_a_period_boundary_opens_its_own_bin():
+    times = np.array([999, 1000, 2000], dtype=np.int64)
+    counts = np.concatenate(_collect([(times, None)], 0, 1000, 3, 2))
+    assert counts[:, 0].tolist() == [1, 1, 1]
+
+
+def test_iter_count_blocks_equal_times_accumulate_in_one_bin():
+    times = np.full(5, 2500, dtype=np.int64)
+    labels = np.array([0, 0, 1, 1, 1], dtype=np.uint16)
+    counts = np.concatenate(_collect([(times, labels)], 2, 1000, 4, 4))
+    assert counts[2].tolist() == [2, 3]
+    assert int(counts.sum()) == 5
+
+
+def test_iter_count_blocks_a_gap_wider_than_a_block_emits_empty_blocks():
+    times = np.array([0, 90_500], dtype=np.int64)
+    got = _collect([(times, None)], 0, 1000, 100, 8)
+    assert [block.shape[0] for block in got] == [8] * 12 + [4]
+    assert int(np.concatenate(got).sum()) == 2
+    assert all(not block.any() for block in got[1:11])
+
+
+def test_iter_count_blocks_without_labels_counts_every_event_in_column_zero():
+    times = np.array([0, 1000, 1000], dtype=np.int64)
+    counts = np.concatenate(_collect([(times, None)], 3, 1000, 2, 2))
+    assert counts.tolist() == [[1, 0, 0], [2, 0, 0]]
+
+
+def test_iter_count_blocks_zero_labels_means_a_single_column():
+    times = np.array([0, 1000], dtype=np.int64)
+    counts = np.concatenate(_collect([(times, None)], 0, 1000, 2, 2))
+    assert counts.shape == (2, 1)
+
+
+def test_iter_count_blocks_skips_empty_event_blocks():
+    times = np.array([0, 1500], dtype=np.int64)
+    empty = np.empty(0, dtype=np.int64)
+    blocks = [
+        (empty, None),
+        (times[:1], None),
+        (empty, None),
+        (times[1:], None),
+    ]
+    counts = np.concatenate(_collect(blocks, 0, 1000, 2, 2))
+    assert counts[:, 0].tolist() == [1, 1]
+
+
+def test_iter_count_blocks_yielded_blocks_do_not_share_memory():
+    times, labels = _events(2)
+    got = _collect(_blocks(times, labels, [len(times)]), 5, 1000, 137, 4)
+    assert not np.shares_memory(got[0], got[1])
+
+
+@pytest.mark.parametrize(
+    ("times", "match"),
+    [
+        ([3_000, 2_000], "non-decreasing"),
+        ([-1, 0], "non-decreasing"),
+        ([0, 4_000], "past the 4 bins"),
+    ],
+)
+def test_iter_count_blocks_rejects_bad_times_within_a_block(times, match):
+    block = (np.array(times, dtype=np.int64), None)
+    with pytest.raises(ValueError, match=match):
+        _collect([block], 0, 1000, 4, 2)
+
+
+def test_iter_count_blocks_rejects_times_that_decrease_across_blocks():
+    first = (np.array([3_000], dtype=np.int64), None)
+    second = (np.array([2_000], dtype=np.int64), None)
+    with pytest.raises(ValueError, match="non-decreasing"):
+        _collect([first, second], 0, 1000, 8, 4)
+
+
+def test_iter_count_blocks_rejects_a_label_outside_the_columns():
+    times = np.array([0, 1000], dtype=np.int64)
+    labels = np.array([0, 3], dtype=np.uint16)
+    with pytest.raises(ValueError, match="label 3"):
+        _collect([(times, labels)], 3, 1000, 2, 2)
+
+
+def test_iter_count_blocks_rejects_labels_that_differ_in_shape_from_times():
+    times = np.array([0, 1000], dtype=np.int64)
+    labels = np.array([0], dtype=np.uint16)
+    with pytest.raises(ValueError, match="shape"):
+        _collect([(times, labels)], 3, 1000, 2, 2)
+
+
+@pytest.mark.parametrize(
+    ("n_labels", "period_us", "bins", "block_bins", "name"),
+    [
+        (1, 1000, 4, 0, "block_bins"),
+        (1, 0, 4, 2, "period_us"),
+        (1, 1000, -1, 2, "bins"),
+        (-1, 1000, 4, 2, "n_labels"),
+    ],
+)
+def test_iter_count_blocks_rejects_bad_geometry(
+    n_labels, period_us, bins, block_bins, name
+):
+    with pytest.raises(ValueError, match=name):
+        _collect([], n_labels, period_us, bins, block_bins)
