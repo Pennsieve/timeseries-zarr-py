@@ -172,7 +172,7 @@ def test_write_waveforms_array_sets_period_us_attr(tmp_path, unit_source):
         5,
     )
     assert dict(open_group(tmp_path / "bundle")["waveforms"].attrs) == {
-        "period_us": 62.5
+        "tsz": {"period_us": 62.5}
     }
 
 
@@ -227,7 +227,7 @@ def test_write_unit_channel_writes_waveforms_with_period(tmp_path, unit_source):
     )
     wf = open_group(tmp_path / "bundle")["0"]["waveforms"]
     assert np.array_equal(wf[:], waveforms)
-    assert dict(wf.attrs) == {"period_us": level0_period_us(32000.0)}
+    assert dict(wf.attrs) == {"tsz": {"period_us": level0_period_us(32000.0)}}
 
 
 def test_write_unit_channel_returns_none(tmp_path, unit_source):
