@@ -3,8 +3,9 @@ from datetime import UTC, datetime
 import numpy as np
 import pytest
 from hdmf.common import DynamicTableRegion
-from pynwb import TimeSeries
+from pynwb import NWBFile, TimeSeries
 from pynwb.ecephys import ElectricalSeries
+from pynwb.file import Subject
 from pynwb.misc import Units
 from pynwb.testing.mock.base import mock_TimeSeries
 from pynwb.testing.mock.device import mock_Device
@@ -16,6 +17,7 @@ from timeseries_zarr.nwb_reader import (
     NwbTimeSeriesSource,
     NwbUnitSource,
     build_sources_from_nwb,
+    recording_meta,
 )
 from timeseries_zarr.protocols import EventChannelSource
 
@@ -644,3 +646,80 @@ def test_build_reports_a_series_sampled_by_timestamps():
     )
     with pytest.raises(ValueError, match="irregular sampling.*irregular"):
         build_sources_from_nwb(nwb)
+
+
+def _file(**kwargs):
+    return NWBFile(
+        session_description="EMU admission, day 3",
+        identifier="file-identifier-123",
+        session_start_time=STARTED,
+        **kwargs,
+    )
+
+
+def test_recording_meta_start_is_the_session_start_time():
+    assert recording_meta(_file()).start == STARTED
+
+
+def test_recording_meta_carries_every_subject_field_that_is_set():
+    subject = Subject(
+        subject_id="sub-0931",
+        species="Homo sapiens",
+        sex="F",
+        age="P34Y",
+        description="adult",
+        date_of_birth=datetime(1990, 1, 2, tzinfo=UTC),
+    )
+    meta = recording_meta(_file(subject=subject))
+    assert meta.subject == {
+        "id": "sub-0931",
+        "species": "Homo sapiens",
+        "sex": "F",
+        "age": "P34Y",
+        "description": "adult",
+        "date_of_birth": "1990-01-02T00:00:00+00:00",
+    }
+
+
+def test_recording_meta_omits_subject_fields_that_are_unset():
+    meta = recording_meta(_file(subject=Subject(subject_id="sub-1")))
+    assert meta.subject == {"id": "sub-1"}
+
+
+def test_recording_meta_without_a_subject_has_an_empty_subject():
+    assert recording_meta(_file()).subject == {}
+
+
+def test_recording_meta_session_has_the_id_and_description_when_set():
+    meta = recording_meta(_file(session_id="ses-01"))
+    assert meta.session == {
+        "id": "ses-01",
+        "description": "EMU admission, day 3",
+    }
+
+
+def test_recording_meta_session_omits_an_unset_id():
+    assert recording_meta(_file()).session == {
+        "description": "EMU admission, day 3"
+    }
+
+
+def test_recording_meta_source_names_the_converter_and_the_format():
+    assert recording_meta(_file()).source == {
+        "converter": "timeseries-zarr-py",
+        "format": "NWB",
+    }
+
+
+def test_recording_meta_leaves_other_identifying_fields_out():
+    meta = recording_meta(
+        _file(
+            session_id="ses-01",
+            experimenter=["Doe, Jane"],
+            institution="Example Hospital",
+            subject=Subject(subject_id="sub-1"),
+        )
+    )
+    text = str((meta.subject, meta.session, meta.source))
+    for leaked in ("Doe", "Example Hospital", "file-identifier-123"):
+        assert leaked not in text
