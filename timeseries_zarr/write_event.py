@@ -5,13 +5,13 @@ source's rows in. An empty source, with no events, creates the array and
 writes nothing.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Final
 
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.columns import text_rows
+from timeseries_zarr.columns import channels_rows, channels_width, text_rows
 from timeseries_zarr.constants import MAX_LABELS
 from timeseries_zarr.protocols import EventChannelSource
 from timeseries_zarr.types import ChunkShard
@@ -33,6 +33,9 @@ LABELS_KEY: Final = "labels"
 
 TEXT_KEY: Final = "text"
 """Key of the per-event text array within an event channel group."""
+
+CHANNELS_KEY: Final = "channels"
+"""Key of the per-event channel bitmask array within an event channel group."""
 
 EVENT_DIMENSION: Final = "event"
 """Dimension name of the per-event axis."""
@@ -251,6 +254,60 @@ def write_text_array(
                 f"read_text returned {len(texts)} texts for {stop - start} events"
             )
         return text_rows(texts, width)
+
+    _write_source_blocks(
+        array, source.num_events(), sizing.shard_shape[0], read
+    )
+    return array
+
+
+def write_channels_array(
+    group: ZarrGroup,
+    source: EventChannelSource,
+    channel_keys: Mapping[str, int],
+    max_key: int,
+    sizing: ChunkShard,
+    zstd_level: int,
+) -> ZarrArray:
+    """Create the channels array under group and stream the event bitmasks in.
+
+    A uint8 array named "channels" shaped (num_events, M), with M the byte
+    width of a bitmask for keys up to max_key, and the dimension names "event"
+    and None. Row i has the bit of each channel key that event i applies to,
+    and a row of zeros means the whole recording. The source names channels by
+    id and channel_keys maps each id to the channel key it has in the bundle.
+    sizing is the sizing of the (num_events, M) shape, with the width axis
+    whole. Raises ValueError if max_key is negative, an id is not in
+    channel_keys, a key is outside 0 to max_key, or the source returns a
+    different number of id lists than requested.
+    """
+    width = channels_width(max_key)
+    array = create_array(
+        group,
+        CHANNELS_KEY,
+        (source.num_events(), width),
+        np.uint8,
+        sizing.chunk_shape,
+        sizing.shard_shape,
+        {},
+        zstd_level,
+        dimension_names=(EVENT_DIMENSION, None),
+    )
+
+    def read(start: int, stop: int) -> npt.NDArray[np.uint8]:
+        id_lists = source.read_channel_ids(start, stop)
+        if len(id_lists) != stop - start:
+            raise ValueError(
+                f"read_channel_ids returned {len(id_lists)} lists for "
+                f"{stop - start} events"
+            )
+        key_lists = []
+        for ids in id_lists:
+            for channel_id in ids:
+                if channel_id not in channel_keys:
+                    raise ValueError(f"unknown channel id {channel_id!r}")
+            key_lists.append([channel_keys[channel_id] for channel_id in ids])
+        return channels_rows(key_lists, max_key)
 
     _write_source_blocks(
         array, source.num_events(), sizing.shard_shape[0], read

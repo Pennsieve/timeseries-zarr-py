@@ -3,12 +3,15 @@ import json
 import numpy as np
 import pytest
 
+from timeseries_zarr.columns import channels_rows
 from timeseries_zarr.types import ChunkShard
 from timeseries_zarr.write_event import (
+    CHANNELS_KEY,
     DURATIONS_KEY,
     EVENTS_KEY,
     LABELS_KEY,
     TEXT_KEY,
+    write_channels_array,
     write_durations_array,
     write_events_array,
     write_labels_array,
@@ -449,3 +452,133 @@ def test_write_text_array_rejects_a_source_that_returns_too_few_texts(
     source = Short([1, 2, 3], text=["a", "b", "c"])
     with pytest.raises(ValueError, match="returned 2 texts for 3 events"):
         _write_text(tmp_path, source, 1)
+
+
+_KEYS = {"a": 0, "b": 1, "c": 9}
+
+
+def _mask_sizing(width):
+    return ChunkShard(chunk_shape=(4, width), shard_shape=(8, width))
+
+
+def _write_channels(tmp_path, source, max_key=9, keys=_KEYS):
+    group = open_group(tmp_path / "bundle")
+    sizing = _mask_sizing(channels_rows([[]], max_key).shape[1])
+    write_channels_array(group, source, keys, max_key, sizing, 5)
+    return open_group(tmp_path / "bundle")
+
+
+def test_write_channels_array_stores_a_bitmask_row_per_event(
+    tmp_path, event_source
+):
+    ids = [[], ["a"], ["b", "c"], ["a", "c"]]
+    source = event_source([1, 2, 3, 4], channel_ids=ids)
+    stored = _write_channels(tmp_path, source)[CHANNELS_KEY][:]
+    want = channels_rows([[], [0], [1, 9], [0, 9]], 9)
+    assert np.array_equal(stored, want)
+    assert stored.dtype == np.uint8
+
+
+def test_write_channels_array_declares_shape_dimensions_and_zero_fill(
+    tmp_path, event_source
+):
+    source = event_source([1, 2], channel_ids=[["a"], []])
+    arr = _write_channels(tmp_path, source)[CHANNELS_KEY]
+    assert arr.shape == (2, 2)
+    assert dict(arr.attrs) == {}
+    assert arr.metadata.dimension_names == ("event", None)
+    assert arr.fill_value == 0
+
+
+def test_write_channels_array_compresses_with_zstd(tmp_path, event_source):
+    source = event_source([1], channel_ids=[["a"]])
+    _write_channels(tmp_path, source)
+    meta = json.loads(
+        (tmp_path / "bundle" / "channels" / "zarr.json").read_text()
+    )
+    inner = meta["codecs"][0]["configuration"]["codecs"]
+    assert [codec["name"] for codec in inner] == ["bytes", "zstd"]
+
+
+def test_write_channels_array_width_follows_max_key(tmp_path, event_source):
+    source = event_source([1], channel_ids=[["a"]])
+    assert _write_channels(tmp_path, source, max_key=0)[CHANNELS_KEY].shape == (
+        1,
+        1,
+    )
+    assert _write_channels(tmp_path / "w", source, max_key=16)[
+        CHANNELS_KEY
+    ].shape == (1, 3)
+
+
+def test_write_channels_array_whole_recording_rows_are_all_zero(
+    tmp_path, event_source
+):
+    source = event_source(np.arange(10), channel_ids=[[]] * 10)
+    stored = _write_channels(tmp_path, source)[CHANNELS_KEY][:]
+    assert not stored.any()
+    shards = [
+        f
+        for f in (tmp_path / "bundle" / "channels").rglob("*")
+        if f.is_file() and f.name != "zarr.json"
+    ]
+    assert len(shards) == 2
+
+
+def test_write_channels_array_empty_source_creates_zero_rows(
+    tmp_path, event_source
+):
+    source = event_source([], channel_ids=[])
+    assert _write_channels(tmp_path, source)[CHANNELS_KEY].shape == (0, 2)
+
+
+def test_write_channels_array_writes_one_whole_shard_per_write(
+    tmp_path, event_source, monkeypatch
+):
+    writes = []
+
+    def spy(array, start, block):
+        writes.append((start, block.shape[0]))
+        write_region(array, start, block)
+
+    monkeypatch.setattr("timeseries_zarr.write_event.write_region", spy)
+    source = event_source(np.arange(26), channel_ids=[["b"]] * 26)
+    _write_channels(tmp_path, source)
+    assert writes == [(0, 8), (8, 8), (16, 8), (24, 2)]
+
+
+def test_write_channels_array_rejects_an_unknown_channel_id(
+    tmp_path, event_source
+):
+    source = event_source([1, 2], channel_ids=[["a"], ["zz"]])
+    with pytest.raises(ValueError, match="unknown channel id 'zz'"):
+        _write_channels(tmp_path, source)
+
+
+def test_write_channels_array_rejects_an_unknown_id_in_a_later_block(
+    tmp_path, event_source
+):
+    ids = [["a"]] * 8 + [["zz"]]
+    source = event_source(np.arange(9), channel_ids=ids)
+    with pytest.raises(ValueError, match="unknown"):
+        _write_channels(tmp_path, source)
+
+
+def test_write_channels_array_rejects_a_key_above_max_key(
+    tmp_path, event_source
+):
+    source = event_source([1], channel_ids=[["c"]])
+    with pytest.raises(ValueError, match="between 0 and 5"):
+        _write_channels(tmp_path, source, max_key=5)
+
+
+def test_write_channels_array_rejects_a_source_that_returns_too_few_lists(
+    tmp_path, event_source
+):
+    class Short(type(event_source([0]))):
+        def read_channel_ids(self, start, stop):
+            return super().read_channel_ids(start, stop)[:-1]
+
+    source = Short([1, 2], channel_ids=[["a"], ["b"]])
+    with pytest.raises(ValueError, match="returned 1 lists for 2 events"):
+        _write_channels(tmp_path, source)
