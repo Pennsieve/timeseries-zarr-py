@@ -14,6 +14,11 @@ from timeseries_zarr.write_continuous import write_continuous_channel
 from timeseries_zarr.write_unit import write_unit_channel
 from timeseries_zarr.zarr_io import ZarrGroup, consolidate, open_group
 
+type AnySource = (
+    ContinuousChannelSource | EventChannelSource | UnitChannelSource
+)
+"""Any channel source the bundle writes, whichever protocol it follows."""
+
 
 def assign_indices(
     continuous: Sequence[ContinuousChannelSource],
@@ -28,9 +33,7 @@ def assign_indices(
 
 
 def origin_us(
-    sources: Sequence[
-        ContinuousChannelSource | EventChannelSource | UnitChannelSource
-    ],
+    sources: Sequence[AnySource],
     session_start_us: int | None = None,
 ) -> int:
     """Return the bundle origin: the earliest wall-clock instant it holds.
@@ -46,6 +49,33 @@ def origin_us(
     if session_start_us is not None:
         starts.append(session_start_us)
     return min(starts, default=0)
+
+
+def channel_keys(indexed: Sequence[tuple[int, AnySource]]) -> dict[str, int]:
+    """Return each channel's id mapped to its channel key.
+
+    The key is the index assign_indices gave the channel, which names its group
+    in the bundle. An event channel names the channels it applies to by id, so
+    this is the table a channels column resolves through. Raises ValueError if
+    two channels share an id.
+    """
+    keys: dict[str, int] = {}
+    for index, source in indexed:
+        if source.id in keys:
+            raise ValueError(
+                f"channels {keys[source.id]} and {index} share the id "
+                f"{source.id!r}"
+            )
+        keys[source.id] = index
+    return keys
+
+
+def max_key(indexed: Sequence[tuple[int, AnySource]]) -> int:
+    """Return the largest channel key, which sizes the channels bitmask.
+
+    A bundle with no channels reports 0.
+    """
+    return max((index for index, _ in indexed), default=0)
 
 
 def atomic_publish(staging_dir: Path, final_dir: Path) -> None:
