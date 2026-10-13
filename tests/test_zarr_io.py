@@ -1,6 +1,7 @@
 import json
 
 import numpy as np
+import pytest
 from zarr import Group
 from zarr.codecs import ShardingCodec, ZstdCodec
 
@@ -204,3 +205,108 @@ def test_consolidate_no_v2_sidecar(tmp_path):
 def test_consolidate_returns_none(tmp_path):
     path = tmp_path / "bundle"
     assert consolidate(_build_tree(path)) is None
+
+
+def _node(path, *parts):
+    return json.loads((path.joinpath(*parts) / "zarr.json").read_text())
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_create_array_float_arrays_declare_nan_fill(tmp_path, dtype):
+    path = tmp_path / "bundle"
+    arr = create_array(open_group(path), "a", (16,), dtype, (4,), (8,), {}, 5)
+    assert _node(path, "a")["fill_value"] == "NaN"
+    assert np.isnan(arr[:]).all()
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint8, np.uint16, np.uint32])
+def test_create_array_integer_arrays_declare_zero_fill(tmp_path, dtype):
+    path = tmp_path / "bundle"
+    arr = create_array(open_group(path), "a", (16,), dtype, (4,), (8,), {}, 5)
+    assert _node(path, "a")["fill_value"] == 0
+    assert not arr[:].any()
+
+
+def test_create_array_stores_dimension_names(tmp_path):
+    path = tmp_path / "bundle"
+    create_array(
+        open_group(path),
+        "a",
+        (16, 2),
+        np.float32,
+        (4, 2),
+        (8, 2),
+        {},
+        5,
+        dimension_names=("time", None),
+    )
+    assert _node(path, "a")["dimension_names"] == ["time", None]
+
+
+def test_create_array_without_dimension_names_stores_none(tmp_path):
+    path = tmp_path / "bundle"
+    create_array(open_group(path), "a", (16,), np.float32, (4,), (8,), {}, 5)
+    assert "dimension_names" not in _node(path, "a")
+
+
+def test_create_array_rejects_dimension_names_of_the_wrong_length(tmp_path):
+    with pytest.raises(ValueError, match="dimension"):
+        create_array(
+            open_group(tmp_path / "bundle"),
+            "a",
+            (16, 2),
+            np.float32,
+            (4, 2),
+            (8, 2),
+            {},
+            5,
+            dimension_names=("time",),
+        )
+
+
+def _inner_codecs(path, name):
+    sharding = _node(path, name)["codecs"][0]
+    return [codec["name"] for codec in sharding["configuration"]["codecs"]]
+
+
+def test_create_array_compresses_with_zstd_by_default(tmp_path):
+    path = tmp_path / "bundle"
+    create_array(open_group(path), "a", (16,), np.float32, (4,), (8,), {}, 5)
+    assert _inner_codecs(path, "a") == ["bytes", "zstd"]
+
+
+def test_create_array_uncompressed_keeps_the_sharding_codec(tmp_path):
+    path = tmp_path / "bundle"
+    create_array(
+        open_group(path),
+        "a",
+        (4, 3),
+        np.uint8,
+        (4, 3),
+        (4, 3),
+        {},
+        5,
+        compress=False,
+    )
+    assert _node(path, "a")["codecs"][0]["name"] == "sharding_indexed"
+    assert _inner_codecs(path, "a") == ["bytes"]
+
+
+def test_create_array_uncompressed_shard_starts_with_the_plain_rows(tmp_path):
+    path = tmp_path / "bundle"
+    rows = np.arange(12, dtype=np.uint8).reshape(4, 3) + 65
+    arr = create_array(
+        open_group(path),
+        "a",
+        (4, 3),
+        np.uint8,
+        (4, 3),
+        (4, 3),
+        {},
+        5,
+        compress=False,
+    )
+    arr[:] = rows
+    shard = (path / "a" / "c" / "0" / "0").read_bytes()
+    assert shard.startswith(rows.tobytes())
+    assert np.array_equal(open_group(path)["a"][:], rows)

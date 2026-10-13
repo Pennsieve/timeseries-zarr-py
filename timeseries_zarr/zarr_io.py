@@ -1,8 +1,10 @@
 """Zarr v3 calls for the writer."""
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import numpy.typing as npt
 import zarr
 from zarr import Array, Group
@@ -44,24 +46,39 @@ def create_array(
     shard_shape: tuple[int, ...],
     attrs: dict[str, object],
     zstd_level: int,
+    *,
+    dimension_names: Sequence[str | None] | None = None,
+    compress: bool = True,
 ) -> Array[Any]:
-    """Create a v3 sharded, Zstd-compressed array under group with attributes.
+    """Create a v3 sharded array under group with attributes.
 
     The outer shard is shard_shape, split into inner chunks of chunk_shape by
     the ZEP2 sharding codec; chunk_shape must divide shard_shape along each
-    axis. The inner chunks are Zstd-compressed at zstd_level. attrs lands in
-    the array's zarr.json verbatim and unprefixed. Every shard written to the
-    array reaches disk, including a shard whose values all equal the fill
+    axis. The inner chunks are Zstd-compressed at zstd_level, or stored as
+    plain bytes when compress is false, which leaves each shard object as the
+    chunk bytes followed by the shard index. attrs lands in the array's
+    zarr.json verbatim. dimension_names names each axis, with None for an
+    axis that has no name, and is omitted when None. Every shard written to
+    the array reaches disk, including a shard whose values all equal the fill
     value, so a reader never meets a missing shard key.
+
+    A float array declares NaN as its fill value and any other dtype 0. The
+    fill is what Zarr serves for a chunk nobody wrote, and the format defines
+    NaN as no data. Zarr's own default for a float array is 0.0, which would
+    read an unwritten chunk as a flat zero signal. Raises ValueError if
+    dimension_names does not have one entry per axis.
     """
+    is_float = np.issubdtype(np.dtype(dtype), np.floating)
     return group.create_array(
         name=name,
         shape=shape,
         dtype=dtype,
         chunks=chunk_shape,
         shards=shard_shape,
-        compressors=ZstdCodec(level=zstd_level),
+        compressors=ZstdCodec(level=zstd_level) if compress else None,
         attributes=cast("dict[str, JSON]", attrs),
+        fill_value=float("nan") if is_float else 0,
+        dimension_names=dimension_names,
         config={"write_empty_chunks": True},
     )
 
