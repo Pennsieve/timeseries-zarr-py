@@ -474,7 +474,7 @@ def _check_continuous(nodes, key, attrs):
     samples = nodes[f"{key}/raw"]["shape"][0]
     assert _array_ok(nodes[f"{key}/raw"], (samples,), "float32", ["time"])
     levels = sorted(int(c) for c in _children(nodes, key) if c.isdigit())
-    assert levels and levels == list(range(1, len(levels) + 1))
+    assert levels == list(range(1, len(levels) + 1))
     for k in levels:
         period = nodes[f"{key}/{k}"]["attributes"]["tsz"]["period_us"]
         assert math.isclose(period, 4**k * 1e6 / rate, rel_tol=1e-12)
@@ -712,3 +712,19 @@ def test_write_bundle_rejects_a_recording_start_without_an_offset_before_writing
             recording=naive,
         )
     assert not (tmp_path / "staging").exists()
+
+
+def test_write_bundle_with_a_channel_too_short_for_a_level_still_conforms(
+    tmp_path, continuous_source
+):
+    short = continuous_source(_signal(100, 5), id="short", name="short")
+    final = tmp_path / "bundle"
+    write_bundle(
+        [short],
+        [],
+        staging_dir=tmp_path / "staging",
+        final_dir=final,
+        opts=_SPEC_OPTS,
+    )
+    nodes = _validate_bundle(final)
+    assert sorted(p for p in nodes if p.startswith("0/")) == ["0/raw"]
