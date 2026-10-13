@@ -11,6 +11,7 @@ from typing import Final
 import numpy as np
 import numpy.typing as npt
 
+from timeseries_zarr.constants import MAX_LABELS
 from timeseries_zarr.protocols import EventChannelSource
 from timeseries_zarr.types import ChunkShard
 from timeseries_zarr.zarr_io import (
@@ -25,6 +26,9 @@ EVENTS_KEY: Final = "events"
 
 DURATIONS_KEY: Final = "durations"
 """Key of the per-event duration array within an event channel group."""
+
+LABELS_KEY: Final = "labels"
+"""Key of the per-event label array within an event channel group."""
 
 EVENT_DIMENSION: Final = "event"
 """Dimension name of the per-event axis."""
@@ -149,6 +153,54 @@ def write_durations_array(
         source.num_events(),
         sizing.shard_shape[0],
         source.read_durations,
+        check,
+    )
+    return array
+
+
+def write_labels_array(
+    group: ZarrGroup,
+    source: EventChannelSource,
+    sizing: ChunkShard,
+    zstd_level: int,
+) -> ZarrArray:
+    """Create the labels array under group and stream the event labels into it.
+
+    A rank-1 uint16 array named "labels", with the dimension name "event" and
+    no attributes. Each label indexes the channel's label categories, so it
+    must be below source.num_labels(). Raises ValueError if num_labels() is
+    above MAX_LABELS, which a uint16 cannot index, or if a label is at or above
+    num_labels().
+    """
+    categories = source.num_labels()
+    if categories > MAX_LABELS:
+        raise ValueError(
+            f"{categories} label categories exceed the uint16 limit {MAX_LABELS}"
+        )
+    array = create_array(
+        group,
+        LABELS_KEY,
+        (source.num_events(),),
+        np.uint16,
+        sizing.chunk_shape,
+        sizing.shard_shape,
+        {},
+        zstd_level,
+        dimension_names=(EVENT_DIMENSION,),
+    )
+
+    def check(block: npt.NDArray[np.uint16]) -> None:
+        largest = int(block.max())
+        if largest >= categories:
+            raise ValueError(
+                f"a label {largest} is outside the {categories} label categories"
+            )
+
+    _write_source_blocks(
+        array,
+        source.num_events(),
+        sizing.shard_shape[0],
+        source.read_labels,
         check,
     )
     return array
