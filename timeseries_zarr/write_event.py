@@ -11,13 +11,19 @@ from typing import Final, cast
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.attrs import level_group_attrs, waveform_array_attrs
+from timeseries_zarr.attrs import (
+    event_channel_attrs,
+    level_group_attrs,
+    waveform_array_attrs,
+)
 from timeseries_zarr.columns import channels_rows, channels_width, text_rows
 from timeseries_zarr.constants import (
     DECIMATION_FACTOR,
     FLOAT32_BYTES,
     INT64_BYTES,
     MAX_LABELS,
+    UINT8_BYTES,
+    UINT16_BYTES,
     UINT32_BYTES,
 )
 from timeseries_zarr.counts import (
@@ -398,19 +404,20 @@ def write_waveform_mean_array(
     return array
 
 
-def _count_sizing(bins: int, columns: int, opts: WriteOpts) -> ChunkShard:
-    """Return the chunk and shard shapes of a (bins, columns) count array.
+def _row_sizing(
+    rows: int, columns: int, itemsize: int, opts: WriteOpts
+) -> ChunkShard:
+    """Return the chunk and shard shapes of a (rows, columns) array.
 
-    The inner chunk spans at most opts.inner_len bins, and fewer when the
-    label axis is wide, so that one chunk stays within opts.target_shard_bytes
-    and a block of counts never outgrows a shard. The label axis is never
-    chunked.
+    The inner chunk spans at most opts.inner_len rows, and fewer when the row
+    is wide, so that one chunk stays within opts.target_shard_bytes and a
+    block of rows never outgrows a shard. The column axis is never chunked.
     """
-    rows = max(1, opts.target_shard_bytes // (columns * UINT32_BYTES))
+    fitting = max(1, opts.target_shard_bytes // (columns * itemsize))
     return chunk_and_shard(
-        (bins, columns),
-        UINT32_BYTES,
-        min(opts.inner_len, rows),
+        (rows, columns),
+        itemsize,
+        min(opts.inner_len, fitting),
         opts.target_shard_bytes,
     )
 
@@ -476,7 +483,7 @@ def write_count_levels(
 
     previous: ZarrArray | None = None
     for plan in plans:
-        sizing = _count_sizing(plan.bins, columns, opts)
+        sizing = _row_sizing(plan.bins, columns, UINT32_BYTES, opts)
         level = create_group_with_attrs(
             group, plan.name, level_group_attrs(plan.period_us)
         )
@@ -514,3 +521,77 @@ def write_count_levels(
             )
         _write_count_blocks(array, counts)
         previous = array
+
+
+def write_event_channel(
+    parent: ZarrGroup,
+    key: int,
+    source: EventChannelSource,
+    *,
+    origin_us: int,
+    channel_keys: Mapping[str, int],
+    max_key: int,
+    opts: WriteOpts,
+) -> None:
+    """Write one event channel as the subgroup named str(key).
+
+    The channel group carries the event attributes: kind, name, id, the unit,
+    and, when the source provides the column, label_names and the duration
+    bound max_duration_us. The events array comes first, then each optional
+    column the source names in columns(), then the count levels of a dense
+    channel. Times are stored from origin_us, the bundle origin. channel_keys
+    maps channel ids to keys and max_key is the largest key in the bundle,
+    which sizes the channels bitmask. Every array is sized and compressed per
+    opts. Raises ValueError if the source offers waveform_mean without labels,
+    and whatever the column writers raise for data that breaks the format.
+    """
+    columns = source.columns()
+    if "waveform_mean" in columns and "labels" not in columns:
+        raise ValueError("waveform_mean requires a labels column")
+    group = create_group_with_attrs(
+        parent,
+        str(key),
+        event_channel_attrs(
+            source.name,
+            source.id,
+            source.unit,
+            source.label_names() if "labels" in columns else None,
+            source.max_duration_us() if "durations" in columns else None,
+            None,
+        ),
+    )
+    total = source.num_events()
+
+    def sizing(itemsize: int) -> ChunkShard:
+        return chunk_and_shard(
+            (total,), itemsize, opts.inner_len, opts.target_shard_bytes
+        )
+
+    write_events_array(
+        group, source, origin_us, sizing(INT64_BYTES), opts.zstd_level
+    )
+    if "durations" in columns:
+        write_durations_array(
+            group, source, sizing(INT64_BYTES), opts.zstd_level
+        )
+    if "labels" in columns:
+        write_labels_array(group, source, sizing(UINT16_BYTES), opts.zstd_level)
+    if "text" in columns:
+        write_text_array(
+            group,
+            source,
+            _row_sizing(total, source.text_width(), UINT8_BYTES, opts),
+            opts.zstd_level,
+        )
+    if "channels" in columns:
+        write_channels_array(
+            group,
+            source,
+            channel_keys,
+            max_key,
+            _row_sizing(total, channels_width(max_key), UINT8_BYTES, opts),
+            opts.zstd_level,
+        )
+    if "waveform_mean" in columns:
+        write_waveform_mean_array(group, source, opts.zstd_level)
+    write_count_levels(group, source, origin_us, opts)
