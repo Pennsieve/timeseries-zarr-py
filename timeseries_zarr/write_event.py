@@ -5,22 +5,41 @@ source's rows in. An empty source, with no events, creates the array and
 writes nothing.
 """
 
-from collections.abc import Callable, Mapping
-from typing import Final
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from typing import Final, cast
 
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.attrs import waveform_array_attrs
+from timeseries_zarr.attrs import level_group_attrs, waveform_array_attrs
 from timeseries_zarr.columns import channels_rows, channels_width, text_rows
-from timeseries_zarr.constants import FLOAT32_BYTES, MAX_LABELS
+from timeseries_zarr.constants import (
+    DECIMATION_FACTOR,
+    FLOAT32_BYTES,
+    INT64_BYTES,
+    MAX_LABELS,
+    UINT32_BYTES,
+)
+from timeseries_zarr.counts import (
+    EventBlock,
+    fold_count_block,
+    iter_count_blocks,
+    plan_count_levels,
+)
 from timeseries_zarr.protocols import EventChannelSource
 from timeseries_zarr.sizing import chunk_and_shard
-from timeseries_zarr.types import ChunkShard
+from timeseries_zarr.streaming import (
+    BlockReadableArray,
+    _rebuffer_and_fold,
+    iter_array_blocks,
+    regroup,
+)
+from timeseries_zarr.types import ChunkShard, WriteOpts
 from timeseries_zarr.zarr_io import (
     ZarrArray,
     ZarrGroup,
     create_array,
+    create_group_with_attrs,
     write_region,
 )
 
@@ -44,6 +63,12 @@ CHANNELS_KEY: Final = "channels"
 
 WAVEFORM_MEAN_KEY: Final = "waveform_mean"
 """Key of the per-label mean snippet array within an event channel group."""
+
+COUNT_KEY: Final = "count"
+"""Key of the per-bin event count array within a count level group."""
+
+TIME_DIMENSION: Final = "time"
+"""Dimension name of the bin axis of a count level."""
 
 EVENT_DIMENSION: Final = "event"
 
@@ -371,3 +396,121 @@ def write_waveform_mean_array(
     )
     write_region(array, 0, means)
     return array
+
+
+def _count_sizing(bins: int, columns: int, opts: WriteOpts) -> ChunkShard:
+    """Return the chunk and shard shapes of a (bins, columns) count array.
+
+    The inner chunk spans at most opts.inner_len bins, and fewer when the
+    label axis is wide, so that one chunk stays within opts.target_shard_bytes
+    and a block of counts never outgrows a shard. The label axis is never
+    chunked.
+    """
+    rows = max(1, opts.target_shard_bytes // (columns * UINT32_BYTES))
+    return chunk_and_shard(
+        (bins, columns),
+        UINT32_BYTES,
+        min(opts.inner_len, rows),
+        opts.target_shard_bytes,
+    )
+
+
+def _event_blocks(
+    source: EventChannelSource,
+    origin_us: int,
+    block_len: int,
+    with_labels: bool,
+) -> Iterator[EventBlock]:
+    """Yield the source's event times from the origin, with labels if asked."""
+    total = source.num_events()
+    for start in range(0, total, block_len):
+        stop = min(start + block_len, total)
+        times = source.read_events(start, stop) - origin_us
+        labels = source.read_labels(start, stop) if with_labels else None
+        yield times, labels
+
+
+def _write_count_blocks(
+    array: ZarrArray, blocks: Iterable[npt.NDArray[np.uint32]]
+) -> None:
+    """Write each block of counts to array at its running row offset."""
+    start = 0
+    for block in blocks:
+        write_region(array, start, block)
+        start += block.shape[0]
+
+
+def write_count_levels(
+    group: ZarrGroup,
+    source: EventChannelSource,
+    origin_us: int,
+    opts: WriteOpts,
+) -> None:
+    """Write the count levels of a dense event channel under group.
+
+    Each level is a group named by its number, carrying period_us, with one
+    uint32 array "count" shaped (bins, L). L is the label count, or 1 without
+    labels, and the bin axis is named "time". Level 1 is counted from the
+    source's event times and labels, streamed in blocks of events; every level
+    above it sums 4 rows of the stored level below, one shard at a time.
+    Channels with too few events, or whose level 1 would hold fewer than
+    opts.min_bins bins, get no levels and nothing is created. Every write
+    covers a whole shard. Raises ValueError if the event times decrease or
+    precede origin_us, or if a label is outside the label categories.
+    """
+    total = source.num_events()
+    if total == 0:
+        return
+    last_event_us = int(source.read_events(total - 1, total)[0]) - origin_us
+    plans = plan_count_levels(
+        total, last_event_us, opts.max_levels, opts.min_bins
+    )
+    if not plans:
+        return
+    with_labels = "labels" in source.columns()
+    n_labels = source.num_labels() if with_labels else 0
+    columns = max(1, n_labels)
+    block_len = chunk_and_shard(
+        (total,), INT64_BYTES, opts.inner_len, opts.target_shard_bytes
+    ).shard_shape[0]
+
+    previous: ZarrArray | None = None
+    for plan in plans:
+        sizing = _count_sizing(plan.bins, columns, opts)
+        level = create_group_with_attrs(
+            group, plan.name, level_group_attrs(plan.period_us)
+        )
+        array = create_array(
+            level,
+            COUNT_KEY,
+            (plan.bins, columns),
+            np.uint32,
+            sizing.chunk_shape,
+            sizing.shard_shape,
+            {},
+            opts.zstd_level,
+            dimension_names=(TIME_DIMENSION, None),
+        )
+        shard_rows = sizing.shard_shape[0]
+        counts: Iterator[npt.NDArray[np.uint32]]
+        if previous is None:
+            counts = iter_count_blocks(
+                _event_blocks(source, origin_us, block_len, with_labels),
+                n_labels,
+                int(plan.period_us),
+                plan.bins,
+                shard_rows,
+            )
+        else:
+            counts = regroup(
+                _rebuffer_and_fold(
+                    iter_array_blocks(
+                        cast("BlockReadableArray", previous),
+                        DECIMATION_FACTOR * shard_rows,
+                    ),
+                    fold_count_block,
+                ),
+                shard_rows,
+            )
+        _write_count_blocks(array, counts)
+        previous = array
