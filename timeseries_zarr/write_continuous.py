@@ -12,7 +12,11 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.attrs import channel_group_attrs, level_array_attrs
-from timeseries_zarr.constants import DECIMATION_FACTOR, FLOAT32_BYTES
+from timeseries_zarr.constants import (
+    DECIMATION_FACTOR,
+    ENVELOPE_PAIR_SIZE,
+    FLOAT32_BYTES,
+)
 from timeseries_zarr.fold import fold_block
 from timeseries_zarr.planning import level0_period_us, plan_levels
 from timeseries_zarr.protocols import ContinuousChannelSource
@@ -31,6 +35,11 @@ from timeseries_zarr.zarr_io import (
     create_group_with_attrs,
     write_region,
 )
+
+
+def _array_shape(plan: LevelPlan) -> tuple[int, ...]:
+    """Return the array shape of a level: rank 1 for raw, (bins, 2) above it."""
+    return (plan.bins,) if plan.level == 0 else (plan.bins, ENVELOPE_PAIR_SIZE)
 
 
 def _write_blocks(
@@ -61,13 +70,13 @@ def write_level0(
     its sole attribute. The source's raw samples are read in shard-sized
     blocks. Raises ValueError if plan does not describe level 0 (raw).
     """
-    if not plan.is_raw:
+    if plan.level != 0:
         raise ValueError("plan level must be raw")
 
     array = create_array(
         group,
         str(plan.level),
-        plan.shape,
+        _array_shape(plan),
         np.float32,
         sizing.chunk_shape,
         sizing.shard_shape,
@@ -93,13 +102,13 @@ def write_level_from_previous(
     so each folded block fills one shard of the new array. Raises ValueError if
     plan describes level 0.
     """
-    if plan.is_raw:
+    if plan.level == 0:
         raise ValueError("level must not be raw")
 
     array = create_array(
         group,
         str(plan.level),
-        plan.shape,
+        _array_shape(plan),
         np.float32,
         sizing.chunk_shape,
         sizing.shard_shape,
@@ -152,7 +161,7 @@ def write_continuous_channel(
         opts.min_bins,
     ):
         sizing = chunk_and_shard(
-            level_shape=plan.shape,
+            level_shape=_array_shape(plan),
             dtype_size=FLOAT32_BYTES,
             inner_len=opts.inner_len,
             target_shard_bytes=opts.target_shard_bytes,

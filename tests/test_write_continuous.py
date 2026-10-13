@@ -17,7 +17,7 @@ from timeseries_zarr.zarr_io import create_array, open_group, write_region
 
 
 def _plan(n, period_us=31.25):
-    return LevelPlan(level=0, shape=(n,), period_us=period_us)
+    return LevelPlan(level=0, bins=n, period_us=period_us)
 
 
 def _sizing():
@@ -36,7 +36,7 @@ def _make_prev(group, data):
 def _fold_plan(level, n_prev_rows, chunk0):
     """Return the plan and sizing for folding n_prev_rows by 4 into level."""
     bins = math.ceil(n_prev_rows / 4)
-    plan = LevelPlan(level=level, shape=(bins, 2), period_us=125.0)
+    plan = LevelPlan(level=level, bins=bins, period_us=125.0)
     sizing = ChunkShard(chunk_shape=(chunk0, 2), shard_shape=(chunk0, 2))
     return plan, sizing
 
@@ -109,7 +109,7 @@ def test_write_level0_empty_source_creates_array_writes_nothing(
 
 def test_write_level0_rejects_non_raw_plan(tmp_path, continuous_source):
     group = open_group(tmp_path / "bundle")
-    non_raw = LevelPlan(level=1, shape=(5, 2), period_us=125.0)
+    non_raw = LevelPlan(level=1, bins=5, period_us=125.0)
     with pytest.raises(ValueError, match="raw"):
         write_level0(
             group,
@@ -249,7 +249,7 @@ def test_write_continuous_channel_level_arrays_and_periods(
     assert sorted(grp.array_keys()) == sorted(str(p.level) for p in plans)
     for p in plans:
         assert dict(grp[str(p.level)].attrs) == {"period_us": p.period_us}
-        assert grp[str(p.level)].shape == p.shape
+        assert grp[str(p.level)].shape[0] == p.bins
 
 
 def test_write_continuous_channel_degenerate_single_level(
@@ -333,7 +333,7 @@ def test_write_level_from_previous_writes_one_whole_shard_per_write(
     group = open_group(tmp_path / "bundle")
     data = np.arange(64, dtype=np.float32)
     prev = _make_prev(group, data)
-    plan = LevelPlan(level=1, shape=(16, 2), period_us=125.0)
+    plan = LevelPlan(level=1, bins=16, period_us=125.0)
     sizing = ChunkShard(chunk_shape=(4, 2), shard_shape=(8, 2))
     writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
     write_level_from_previous(group, prev, plan, sizing, 5)
