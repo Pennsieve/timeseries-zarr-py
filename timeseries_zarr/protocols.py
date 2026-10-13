@@ -124,9 +124,10 @@ class EventChannelSource(Protocol):
         ...
 
     def start_us(self) -> int:
-        """Return the wall-clock microseconds of the first event.
+        """Return the earliest wall-clock microseconds the channel holds.
 
-        A channel with no events returns the recording start.
+        No event precedes it. It is the first event, or the recording start
+        when that is earlier or the channel has no events.
         """
         ...
 
