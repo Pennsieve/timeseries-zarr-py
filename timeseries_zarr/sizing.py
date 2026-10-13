@@ -2,7 +2,12 @@
 
 from math import ceil, prod
 
-from timeseries_zarr.constants import INNER_CHUNK_SAMPLES, TARGET_SHARD_BYTES
+from timeseries_zarr.constants import (
+    ENVELOPE_PAIR_SIZE,
+    FLOAT32_BYTES,
+    INNER_CHUNK_SAMPLES,
+    TARGET_SHARD_BYTES,
+)
 from timeseries_zarr.types import ChunkShard
 
 
@@ -54,3 +59,36 @@ def chunk_and_shard(
     )
 
     return ChunkShard(chunk_shape=chunk_shape, shard_shape=shard_shape)
+
+
+def level_sizing(
+    bins: int,
+    inner_len: int = INNER_CHUNK_SAMPLES,
+    target_shard_bytes: int = TARGET_SHARD_BYTES,
+) -> ChunkShard:
+    """Return the chunk and shard shapes of a level's minmax array.
+
+    minmax has shape (bins, 2) and is the widest member of a level, so its row
+    counts size every member: the others take them through member_sizing, and
+    one shard of folded rows then fills one shard of each. The trailing pair
+    axis is never chunked. A level with no bins takes one-row chunks and
+    shards.
+    """
+    return chunk_and_shard(
+        (bins, ENVELOPE_PAIR_SIZE),
+        FLOAT32_BYTES,
+        inner_len,
+        target_shard_bytes,
+    )
+
+
+def member_sizing(sizing: ChunkShard) -> ChunkShard:
+    """Return the sizing of a one-dimensional level member.
+
+    Keeps the first axis of sizing and drops the rest, so mean, var, and
+    count share the row counts of minmax. A one-dimensional sizing comes back
+    equal.
+    """
+    return ChunkShard(
+        chunk_shape=sizing.chunk_shape[:1], shard_shape=sizing.shard_shape[:1]
+    )
