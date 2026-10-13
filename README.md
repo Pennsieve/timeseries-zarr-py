@@ -43,7 +43,7 @@ setting is optional.
 |---|---|---|
 | `ZARR_WRITER_STAGING_DIR` | scratch path for the atomic publish | alongside the output |
 | `ZARR_WRITER_ZSTD_LEVEL` | Zstd compression level | 5 |
-| `ZARR_WRITER_MAX_LEVELS` | most pyramid levels a channel can hold | 8 |
+| `ZARR_WRITER_MAX_LEVELS` | most pyramid levels a channel can hold | 15 |
 | `ZARR_WRITER_MIN_BINS` | bin threshold for keeping a coarser pyramid level | 1024 |
 | `ZARR_WRITER_INNER_LEN` | inner Zarr chunk length in samples | 8192 |
 | `ZARR_WRITER_TARGET_SHARD_BYTES` | target outer shard size in bytes | 16 MiB |

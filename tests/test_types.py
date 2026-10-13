@@ -3,7 +3,11 @@ from typing import get_args
 
 import pytest
 
-from timeseries_zarr.constants import INNER_CHUNK_SAMPLES, TARGET_SHARD_BYTES
+from timeseries_zarr.constants import (
+    INNER_CHUNK_SAMPLES,
+    MAX_LEVELS,
+    TARGET_SHARD_BYTES,
+)
 from timeseries_zarr.types import ChannelKind, ChunkShard, LevelPlan, WriteOpts
 
 
@@ -55,7 +59,7 @@ def test_channelkind_literal_values():
 def test_writeopts_defaults():
     opts = WriteOpts()
     assert opts.zstd_level == 5
-    assert opts.max_levels == 8
+    assert opts.max_levels == MAX_LEVELS
     assert opts.min_bins == 1024
     assert opts.inner_len == INNER_CHUNK_SAMPLES
     assert opts.target_shard_bytes == TARGET_SHARD_BYTES

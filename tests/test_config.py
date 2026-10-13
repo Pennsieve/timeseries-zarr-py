@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from timeseries_zarr.config import Config, load_config
+from timeseries_zarr.constants import MAX_LEVELS
 from timeseries_zarr.types import WriteOpts
 
 
@@ -72,7 +73,10 @@ def test_env_settings_override_defaults():
 
 def test_max_levels_above_the_format_cap_raises():
     with pytest.raises(ValueError):
-        load_config({"ZARR_WRITER_MAX_LEVELS": "9"}, ["in.nwb", "out_bundle"])
+        load_config(
+            {"ZARR_WRITER_MAX_LEVELS": str(MAX_LEVELS + 1)},
+            ["in.nwb", "out_bundle"],
+        )
 
 
 def test_max_levels_below_one_raises():
@@ -81,8 +85,10 @@ def test_max_levels_below_one_raises():
 
 
 def test_max_levels_at_the_cap_is_accepted():
-    cfg = load_config({"ZARR_WRITER_MAX_LEVELS": "8"}, ["in.nwb", "out_bundle"])
-    assert cfg.opts.max_levels == 8
+    cfg = load_config(
+        {"ZARR_WRITER_MAX_LEVELS": str(MAX_LEVELS)}, ["in.nwb", "out_bundle"]
+    )
+    assert cfg.opts.max_levels == MAX_LEVELS
 
 
 def test_zero_positionals_raises():
