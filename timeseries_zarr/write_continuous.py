@@ -18,7 +18,7 @@ from timeseries_zarr.constants import (
     FLOAT32_BYTES,
 )
 from timeseries_zarr.fold import fold_block
-from timeseries_zarr.planning import level0_period_us, plan_levels
+from timeseries_zarr.planning import plan_levels, sample_period_us
 from timeseries_zarr.protocols import ContinuousChannelSource
 from timeseries_zarr.sizing import chunk_and_shard
 from timeseries_zarr.streaming import (
@@ -154,12 +154,20 @@ def write_continuous_channel(
     )
     group = create_group_with_attrs(parent, str(index), attributes)
     previous = None
-    for plan in plan_levels(
-        source.num_samples(),
-        level0_period_us(source.rate_hz()),
-        opts.max_levels,
-        opts.min_bins,
-    ):
+    plans = [
+        LevelPlan(
+            level=0,
+            bins=source.num_samples(),
+            period_us=sample_period_us(source.rate_hz()),
+        ),
+        *plan_levels(
+            source.num_samples(),
+            source.rate_hz(),
+            opts.max_levels,
+            opts.min_bins,
+        ),
+    ]
+    for plan in plans:
         sizing = chunk_and_shard(
             level_shape=_array_shape(plan),
             dtype_size=FLOAT32_BYTES,

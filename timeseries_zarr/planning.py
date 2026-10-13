@@ -1,83 +1,105 @@
-"""Pyramid level planning: level counts, shapes, and time resolutions."""
+"""Pyramid level planning: level counts, shapes, and time resolutions.
+
+Raw samples are not a level. Levels are numbered from 1, and level k folds
+4**k raw samples into each bin.
+"""
 
 from timeseries_zarr.constants import (
     DECIMATION_FACTOR,
-    ENVELOPE_PAIR_SIZE,
+    MAX_LEVELS,
     MICROSECONDS_PER_SECOND,
 )
 from timeseries_zarr.types import LevelPlan
 
 
-def level_count(
-    num_samples: int, max_levels: int = 8, min_bins: int = 1024
-) -> int:
-    """Return the number of pyramid levels for a channel of num_samples samples.
+def _require_level(level: int) -> None:
+    """Raise ValueError if level is below 1."""
+    if level < 1:
+        raise ValueError(
+            f"levels are numbered from 1 and raw is not a level, got {level}"
+        )
 
-    Level 0 (raw) always counts, even when num_samples is 0. Each coarser level is
-    included only while it would still hold at least min_bins complete bins, and
-    the total is capped at max_levels. A partial trailing bin does not count
-    toward min_bins, so this gate is one stricter than level_num_bins, which keeps
-    the partial bin.
+
+def _require_rate(rate_hz: float) -> None:
+    """Raise ValueError if rate_hz is not positive."""
+    if rate_hz <= 0:
+        raise ValueError(f"rate_hz must be positive, got {rate_hz!r}")
+
+
+def level_count(
+    num_samples: int, max_levels: int = MAX_LEVELS, min_bins: int = 1024
+) -> int:
+    """Return the number of levels for a channel of num_samples samples.
+
+    Raw is not a level. Level k is included only while it would still hold at
+    least min_bins complete bins, and the total is capped at max_levels. A
+    partial trailing bin does not count toward min_bins, so this gate is one
+    stricter than level_bins, which keeps the partial bin. A channel too short
+    for level 1 gets 0, and so does an empty one.
     """
-    count = 1
-    for level in range(1, max_levels):
+    count = 0
+    for level in range(1, max_levels + 1):
         if num_samples // DECIMATION_FACTOR**level < min_bins:
             break
         count += 1
     return count
 
 
-def level_num_bins(num_samples: int, level: int) -> int:
-    """Return the number of bins at a pyramid level for num_samples samples.
+def level_bins(num_samples: int, level: int) -> int:
+    """Return the number of bins at a level for num_samples raw samples.
 
-    Level 0 has one bin per raw sample. Each coarser level has one bin per
-    disjoint block of 4 bins from the level below, and a partial final block
-    becomes one bin.
+    Level k has one bin per disjoint block of 4**k raw samples, and a partial
+    final block becomes one bin. Raises ValueError if level is below 1.
     """
+    _require_level(level)
     samples_per_bin: int = DECIMATION_FACTOR**level
     return -(-num_samples // samples_per_bin)
 
 
-def level0_period_us(sample_rate_hz: float) -> float:
-    """Return level-0 raw sample spacing in microseconds."""
-    return MICROSECONDS_PER_SECOND / sample_rate_hz
+def sample_period_us(rate_hz: float) -> float:
+    """Return the spacing between raw samples in microseconds.
 
-
-def level_period_us(level0_period_us: float, level: int) -> float:
-    """Return the microseconds that one bin spans at the given pyramid level.
-
-    Each level spans 4x more time than the one below. Level 0 returns
-    level0_period_us unchanged.
+    Raises ValueError if rate_hz is not positive.
     """
-    return float(level0_period_us * DECIMATION_FACTOR**level)
+    _require_rate(rate_hz)
+    return MICROSECONDS_PER_SECOND / rate_hz
 
 
-def level_shape(num_samples: int, level: int) -> tuple[int, ...]:
-    """Return the array shape for a pyramid level.
+def level_period_us(rate_hz: float, level: int) -> float:
+    """Return the microseconds that one bin spans at the given level.
 
-    Level 0 is rank-1, a single axis of raw samples. Each coarser level is
-    rank-2: one entry per bin, then a trailing axis of length 2 holding the
-    (min, max) pair.
+    Each level spans 4x more time than the one below, and level 1 spans 4 raw
+    samples. Raises ValueError if rate_hz is not positive or level is below 1.
     """
-    return (
-        (num_samples,)
-        if level == 0
-        else (level_num_bins(num_samples, level), ENVELOPE_PAIR_SIZE)
-    )
+    _require_rate(rate_hz)
+    _require_level(level)
+    samples_per_bin: int = DECIMATION_FACTOR**level
+    return samples_per_bin * MICROSECONDS_PER_SECOND / rate_hz
+
+
+def raw_shape(num_samples: int) -> tuple[int, ...]:
+    """Return the raw array's shape: one axis, one entry per sample."""
+    return (num_samples,)
 
 
 def plan_levels(
     num_samples: int,
-    level0_period_us: float,
-    max_levels: int = 8,
+    rate_hz: float,
+    max_levels: int = MAX_LEVELS,
     min_bins: int = 1024,
 ) -> list[LevelPlan]:
-    """Return the pyramid plan for a channel: one LevelPlan per level."""
+    """Return the pyramid plan for a channel: one LevelPlan per level.
+
+    Numbered from 1. An empty list means the channel carries raw samples and
+    no levels. Raises ValueError if rate_hz is not positive, even when no
+    level fits.
+    """
+    _require_rate(rate_hz)
     return [
         LevelPlan(
             level=k,
-            bins=level_num_bins(num_samples, k),
-            period_us=level_period_us(level0_period_us, k),
+            bins=level_bins(num_samples, k),
+            period_us=level_period_us(rate_hz, k),
         )
-        for k in range(level_count(num_samples, max_levels, min_bins))
+        for k in range(1, level_count(num_samples, max_levels, min_bins) + 1)
     ]

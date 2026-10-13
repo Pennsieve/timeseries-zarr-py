@@ -6,7 +6,7 @@ from zarr import Array
 
 from timeseries_zarr.attrs import channel_group_attrs
 from timeseries_zarr.fold import fold_block
-from timeseries_zarr.planning import plan_levels
+from timeseries_zarr.planning import plan_levels, sample_period_us
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
 from timeseries_zarr.write_continuous import (
     write_continuous_channel,
@@ -22,6 +22,16 @@ def _plan(n, period_us=31.25):
 
 def _sizing():
     return ChunkShard(chunk_shape=(4,), shard_shape=(8,))
+
+
+def _all_plans(num_samples=64, rate_hz=32000.0):
+    """Return the raw plan followed by the planned folded levels."""
+    return [
+        LevelPlan(
+            level=0, bins=num_samples, period_us=sample_period_us(rate_hz)
+        ),
+        *plan_levels(num_samples, rate_hz, 8, 2),
+    ]
 
 
 def _make_prev(group, data):
@@ -229,7 +239,7 @@ def test_write_continuous_channel_each_level_folds_from_below(
         parent, 0, continuous_source(samples), opts=_MULTI_OPTS
     )
     grp = open_group(tmp_path / "bundle")["0"]
-    n_levels = len(plan_levels(64, 31.25, 8, 2))
+    n_levels = len(_all_plans())
     assert n_levels >= 3
     for k in range(1, n_levels):
         below = grp[str(k - 1)][:]
@@ -245,7 +255,7 @@ def test_write_continuous_channel_level_arrays_and_periods(
         parent, 0, continuous_source(samples), opts=_MULTI_OPTS
     )
     grp = open_group(tmp_path / "bundle")["0"]
-    plans = plan_levels(64, 31.25, 8, 2)
+    plans = _all_plans()
     assert sorted(grp.array_keys()) == sorted(str(p.level) for p in plans)
     for p in plans:
         assert dict(grp[str(p.level)].attrs) == {"period_us": p.period_us}
