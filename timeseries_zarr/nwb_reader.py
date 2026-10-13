@@ -3,6 +3,7 @@
 import logging
 from collections.abc import Iterator, Sequence
 from datetime import datetime
+from typing import Final
 
 import numpy as np
 import numpy.typing as npt
@@ -16,7 +17,7 @@ from timeseries_zarr.constants import (
     UNIT_TO_UV,
 )
 from timeseries_zarr.planning import sample_period_us
-from timeseries_zarr.types import EventColumn
+from timeseries_zarr.types import EventColumn, RecordingMeta
 
 logger = logging.getLogger(__name__)
 
@@ -498,3 +499,45 @@ def build_sources_from_nwb(
 
     _require_unique_ids([*continuous, *units])
     return continuous, units
+
+
+_SUBJECT_FIELDS: Final = (
+    ("subject_id", "id"),
+    ("species", "species"),
+    ("sex", "sex"),
+    ("age", "age"),
+    ("description", "description"),
+)
+"""NWB Subject fields carried into recording.json, with their keys there."""
+
+
+def recording_meta(nwbfile: NWBFile) -> RecordingMeta:
+    """Return the recording.json content an NWB file supplies.
+
+    start is the session start time. subject carries the id, species, sex,
+    age, description, and date of birth (as ISO 8601) of the file's Subject,
+    and session carries the session id and description, each only when set.
+    source names this converter and the NWB format. Nothing else identifying
+    is read: the experimenter, the institution, and the file identifier stay
+    out of the bundle.
+    """
+    subject: dict[str, object] = {}
+    if nwbfile.subject is not None:
+        for field, key in _SUBJECT_FIELDS:
+            value = getattr(nwbfile.subject, field, None)
+            if value:
+                subject[key] = str(value)
+        born = getattr(nwbfile.subject, "date_of_birth", None)
+        if born is not None:
+            subject["date_of_birth"] = born.isoformat()
+    session: dict[str, object] = {}
+    if nwbfile.session_id:
+        session["id"] = str(nwbfile.session_id)
+    if nwbfile.session_description:
+        session["description"] = str(nwbfile.session_description)
+    return RecordingMeta(
+        start=nwbfile.session_start_time,
+        subject=subject,
+        session=session,
+        source={"converter": "timeseries-zarr-py", "format": "NWB"},
+    )
