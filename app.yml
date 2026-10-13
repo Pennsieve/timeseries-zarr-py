@@ -3,9 +3,11 @@
 schemaVersion: "1.0"
 name: Timeseries Zarr Writer
 description: >-
-  Converts an NWB neurophysiology recording into a pyramid Zarr v3 viewer
-  bundle: a static directory a browser reads over HTTP range requests to render
-  any time window interactively.
+  Converts an NWB neurophysiology recording into a TS-Zarr 1.0 bundle: a static
+  directory of Zarr v3 arrays that a browser reads over HTTP range requests to
+  render any time window interactively. Each continuous channel holds its raw
+  samples and a ladder of levels with per-bin minimum, maximum, mean, and count.
+  Spikes, intervals, and annotations become event channels.
 applicationType: processor
 
 categories:
@@ -15,6 +17,7 @@ categories:
 tags:
   - nwb
   - zarr
+  - ts-zarr
   - timeseries
   - neurophysiology
   - electrophysiology
@@ -42,9 +45,10 @@ outputs:
   - name: bundle
     dataType: directory
     description: >-
-      One Zarr v3 bundle written into OUTPUT_DIR, named for the input file stem:
-      session.nwb produces session.zarr. The directory appears in one atomic
-      rename, so a reader never sees a partial bundle.
+      One TS-Zarr 1.0 bundle written into OUTPUT_DIR, named for the input file
+      stem: session.nwb produces session.zarr. Its recording.json holds the
+      subject, session, and wall-clock start. The directory appears in one
+      atomic rename, so a reader never sees a partial bundle.
 
   - name: properties
     dataType: file
@@ -73,13 +77,24 @@ parameters:
   - name: ZARR_WRITER_MAX_LEVELS
     label: Maximum pyramid levels
     description: >-
-      Upper bound on the number of min/max envelope levels built above the raw
-      samples. Each level is 4x coarser than the one below it. Integer values
-      only.
+      Upper bound on the number of levels built above the raw samples. Each
+      level is 4x coarser than the one below it, and the raw samples are not a
+      level. Integer values only.
     type: number
-    default: 8
+    default: 15
     min: 1
-    max: 8
+    max: 15
+
+  - name: ZARR_WRITER_VAR
+    label: Write variance
+    description: >-
+      1 adds the per-bin variance member to every level of every continuous
+      channel and folds every level from the raw samples in one pass, which
+      needs more memory. 0 omits it. Only 0 and 1 are accepted.
+    type: number
+    default: 0
+    min: 0
+    max: 1
 
   - name: ZARR_WRITER_MIN_BINS
     label: Minimum bins per level
