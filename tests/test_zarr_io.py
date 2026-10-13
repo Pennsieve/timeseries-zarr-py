@@ -5,6 +5,7 @@ import pytest
 from zarr import Group
 from zarr.codecs import ShardingCodec, ZstdCodec
 
+from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.zarr_io import (
     consolidate,
     create_array,
@@ -310,3 +311,42 @@ def test_create_array_uncompressed_shard_starts_with_the_plain_rows(tmp_path):
     shard = (path / "a" / "c" / "0" / "0").read_bytes()
     assert shard.startswith(rows.tobytes())
     assert np.array_equal(open_group(path)["a"][:], rows)
+
+
+def test_open_group_writes_attrs_when_it_creates_the_group(tmp_path):
+    path = tmp_path / "bundle"
+    group = open_group(path, {"tsz": {"version": "1.0"}})
+    assert dict(group.attrs) == {"tsz": {"version": "1.0"}}
+    assert _node(path)["attributes"] == {"tsz": {"version": "1.0"}}
+
+
+def test_open_group_without_attrs_creates_a_group_with_none(tmp_path):
+    path = tmp_path / "bundle"
+    assert dict(open_group(path).attrs) == {}
+    assert _node(path)["attributes"] == {}
+
+
+def test_open_group_ignores_attrs_when_the_group_exists(tmp_path):
+    path = tmp_path / "bundle"
+    open_group(path, {"tsz": {"version": "1.0"}})
+    reopened = open_group(path, {"other": 1})
+    assert dict(reopened.attrs) == {"tsz": {"version": "1.0"}}
+    assert _node(path)["attributes"] == {"tsz": {"version": "1.0"}}
+
+
+def test_open_group_reopened_without_attrs_keeps_the_existing_ones(tmp_path):
+    path = tmp_path / "bundle"
+    open_group(path, root_attrs())
+    assert dict(open_group(path).attrs) == root_attrs()
+
+
+def test_root_attrs_survive_consolidation_beside_the_inline_metadata(tmp_path):
+    path = tmp_path / "bundle"
+    root = open_group(path, root_attrs())
+    create_group_with_attrs(root, "0", {"tsz": {"kind": "continuous"}})
+    consolidate(root)
+    node = _node(path)
+    assert node["attributes"] == root_attrs()
+    assert node["consolidated_metadata"]["kind"] == "inline"
+    assert node["consolidated_metadata"]["must_understand"] is False
+    assert list(node["consolidated_metadata"]["metadata"]) == ["0"]
