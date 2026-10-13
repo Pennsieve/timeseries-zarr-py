@@ -11,9 +11,11 @@ from typing import Final
 import numpy as np
 import numpy.typing as npt
 
+from timeseries_zarr.attrs import waveform_array_attrs
 from timeseries_zarr.columns import channels_rows, channels_width, text_rows
-from timeseries_zarr.constants import MAX_LABELS
+from timeseries_zarr.constants import FLOAT32_BYTES, MAX_LABELS
 from timeseries_zarr.protocols import EventChannelSource
+from timeseries_zarr.sizing import chunk_and_shard
 from timeseries_zarr.types import ChunkShard
 from timeseries_zarr.zarr_io import (
     ZarrArray,
@@ -21,6 +23,9 @@ from timeseries_zarr.zarr_io import (
     create_array,
     write_region,
 )
+
+WAVEFORM_MEAN_RANK: Final = 2
+"""Rank of the waveform_mean array: one axis of labels, one of samples."""
 
 EVENTS_KEY: Final = "events"
 """Key of the event time array within an event channel group."""
@@ -37,7 +42,13 @@ TEXT_KEY: Final = "text"
 CHANNELS_KEY: Final = "channels"
 """Key of the per-event channel bitmask array within an event channel group."""
 
+WAVEFORM_MEAN_KEY: Final = "waveform_mean"
+"""Key of the per-label mean snippet array within an event channel group."""
+
 EVENT_DIMENSION: Final = "event"
+
+LABEL_DIMENSION: Final = "label"
+"""Dimension name of the label axis of a per-label array."""
 """Dimension name of the per-event axis."""
 
 
@@ -312,4 +323,51 @@ def write_channels_array(
     _write_source_blocks(
         array, source.num_events(), sizing.shard_shape[0], read
     )
+    return array
+
+
+def write_waveform_mean_array(
+    group: ZarrGroup,
+    source: EventChannelSource,
+    zstd_level: int,
+) -> ZarrArray:
+    """Create the waveform_mean array under group and write the source's means.
+
+    A float32 array named "waveform_mean" shaped (labels, samples), with the
+    dimension names "label" and None, holding the mean snippet of each label
+    category. It carries period_us, the microseconds between snippet samples,
+    and no event_sample. A label that has no events keeps whatever the source
+    gives, NaN by the format's convention. The array has one row per label, so
+    it is sized with the default chunk and shard targets and written whole.
+    Raises ValueError if the means are not shaped (labels, samples), have no
+    samples, or have a row count other than source.num_labels(), or if the
+    period is not positive.
+    """
+    means = np.asarray(source.waveform_mean(), dtype=np.float32)
+    if len(means.shape) != WAVEFORM_MEAN_RANK:
+        raise ValueError(
+            f"waveform_mean has shape (labels, samples), got {means.shape}"
+        )
+    labels, samples = means.shape
+    if samples < 1:
+        raise ValueError("waveform_mean needs at least 1 sample per label")
+    if labels != source.num_labels():
+        raise ValueError(
+            f"waveform_mean has {labels} rows but the channel has "
+            f"{source.num_labels()} label categories"
+        )
+    attrs = waveform_array_attrs(source.waveform_period_us())
+    sizing = chunk_and_shard(means.shape, FLOAT32_BYTES)
+    array = create_array(
+        group,
+        WAVEFORM_MEAN_KEY,
+        means.shape,
+        np.float32,
+        sizing.chunk_shape,
+        sizing.shard_shape,
+        attrs,
+        zstd_level,
+        dimension_names=(LABEL_DIMENSION, None),
+    )
+    write_region(array, 0, means)
     return array

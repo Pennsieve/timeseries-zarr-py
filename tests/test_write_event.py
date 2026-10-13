@@ -11,11 +11,13 @@ from timeseries_zarr.write_event import (
     EVENTS_KEY,
     LABELS_KEY,
     TEXT_KEY,
+    WAVEFORM_MEAN_KEY,
     write_channels_array,
     write_durations_array,
     write_events_array,
     write_labels_array,
     write_text_array,
+    write_waveform_mean_array,
 )
 from timeseries_zarr.zarr_io import open_group, write_region
 
@@ -582,3 +584,107 @@ def test_write_channels_array_rejects_a_source_that_returns_too_few_lists(
     source = Short([1, 2], channel_ids=[["a"], ["b"]])
     with pytest.raises(ValueError, match="returned 1 lists for 2 events"):
         _write_channels(tmp_path, source)
+
+
+def _means():
+    means = np.arange(15, dtype=np.float32).reshape(3, 5) - 7.0
+    means[1] = np.nan
+    return means
+
+
+def _write_means(tmp_path, source):
+    group = open_group(tmp_path / "bundle")
+    write_waveform_mean_array(group, source, 5)
+    return open_group(tmp_path / "bundle")
+
+
+def _means_source(event_source, means=None, period=122.0703125, **kw):
+    return event_source(
+        [1, 2, 3],
+        labels=[0, 1, 2],
+        label_names=["a", "b", "c"],
+        waveform_mean=_means() if means is None else means,
+        waveform_period_us=period,
+        **kw,
+    )
+
+
+def test_write_waveform_mean_array_round_trips_float32_means_with_nan(
+    tmp_path, event_source
+):
+    stored = _write_means(tmp_path, _means_source(event_source))[
+        WAVEFORM_MEAN_KEY
+    ][:]
+    assert stored.dtype == np.float32
+    assert np.array_equal(stored, _means(), equal_nan=True)
+
+
+def test_write_waveform_mean_array_carries_the_snippet_period_only(
+    tmp_path, event_source
+):
+    arr = _write_means(tmp_path, _means_source(event_source))[WAVEFORM_MEAN_KEY]
+    assert dict(arr.attrs) == {"tsz": {"period_us": 122.0703125}}
+
+
+def test_write_waveform_mean_array_names_the_label_axis_and_fills_nan(
+    tmp_path, event_source
+):
+    arr = _write_means(tmp_path, _means_source(event_source))[WAVEFORM_MEAN_KEY]
+    assert arr.shape == (3, 5)
+    assert arr.metadata.dimension_names == ("label", None)
+    assert np.isnan(arr.fill_value)
+
+
+def test_write_waveform_mean_array_is_written_in_one_whole_write(
+    tmp_path, event_source, monkeypatch
+):
+    writes = []
+
+    def spy(array, start, block):
+        writes.append((start, block.shape))
+        write_region(array, start, block)
+
+    monkeypatch.setattr("timeseries_zarr.write_event.write_region", spy)
+    _write_means(tmp_path, _means_source(event_source))
+    assert writes == [(0, (3, 5))]
+
+
+def test_write_waveform_mean_array_returns_the_array(tmp_path, event_source):
+    group = open_group(tmp_path / "bundle")
+    arr = write_waveform_mean_array(group, _means_source(event_source), 5)
+    assert arr.shape == (3, 5)
+
+
+def test_write_waveform_mean_array_rejects_a_row_count_other_than_the_labels(
+    tmp_path, event_source
+):
+    source = _means_source(event_source, means=np.zeros((2, 5)))
+    with pytest.raises(ValueError, match="2 rows but the channel has 3"):
+        _write_means(tmp_path, source)
+    assert list(open_group(tmp_path / "bundle").array_keys()) == []
+
+
+def test_write_waveform_mean_array_rejects_means_that_are_not_two_dimensional(
+    tmp_path, event_source
+):
+    source = _means_source(event_source, means=np.zeros(3))
+    with pytest.raises(ValueError, match="labels, samples"):
+        _write_means(tmp_path, source)
+
+
+def test_write_waveform_mean_array_rejects_means_with_no_samples(
+    tmp_path, event_source
+):
+    source = _means_source(event_source, means=np.zeros((3, 0)))
+    with pytest.raises(ValueError, match="at least 1 sample"):
+        _write_means(tmp_path, source)
+
+
+@pytest.mark.parametrize("period", [0.0, -1.0])
+def test_write_waveform_mean_array_rejects_a_non_positive_period(
+    tmp_path, event_source, period
+):
+    source = _means_source(event_source, period=period)
+    with pytest.raises(ValueError, match="period_us"):
+        _write_means(tmp_path, source)
+    assert list(open_group(tmp_path / "bundle").array_keys()) == []
