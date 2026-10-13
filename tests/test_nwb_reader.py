@@ -5,8 +5,10 @@ import pytest
 from hdmf.common import DynamicTableRegion
 from pynwb import NWBFile, TimeSeries
 from pynwb.ecephys import ElectricalSeries
+from pynwb.epoch import TimeIntervals
+from pynwb.event import EventsTable
 from pynwb.file import Subject
-from pynwb.misc import Units
+from pynwb.misc import AnnotationSeries, Units
 from pynwb.testing.mock.base import mock_TimeSeries
 from pynwb.testing.mock.device import mock_Device
 from pynwb.testing.mock.ecephys import mock_ElectricalSeries
@@ -378,7 +380,7 @@ def test_build_yields_one_continuous_source_per_channel():
     nwb = mock_NWBFile()
     data = np.arange(50, dtype=np.float64).reshape(10, 5)
     mock_ElectricalSeries(nwbfile=nwb, data=data, rate=30000.0)
-    continuous, units = build_sources_from_nwb(nwb)
+    continuous, units, _ = build_sources_from_nwb(nwb)
     assert len(continuous) == 5
     assert units == []
     assert np.array_equal(
@@ -391,7 +393,7 @@ def test_build_yields_unit_source_with_first_series_rate():
     nwb = mock_NWBFile()
     mock_ElectricalSeries(nwbfile=nwb, rate=30000.0)
     nwb.units = _make_units(_TWO_UNITS, name="units")
-    continuous, units = build_sources_from_nwb(nwb)
+    continuous, units, _ = build_sources_from_nwb(nwb)
     assert len(units) == 1
     assert units[0].waveform_period_us() == 1_000_000 / 30000.0
     assert units[0].num_events() == 5
@@ -399,7 +401,7 @@ def test_build_yields_unit_source_with_first_series_rate():
 
 def test_build_with_no_electrical_series_yields_no_continuous():
     nwb = mock_NWBFile()
-    continuous, units = build_sources_from_nwb(nwb)
+    continuous, units, _ = build_sources_from_nwb(nwb)
     assert continuous == []
     assert units == []
 
@@ -407,7 +409,7 @@ def test_build_with_no_electrical_series_yields_no_continuous():
 def test_build_with_no_units_yields_no_unit_sources():
     nwb = mock_NWBFile()
     mock_ElectricalSeries(nwbfile=nwb, rate=30000.0)
-    _, units = build_sources_from_nwb(nwb)
+    _, units, _ = build_sources_from_nwb(nwb)
     assert units == []
 
 
@@ -431,7 +433,7 @@ def test_build_discovers_units_in_a_processing_module():
     nwb = mock_NWBFile()
     mock_ElectricalSeries(nwbfile=nwb, rate=30000.0)
     _add_units_to_module(nwb, "ecephys", _make_units(_TWO_UNITS, name="sorted"))
-    _, units = build_sources_from_nwb(nwb)
+    _, units, _ = build_sources_from_nwb(nwb)
     assert len(units) == 1
     assert units[0].id == "sorted"
 
@@ -441,7 +443,7 @@ def test_build_orders_root_units_before_module_units():
     mock_ElectricalSeries(nwbfile=nwb, rate=30000.0)
     nwb.units = _make_units(_TWO_UNITS, name="units")
     _add_units_to_module(nwb, "ecephys", _make_units(_TWO_UNITS, name="module"))
-    _, units = build_sources_from_nwb(nwb)
+    _, units, _ = build_sources_from_nwb(nwb)
     assert [u.id for u in units] == ["units", "module"]
 
 
@@ -450,7 +452,7 @@ def test_build_orders_modules_by_name():
     mock_ElectricalSeries(nwbfile=nwb, rate=30000.0)
     _add_units_to_module(nwb, "zebra", _make_units(_TWO_UNITS, name="z_units"))
     _add_units_to_module(nwb, "alpha", _make_units(_TWO_UNITS, name="a_units"))
-    _, units = build_sources_from_nwb(nwb)
+    _, units, _ = build_sources_from_nwb(nwb)
     assert [u.id for u in units] == ["a_units", "z_units"]
 
 
@@ -459,7 +461,7 @@ def test_build_orders_containers_within_a_module_by_name():
     mock_ElectricalSeries(nwbfile=nwb, rate=30000.0)
     _add_units_to_module(nwb, "ecephys", _make_units(_TWO_UNITS, name="second"))
     _add_units_to_module(nwb, "ecephys", _make_units(_TWO_UNITS, name="first"))
-    _, units = build_sources_from_nwb(nwb)
+    _, units, _ = build_sources_from_nwb(nwb)
     assert [u.id for u in units] == ["first", "second"]
 
 
@@ -499,7 +501,7 @@ def test_continuous_reads_a_rank_one_series_as_one_channel():
     assert np.array_equal(
         src.read_samples(2, 5), (np.arange(2, 5) * 1e6).astype(np.float32)
     )
-    continuous, _ = build_sources_from_nwb(nwb)
+    continuous, _, _ = build_sources_from_nwb(nwb)
     assert len(continuous) == 1
 
 
@@ -586,7 +588,7 @@ def test_build_yields_plain_series_columns_after_electrical_series_columns():
         unit="cmH2O",
         rate=512.0,
     )
-    continuous, _ = build_sources_from_nwb(nwb)
+    continuous, _, _ = build_sources_from_nwb(nwb)
     assert [src.id for src in continuous] == [
         "0",
         "1",
@@ -617,7 +619,7 @@ def test_build_skips_a_series_that_is_not_numeric_samples(caplog):
         rate=1.0,
     )
     with caplog.at_level("WARNING"):
-        continuous, _ = build_sources_from_nwb(nwb)
+        continuous, _, _ = build_sources_from_nwb(nwb)
     assert [src.id for src in continuous] == ["0", "1"]
     skipped = [record.getMessage() for record in caplog.records]
     assert any("notes" in message for message in skipped)
@@ -723,3 +725,137 @@ def test_recording_meta_leaves_other_identifying_fields_out():
     text = str((meta.subject, meta.session, meta.source))
     for leaked in ("Doe", "Example Hospital", "file-identifier-123"):
         assert leaked not in text
+
+
+def _nwb_with_series(n_channels=3):
+    nwb = mock_NWBFile()
+    es = mock_ElectricalSeries(
+        nwbfile=nwb, name="es", data=np.zeros((20, n_channels)), rate=512.0
+    )
+    return nwb, es
+
+
+def _interval_table(name):
+    table = TimeIntervals(name=name, description="d")
+    table.add_row(start_time=1.0, stop_time=2.0)
+    return table
+
+
+def _events_table(name):
+    table = EventsTable(name=name, description="d")
+    table.add_row(timestamp=1.0)
+    return table
+
+
+@pytest.mark.filterwarnings("ignore:AnnotationSeries is deprecated:UserWarning")
+def test_build_orders_event_sources_by_kind_then_name():
+    nwb, es = _nwb_with_series()
+    nwb.units = _make_units(_TWO_UNITS, name="units")
+    nwb.add_epoch(start_time=1.0, stop_time=2.0, tags=["a"], timeseries=[es])
+    nwb.add_trial(start_time=0.5, stop_time=0.6)
+    nwb.add_invalid_time_interval(start_time=3.0, stop_time=4.0)
+    for name in ("zeta", "alpha"):
+        nwb.add_time_intervals(_interval_table(name))
+    for name in ("marks", "events2"):
+        nwb.add_events_table(_events_table(name))
+    nwb.add_acquisition(
+        AnnotationSeries(name="notes", data=["x"], timestamps=[1.0])
+    )
+    ids = [source.id for source in build_sources_from_nwb(nwb).events]
+    assert ids == [
+        "units",
+        "epochs",
+        "trials",
+        "invalid_times",
+        "alpha",
+        "zeta",
+        "events2",
+        "marks",
+        "notes",
+    ]
+
+
+def test_build_resolves_timeseries_references_to_the_series_channel_ids():
+    nwb, es = _nwb_with_series()
+    nwb.add_epoch(start_time=1.0, stop_time=2.0, tags=["a"], timeseries=[es])
+    built = build_sources_from_nwb(nwb)
+    ids = [source.id for source in built.continuous]
+    epochs = next(src for src in built.events if src.id == "epochs")
+    assert epochs.read_channel_ids(0, 1) == [ids]
+    assert "channels" in epochs.columns()
+
+
+def test_build_resolves_a_reference_to_a_plain_series_by_its_name():
+    nwb, _ = _nwb_with_series()
+    pulse = TimeSeries(name="pulse", data=np.zeros(20), unit="bpm", rate=512.0)
+    nwb.add_acquisition(pulse)
+    nwb.add_epoch(start_time=1.0, stop_time=2.0, tags=["a"], timeseries=[pulse])
+    epochs = next(
+        src for src in build_sources_from_nwb(nwb).events if src.id == "epochs"
+    )
+    assert epochs.read_channel_ids(0, 1) == [["pulse"]]
+
+
+def test_build_skips_tables_with_no_rows_without_needing_a_rate():
+    nwb = mock_NWBFile()
+    nwb.units = Units(name="units")
+    nwb.add_time_intervals(TimeIntervals(name="empty", description="d"))
+    nwb.add_events_table(EventsTable(name="none", description="d"))
+    assert build_sources_from_nwb(nwb).events == []
+
+
+@pytest.mark.filterwarnings("ignore:AnnotationSeries is deprecated:UserWarning")
+def test_build_skips_an_empty_annotation_series():
+    nwb = mock_NWBFile()
+    nwb.add_acquisition(AnnotationSeries(name="notes", data=[], timestamps=[]))
+    assert build_sources_from_nwb(nwb).events == []
+
+
+@pytest.mark.filterwarnings("ignore:AnnotationSeries is deprecated:UserWarning")
+def test_build_reads_an_annotation_series_as_events_not_as_a_skipped_series(
+    caplog,
+):
+    nwb, _ = _nwb_with_series()
+    nwb.add_acquisition(
+        AnnotationSeries(name="notes", data=["x"], timestamps=[1.0])
+    )
+    with caplog.at_level("WARNING"):
+        built = build_sources_from_nwb(nwb)
+    assert [src.id for src in built.events] == ["notes"]
+    assert "notes" not in caplog.text
+
+
+def test_build_returns_the_recording_metadata_of_the_file():
+    nwb, _ = _nwb_with_series()
+    built = build_sources_from_nwb(nwb)
+    assert built.recording.start == nwb.session_start_time
+    assert built.recording.source["format"] == "NWB"
+
+
+def test_build_without_events_has_an_empty_event_list():
+    nwb, _ = _nwb_with_series()
+    assert build_sources_from_nwb(nwb).events == []
+
+
+def test_build_rejects_an_event_table_that_shares_an_id_with_a_series():
+    nwb, es = _nwb_with_series()
+    nwb.add_acquisition(
+        TimeSeries(name="epochs", data=np.zeros(5), unit="n/a", rate=1.0)
+    )
+    nwb.add_epoch(start_time=1.0, stop_time=2.0, tags=["a"], timeseries=[es])
+    with pytest.raises(ValueError, match="duplicate channel id 'epochs'"):
+        build_sources_from_nwb(nwb)
+
+
+def test_build_unit_tables_still_need_an_electrical_series_rate():
+    nwb = mock_NWBFile()
+    nwb.units = _make_units(_TWO_UNITS, name="units")
+    with pytest.raises(ValueError, match="need an ElectricalSeries rate"):
+        build_sources_from_nwb(nwb)
+
+
+def test_continuous_sources_report_the_name_of_their_series():
+    nwb, es = _nwb_with_series()
+    plain = TimeSeries(name="pulse", data=np.zeros(20), unit="bpm", rate=1.0)
+    assert NwbContinuousSource(es, 1, STARTED).series_name == "es"
+    assert NwbTimeSeriesSource(plain, 0, STARTED).series_name == "pulse"

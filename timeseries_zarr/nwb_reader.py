@@ -1,20 +1,27 @@
 """Concrete NWB adapters implementing the channel-source protocols."""
 
 import logging
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime
-from typing import Final
+from typing import Final, NamedTuple
 
 import numpy as np
 import numpy.typing as npt
 from pynwb import NWBFile, TimeSeries
 from pynwb.ecephys import ElectricalSeries
-from pynwb.misc import Units
+from pynwb.epoch import TimeIntervals
+from pynwb.event import EventsTable
+from pynwb.misc import AnnotationSeries, Units
 
 from timeseries_zarr.constants import (
     MAX_LABELS,
     MICROSECONDS_PER_SECOND,
     UNIT_TO_UV,
+)
+from timeseries_zarr.nwb_events import (
+    NwbAnnotationSeriesSource,
+    NwbEventsTableSource,
+    NwbIntervalSource,
 )
 from timeseries_zarr.planning import sample_period_us
 from timeseries_zarr.types import EventColumn, RecordingMeta
@@ -86,6 +93,11 @@ class NwbContinuousSource:
         self._channel_index = channel_index
         self._session_start_time = session_start_time
         self._rate_hz = _require_rate(electrical_series)
+
+    @property
+    def series_name(self) -> str:
+        """The name of the ElectricalSeries this channel is a column of."""
+        return str(self._series.name)
 
     @property
     def id(self) -> str:
@@ -180,6 +192,11 @@ class NwbTimeSeriesSource:
         unit = str(series.unit)
         self._uv_factor = UNIT_TO_UV.get(unit.lower())
         self._unit = unit if self._uv_factor is None else "uV"
+
+    @property
+    def series_name(self) -> str:
+        """The name of the TimeSeries this channel is a column of."""
+        return str(self._series.name)
 
     @property
     def id(self) -> str:
@@ -432,7 +449,9 @@ def _iter_plain_series(nwbfile: NWBFile) -> Iterator[TimeSeries]:
     warning. Order is the acquisition's insertion order.
     """
     for acq in nwbfile.acquisition.values():
-        if isinstance(acq, ElectricalSeries) or not isinstance(acq, TimeSeries):
+        if isinstance(
+            acq, ElectricalSeries | AnnotationSeries
+        ) or not isinstance(acq, TimeSeries):
             continue
         if not _holds_channel_data(acq):
             logger.warning(
@@ -444,8 +463,25 @@ def _iter_plain_series(nwbfile: NWBFile) -> Iterator[TimeSeries]:
         yield acq
 
 
+type EventSource = (
+    NwbUnitSource
+    | NwbIntervalSource
+    | NwbEventsTableSource
+    | NwbAnnotationSeriesSource
+)
+"""Any source that discovery turns an NWB table or series into an event channel."""
+
+
+class NwbSources(NamedTuple):
+    """The sources and the recording metadata discovered in one NWB file."""
+
+    continuous: list[ContinuousSource]
+    events: list[EventSource]
+    recording: RecordingMeta
+
+
 def _require_unique_ids(
-    sources: Sequence[ContinuousSource | NwbUnitSource],
+    sources: Sequence[ContinuousSource | EventSource],
 ) -> None:
     """Raise ValueError when two sources share a channel id."""
     seen: set[str] = set()
@@ -453,25 +489,103 @@ def _require_unique_ids(
         if source.id in seen:
             raise ValueError(
                 f"duplicate channel id {source.id!r}: every ElectricalSeries "
-                "electrode id, TimeSeries name, and Units table name must be "
+                "electrode id, TimeSeries name, and event table name must be "
                 "distinct"
             )
         seen.add(source.id)
 
 
-def build_sources_from_nwb(
+def _iter_interval_tables(nwbfile: NWBFile) -> Iterator[TimeIntervals]:
+    """Yield every TimeIntervals table once, in discovery order.
+
+    The epochs, trials, and invalid times tables come first, in that order,
+    then the file's other interval tables in name order.
+    """
+    seen: set[int] = set()
+    named = [nwbfile.epochs, nwbfile.trials, nwbfile.invalid_times]
+    named.extend(nwbfile.intervals[name] for name in sorted(nwbfile.intervals))
+    for table in named:
+        if table is not None and id(table) not in seen:
+            seen.add(id(table))
+            yield table
+
+
+def _iter_events_tables(nwbfile: NWBFile) -> Iterator[EventsTable]:
+    """Yield the file's EventsTable tables in name order."""
+    tables = getattr(nwbfile, "events", None) or {}
+    for name in sorted(tables):
+        yield tables[name]
+
+
+def _iter_annotation_series(nwbfile: NWBFile) -> Iterator[AnnotationSeries]:
+    """Yield the acquisition AnnotationSeries in insertion order."""
+    for acq in nwbfile.acquisition.values():
+        if isinstance(acq, AnnotationSeries):
+            yield acq
+
+
+def _non_empty[T](tables: Iterable[T], size: Callable[[T], int]) -> Iterator[T]:
+    """Yield the tables or series that hold something, logging the others."""
+    for table in tables:
+        if size(table):
+            yield table
+        else:
+            logger.info("skipping empty %s", getattr(table, "name", table))
+
+
+def _build_events(
     nwbfile: NWBFile,
-) -> tuple[list[ContinuousSource], list[NwbUnitSource]]:
-    """Discover the channel sources to write from an open NWB file.
+    series: list[ElectricalSeries],
+    continuous: Sequence[ContinuousSource],
+) -> list[EventSource]:
+    """Build one event source per non-empty table or annotation series."""
+    session_start = nwbfile.session_start_time
+    channel_ids_by_series: dict[str, list[str]] = {}
+    for source in continuous:
+        channel_ids_by_series.setdefault(source.series_name, []).append(
+            source.id
+        )
+
+    events: list[EventSource] = []
+    for units in _non_empty(_iter_units_tables(nwbfile), len):
+        if not series:
+            raise ValueError("unit channels need an ElectricalSeries rate")
+        events.append(
+            NwbUnitSource(units, float(series[0].rate), session_start)
+        )
+    events.extend(
+        NwbIntervalSource(table, session_start, channel_ids_by_series)
+        for table in _non_empty(_iter_interval_tables(nwbfile), len)
+    )
+    events.extend(
+        NwbEventsTableSource(table, session_start)
+        for table in _non_empty(_iter_events_tables(nwbfile), len)
+    )
+    events.extend(
+        NwbAnnotationSeriesSource(annotations, session_start)
+        for annotations in _non_empty(
+            _iter_annotation_series(nwbfile), lambda a: len(a.data)
+        )
+    )
+    return events
+
+
+def build_sources_from_nwb(nwbfile: NWBFile) -> NwbSources:
+    """Discover the channels and recording metadata to write from an NWB file.
 
     Every ElectricalSeries in the file's acquisition contributes one continuous
     source per channel column, in series order then channel order. Every other
     acquisition TimeSeries holding numeric samples of rank 1 or 2 follows, one
-    source per column in the same order. Each Units table contributes one unit
-    source, in _iter_units_tables order, with the waveform rate taken from the
-    first ElectricalSeries. Raises ValueError if a Units table is present and
-    no ElectricalSeries supplies that rate, if a series is sampled by
-    timestamps rather than a rate, or if two sources share an id.
+    source per column in the same order. Event sources follow, one per
+    non-empty table or series, in this order: Units tables (see
+    _iter_units_tables, waveform rate from the first ElectricalSeries), the
+    epochs, trials, and invalid times tables, the other interval tables by
+    name, EventsTable tables by name, and acquisition AnnotationSeries in
+    insertion order. A table's timeseries references resolve to the ids of the
+    channels of that series. recording is the identity recording_meta reads.
+    Raises ValueError if a non-empty Units table is present and no
+    ElectricalSeries supplies the rate, if a series is sampled by timestamps
+    rather than a rate, or if two sources share an id.
     """
     session_start = nwbfile.session_start_time
     series = [
@@ -489,16 +603,9 @@ def build_sources_from_nwb(
         for plain in _iter_plain_series(nwbfile)
         for channel_index in range(_channel_count(plain))
     )
-
-    units: list[NwbUnitSource] = []
-    for table in _iter_units_tables(nwbfile):
-        if not series:
-            raise ValueError("unit channels need an ElectricalSeries rate")
-        waveform_rate_hz = float(series[0].rate)
-        units.append(NwbUnitSource(table, waveform_rate_hz, session_start))
-
-    _require_unique_ids([*continuous, *units])
-    return continuous, units
+    events = _build_events(nwbfile, series, continuous)
+    _require_unique_ids([*continuous, *events])
+    return NwbSources(continuous, events, recording_meta(nwbfile))
 
 
 _SUBJECT_FIELDS: Final = (

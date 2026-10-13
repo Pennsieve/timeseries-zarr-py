@@ -34,19 +34,20 @@ def main(argv: Sequence[str]) -> int:
         # inside the context manager.
         with NWBHDF5IO(str(cfg.nwb_path), mode="r") as io:
             nwbfile = io.read()
-            continuous, units = build_sources_from_nwb(nwbfile)
+            sources = build_sources_from_nwb(nwbfile)
             logger.info(
-                "writing %d continuous + %d unit channels to %s",
-                len(continuous),
-                len(units),
+                "writing %d continuous + %d event channels to %s",
+                len(sources.continuous),
+                len(sources.events),
                 cfg.final_dir,
             )
             write_bundle(
-                continuous,
-                units,
+                sources.continuous,
+                sources.events,
                 staging_dir=cfg.staging_dir,
                 final_dir=cfg.final_dir,
                 opts=cfg.opts,
+                recording=sources.recording,
             )
         write_properties(cfg.properties_path, cfg.final_dir)
     except (OSError, ValueError):
