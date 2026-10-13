@@ -5,8 +5,6 @@ source's rows in. An empty source (no events) creates the array and writes
 nothing.
 """
 
-from collections.abc import Callable
-
 import numpy as np
 import numpy.typing as npt
 
@@ -16,37 +14,13 @@ from timeseries_zarr.planning import sample_period_us
 from timeseries_zarr.protocols import UnitChannelSource
 from timeseries_zarr.sizing import chunk_and_shard
 from timeseries_zarr.types import ChunkShard, WriteOpts
+from timeseries_zarr.write_event import _write_source_blocks
 from timeseries_zarr.zarr_io import (
     ZarrArray,
     ZarrGroup,
     create_array,
     create_group_with_attrs,
-    write_region,
 )
-
-
-def _write_source_blocks[T: np.generic](
-    array: ZarrArray,
-    n: int,
-    block_len: int,
-    reader: Callable[[int, int], npt.NDArray[T]],
-    on_block: Callable[[npt.NDArray[T]], None] | None = None,
-) -> None:
-    """Stream a source's rows into array in block_len-sized axis-0 blocks.
-
-    Each [begin, begin + block_len) window is read through reader and written
-    at the running axis-0 offset. on_block, when given, inspects a block before
-    its write. Callers pass the shard length: a write narrower than a shard
-    makes the sharding codec read that shard back, re-encode every inner chunk,
-    and rewrite it.
-    """
-    start = 0
-    for begin in range(0, n, block_len):
-        block = reader(begin, min(begin + block_len, n))
-        if on_block is not None:
-            on_block(block)
-        write_region(array, start, block)
-        start += block.shape[0]
 
 
 def write_events_array(
