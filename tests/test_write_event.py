@@ -14,10 +14,11 @@ from timeseries_zarr.write_event import (
     LABELS_KEY,
     TEXT_KEY,
     WAVEFORM_MEAN_KEY,
-    _count_sizing,
+    _row_sizing,
     write_channels_array,
     write_count_levels,
     write_durations_array,
+    write_event_channel,
     write_events_array,
     write_labels_array,
     write_text_array,
@@ -873,13 +874,193 @@ def test_write_count_levels_rejects_a_label_outside_the_categories(
         _write_counts(tmp_path, source)
 
 
-def test_count_sizing_keeps_the_label_axis_whole_and_the_chunk_within_a_shard():
-    narrow = _count_sizing(1000, 1, _COUNT_OPTS)
+def test_row_sizing_keeps_the_column_axis_whole_and_the_chunk_within_a_shard():
+    narrow = _row_sizing(1000, 1, 4, _COUNT_OPTS)
     assert narrow == ChunkShard(chunk_shape=(256, 1), shard_shape=(1024, 1))
-    wide = _count_sizing(1000, 300, _COUNT_OPTS)
+    wide = _row_sizing(1000, 300, 4, _COUNT_OPTS)
     assert wide == ChunkShard(chunk_shape=(3, 300), shard_shape=(3, 300))
 
 
-def test_count_sizing_takes_one_row_chunks_when_a_row_exceeds_the_shard_target():
-    sizing = _count_sizing(1000, 2000, _COUNT_OPTS)
+def test_row_sizing_takes_one_row_chunks_when_a_row_exceeds_the_shard_target():
+    sizing = _row_sizing(1000, 2000, 4, _COUNT_OPTS)
     assert sizing == ChunkShard(chunk_shape=(1, 2000), shard_shape=(1, 2000))
+
+
+def test_row_sizing_applies_to_one_byte_text_rows():
+    sizing = _row_sizing(1000, 100, 1, _COUNT_OPTS)
+    assert sizing.chunk_shape == (40, 100)
+    assert sizing.shard_shape == (40, 100)
+
+
+_CHANNEL_OPTS = WriteOpts(
+    min_bins=2, max_levels=8, inner_len=4, target_shard_bytes=256
+)
+_ORIGIN_US = 1_000_000
+
+
+def _full(event_source, n=12, **overrides):
+    times = _ORIGIN_US + np.arange(n) * 1000
+    fields = {
+        "durations": np.arange(n) * 10,
+        "labels": np.arange(n) % 3,
+        "label_names": ["onset", "offset", "note"],
+        "text": [f"mark {i}" for i in range(n)],
+        "channel_ids": [["a"] if i % 2 else [] for i in range(n)],
+        "waveform_mean": np.arange(12, dtype=np.float32).reshape(3, 4),
+        "unit": "a.u.",
+        "id": "evt",
+        "name": "marks",
+    }
+    fields.update(overrides)
+    return event_source(times, **fields)
+
+
+def _write_channel(tmp_path, source, key=7, opts=_CHANNEL_OPTS):
+    parent = open_group(tmp_path / "bundle")
+    write_event_channel(
+        parent,
+        key,
+        source,
+        origin_us=_ORIGIN_US,
+        channel_keys=_KEYS,
+        max_key=9,
+        opts=opts,
+    )
+    return open_group(tmp_path / "bundle")
+
+
+def test_write_event_channel_group_attributes_sit_under_tsz(
+    tmp_path, event_source
+):
+    group = _write_channel(tmp_path, _full(event_source))["7"]
+    assert dict(group.attrs) == {
+        "tsz": {
+            "kind": "event",
+            "name": "marks",
+            "id": "evt",
+            "unit": "a.u.",
+            "label_names": ["onset", "offset", "note"],
+            "max_duration_us": 110,
+        }
+    }
+
+
+def test_write_event_channel_writes_every_column_the_source_names(
+    tmp_path, event_source
+):
+    group = _write_channel(tmp_path, _full(event_source))["7"]
+    assert sorted(group.array_keys()) == sorted(
+        [
+            "events",
+            "durations",
+            "labels",
+            "text",
+            "channels",
+            "waveform_mean",
+        ]
+    )
+    assert list(group.group_keys()) == []
+
+
+def test_write_event_channel_stores_each_column_as_the_source_gives_it(
+    tmp_path, event_source
+):
+    n = 12
+    group = _write_channel(tmp_path, _full(event_source, n=n))["7"]
+    assert group["events"][:].tolist() == [i * 1000 for i in range(n)]
+    assert group["durations"][:].tolist() == [i * 10 for i in range(n)]
+    assert group["labels"][:].tolist() == [i % 3 for i in range(n)]
+    decoded = [bytes(r).rstrip(b"\0").decode() for r in group["text"][:]]
+    assert decoded == [f"mark {i}" for i in range(n)]
+    assert group["channels"][:].tolist() == [
+        [(i % 2) and 1, 0] for i in range(n)
+    ]
+    assert group["waveform_mean"].shape == (3, 4)
+
+
+def test_write_event_channel_minimal_source_has_only_events(
+    tmp_path, event_source
+):
+    source = event_source([_ORIGIN_US, _ORIGIN_US + 5], id="e", name="plain")
+    group = _write_channel(tmp_path, source)["7"]
+    assert dict(group.attrs) == {
+        "tsz": {"kind": "event", "name": "plain", "id": "e"}
+    }
+    assert list(group.array_keys()) == ["events"]
+
+
+def test_write_event_channel_omits_label_names_without_a_labels_column(
+    tmp_path, event_source
+):
+    class Named(type(event_source([0]))):
+        def label_names(self):
+            return ["ignored"]
+
+    source = Named([_ORIGIN_US], id="e", name="plain")
+    group = _write_channel(tmp_path, source)["7"]
+    assert "label_names" not in dict(group.attrs)["tsz"]
+
+
+def test_write_event_channel_requires_labels_for_waveform_mean(
+    tmp_path, event_source
+):
+    source = event_source(
+        [_ORIGIN_US], waveform_mean=np.zeros((1, 4)), id="e", name="x"
+    )
+    with pytest.raises(ValueError, match="requires a labels column"):
+        _write_channel(tmp_path, source)
+    assert list(open_group(tmp_path / "bundle").group_keys()) == []
+
+
+def test_write_event_channel_keeps_the_text_and_channel_width_axes_whole(
+    tmp_path, event_source
+):
+    source = _full(event_source, text=["x" * 40] * 12)
+    group = _write_channel(tmp_path, source)["7"]
+    assert group["text"].chunks[1] == group["text"].shape[1] == 40
+    assert group["channels"].chunks[1] == group["channels"].shape[1] == 2
+
+
+def test_write_event_channel_writes_count_levels_for_a_dense_channel(
+    tmp_path, event_source
+):
+    n = 70_000
+    times = _ORIGIN_US + np.sort(
+        np.random.default_rng(0).integers(0, _SPAN_US, n)
+    ).astype(np.int64)
+    times[-1] = _ORIGIN_US + _SPAN_US
+    source = event_source(
+        times,
+        labels=np.arange(n) % 3,
+        label_names=["a", "b", "c"],
+        id="d",
+        name="d",
+    )
+    opts = WriteOpts(
+        min_bins=256, max_levels=8, inner_len=256, target_shard_bytes=4096
+    )
+    group = _write_channel(tmp_path, source, opts=opts)["7"]
+    assert sorted(group.group_keys()) == ["1", "2", "3", "4"]
+    assert int(group["1"][COUNT_KEY][:].sum()) == n
+
+
+def test_write_event_channel_propagates_a_column_the_format_rejects(
+    tmp_path, event_source
+):
+    source = _full(event_source, channel_ids=[["zz"]] * 12)
+    with pytest.raises(ValueError, match="unknown channel id"):
+        _write_channel(tmp_path, source)
+
+
+def test_write_event_channel_returns_none(tmp_path, event_source):
+    parent = open_group(tmp_path / "bundle")
+    result = write_event_channel(
+        parent,
+        1,
+        _full(event_source),
+        origin_us=_ORIGIN_US,
+        channel_keys=_KEYS,
+        max_key=9,
+        opts=_CHANNEL_OPTS,
+    )
+    assert result is None
