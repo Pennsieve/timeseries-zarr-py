@@ -258,7 +258,7 @@ def test_write_events_array_writes_one_whole_shard_per_write(
         writes.append((start, block.shape[0]))
         write_region(array, start, block)
 
-    monkeypatch.setattr("timeseries_zarr.write_unit.write_region", spy)
+    monkeypatch.setattr("timeseries_zarr.write_event.write_region", spy)
     events = np.arange(20, dtype=np.int64) * 10
     group = open_group(tmp_path / "bundle")
     write_events_array(group, unit_source(events), _sizing(), 5)
