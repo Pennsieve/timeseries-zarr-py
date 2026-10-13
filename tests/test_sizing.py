@@ -1,9 +1,15 @@
 import pytest
 
-from timeseries_zarr.constants import INNER_CHUNK_SAMPLES
+from timeseries_zarr.constants import (
+    ENVELOPE_PAIR_SIZE,
+    FLOAT32_BYTES,
+    INNER_CHUNK_SAMPLES,
+)
 from timeseries_zarr.sizing import (
     chunk_and_shard,
     chunk_shape_for_level,
+    level_sizing,
+    member_sizing,
     shard_shape_for_level,
 )
 from timeseries_zarr.types import ChunkShard
@@ -139,3 +145,69 @@ def test_chunk_and_shard_fills_the_shard_target(
     result = chunk_and_shard(level_shape, dtype_size)
     assert result.shard_shape == expected_shard
     assert result.chunk_shape[0] == INNER_CHUNK_SAMPLES
+
+
+def test_level_sizing_fills_the_default_shard_target():
+    result = level_sizing(100_000_000)
+    assert result.chunk_shape == (INNER_CHUNK_SAMPLES, ENVELOPE_PAIR_SIZE)
+    assert result.shard_shape == (2097152, ENVELOPE_PAIR_SIZE)
+
+
+def test_level_sizing_matches_chunk_and_shard_of_the_minmax_shape():
+    result = level_sizing(
+        100_000_000, inner_len=1024, target_shard_bytes=64 * 1024
+    )
+    assert result == chunk_and_shard(
+        (100_000_000, ENVELOPE_PAIR_SIZE),
+        FLOAT32_BYTES,
+        inner_len=1024,
+        target_shard_bytes=64 * 1024,
+    )
+
+
+def test_level_sizing_caps_the_shard_at_the_chunks_the_level_holds():
+    result = level_sizing(10_000)
+    assert result.chunk_shape == (INNER_CHUNK_SAMPLES, ENVELOPE_PAIR_SIZE)
+    assert result.shard_shape == (2 * INNER_CHUNK_SAMPLES, ENVELOPE_PAIR_SIZE)
+
+
+@pytest.mark.parametrize("bins", [1, 1000, 8193, 100_000_000])
+def test_level_sizing_shard_rows_are_a_multiple_of_chunk_rows(bins):
+    result = level_sizing(bins)
+    assert result.shard_shape[0] % result.chunk_shape[0] == 0
+
+
+def test_level_sizing_never_chunks_the_pair_axis():
+    result = level_sizing(100_000_000)
+    assert result.chunk_shape[1] == result.shard_shape[1] == ENVELOPE_PAIR_SIZE
+
+
+def test_level_sizing_empty_level_takes_one_row_chunks():
+    assert level_sizing(0) == ChunkShard(
+        chunk_shape=(1, ENVELOPE_PAIR_SIZE),
+        shard_shape=(1, ENVELOPE_PAIR_SIZE),
+    )
+
+
+def test_member_sizing_drops_the_pair_axis():
+    result = member_sizing(level_sizing(100_000_000))
+    assert result == ChunkShard(chunk_shape=(8192,), shard_shape=(2097152,))
+
+
+def test_member_sizing_leaves_a_one_dimensional_sizing_equal():
+    sizing = ChunkShard(chunk_shape=(8192,), shard_shape=(65536,))
+    assert member_sizing(sizing) == sizing
+
+
+@pytest.mark.parametrize("bins", [1, 1000, 10_000, 100_000_000])
+def test_member_sizing_shares_the_minmax_row_counts(bins):
+    minmax = level_sizing(bins)
+    member = member_sizing(minmax)
+    assert member.chunk_shape == minmax.chunk_shape[:1]
+    assert member.shard_shape == minmax.shard_shape[:1]
+
+
+def test_member_sizing_differs_from_sizing_a_member_by_its_own_width():
+    own_width = chunk_and_shard((100_000_000,), FLOAT32_BYTES)
+    shared = member_sizing(level_sizing(100_000_000))
+    assert own_width.shard_shape[0] == 2 * shared.shard_shape[0]
