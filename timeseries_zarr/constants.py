@@ -19,22 +19,25 @@ ENVELOPE_PAIR_SIZE: Final = 2
 """Length of the trailing (min, max) axis on every coarser pyramid level."""
 
 STATISTIC_COLUMNS: Final = 5
-"""Columns of an in-flight float64 stat block: min, max, mean, var, count."""
+"""Columns of an in-flight float64 statistics block.
+
+In order: minimum, maximum, mean, variance, count of finite samples.
+"""
 
 MIN_COLUMN: Final = 0
-"""Stat-block column holding a bin's minimum."""
+"""Column of a statistics block holding a bin's minimum."""
 
 MAX_COLUMN: Final = 1
-"""Stat-block column holding a bin's maximum."""
+"""Column of a statistics block holding a bin's maximum."""
 
 MEAN_COLUMN: Final = 2
-"""Stat-block column holding a bin's mean."""
+"""Column of a statistics block holding a bin's mean."""
 
 VAR_COLUMN: Final = 3
-"""Stat-block column holding a bin's population variance."""
+"""Column of a statistics block holding a bin's population variance."""
 
 COUNT_COLUMN: Final = 4
-"""Stat-block column holding a bin's count of finite samples."""
+"""Column of a statistics block holding a bin's count of finite samples."""
 
 MAX_UNIT_CLUSTERS: Final = 256
 """Most distinct clusters a unit channel can hold (the uint8 cluster-id range)."""

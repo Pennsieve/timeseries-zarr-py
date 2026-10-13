@@ -78,7 +78,7 @@ def iter_raw_blocks(
 def iter_level0_to_level1(
     source: ContinuousChannelSource, block_samples: int
 ) -> Iterator[npt.NDArray[np.float64]]:
-    """Yield level-1 stat blocks folded from the source's raw samples.
+    """Yield level-1 statistics blocks folded from the source's raw samples.
 
     One row per 4 raw samples, keep-tail. The concatenated output equals
     folding the whole series at once, whatever block_samples is. Raises
