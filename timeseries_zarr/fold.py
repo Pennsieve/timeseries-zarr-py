@@ -81,6 +81,59 @@ def fold_raw_block(raw: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
     return out
 
 
+def _combine_into(
+    out: npt.NDArray[np.float64], children: npt.NDArray[np.float64]
+) -> None:
+    """Fill out's rows by combining each row's children, shaped (rows, k, 5)."""
+    counts = children[:, :, COUNT_COL]
+    means = children[:, :, MEAN_COL]
+    n = counts.sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        parent_mean = (counts * means).sum(axis=1) / n
+        spread = means - parent_mean[:, None]
+        parent_var = (counts * (children[:, :, VAR_COL] + spread**2)).sum(
+            axis=1
+        ) / n
+    out[:, MIN_COL] = children[:, :, MIN_COL].min(axis=1)
+    out[:, MAX_COL] = children[:, :, MAX_COL].max(axis=1)
+    out[:, MEAN_COL] = parent_mean
+    out[:, VAR_COL] = parent_var
+    out[:, COUNT_COL] = n
+
+
+def fold_stat_block(stats: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """Fold a stat block into the next coarser level over blocks of 4 rows.
+
+    Each output row combines up to 4 child rows: the minimum of the minimums,
+    the maximum of the maximums, the count-weighted mean of the means, the
+    count-weighted mean of each child's variance plus the squared distance of
+    its mean from the parent mean, and the sum of the counts. In exact
+    arithmetic the result equals the statistics of the raw samples the
+    children cover. A NaN in any child statistic makes the parent's four
+    statistics NaN, and so do children whose counts sum to 0; the count is
+    the plain sum in every case. A final partial block of 1 to 3 rows becomes
+    one row. An empty input yields zero rows. Raises ValueError if stats is
+    not rank 2 with STAT_COLUMNS columns.
+    """
+    if stats.shape[1:] != (STAT_COLUMNS,):
+        raise ValueError(
+            f"a stat block has shape (rows, {STAT_COLUMNS}), got {stats.shape}"
+        )
+    block = DECIMATION_FACTOR
+    n_full, tail_len = _block_split(stats.shape[0], block)
+    split = n_full * block
+    out = np.empty(
+        (n_full + (1 if tail_len else 0), STAT_COLUMNS), dtype=np.float64
+    )
+    if n_full:
+        _combine_into(
+            out[:n_full], stats[:split].reshape(n_full, block, STAT_COLUMNS)
+        )
+    if tail_len:
+        _combine_into(out[n_full:], stats[split:][None, :, :])
+    return out
+
+
 def fold_pair_block(pairs: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
     """Fold (min, max) pairs into coarser pairs over disjoint blocks of 4.
 
