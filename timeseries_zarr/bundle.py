@@ -4,11 +4,17 @@ import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
+from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
 )
-from timeseries_zarr.types import WriteOpts
+from timeseries_zarr.recording import (
+    recording_document,
+    session_start_us,
+    write_recording_json,
+)
+from timeseries_zarr.types import RecordingMeta, WriteOpts
 from timeseries_zarr.write_continuous import write_continuous_channel
 from timeseries_zarr.write_event import write_event_channel
 from timeseries_zarr.zarr_io import ZarrGroup, consolidate, open_group
@@ -138,17 +144,27 @@ def write_bundle(
     staging_dir: Path,
     final_dir: Path,
     opts: WriteOpts,
+    recording: RecordingMeta | None = None,
 ) -> None:
     """Build the whole viewer bundle and publish it atomically.
 
-    Every channel is staged into a fresh root group at staging_dir before the
-    rename onto final_dir. Sizing and compression follow opts. Times count from
-    the earliest channel start. Raises ValueError if two channels share an id.
+    The root group carries the format version. Every channel is staged into a
+    fresh root group at staging_dir, the metadata of every node is consolidated
+    into the root, and then recording.json is written when recording is given,
+    so identity and the wall-clock start never enter the root object. The
+    staged bundle is renamed onto final_dir last. Every time counts from the
+    origin, the earliest of the session start in recording and every channel
+    start, and recording.json holds that instant as its start. Sizing and
+    compression follow opts. Raises ValueError if two channels share an id or
+    recording.start has no UTC offset, before anything is written.
     """
     indexed = assign_indices(continuous, events)
-    origin = origin_us([source for _, source in indexed])
+    session_start = None if recording is None else session_start_us(recording)
+    origin = origin_us([source for _, source in indexed], session_start)
     keys = channel_keys(indexed)
-    root = open_group(staging_dir)
+    root = open_group(staging_dir, root_attrs())
     write_all_channels(root, indexed, origin, keys, opts)
     consolidate(root)
+    if recording is not None:
+        write_recording_json(staging_dir, recording_document(recording, origin))
     atomic_publish(staging_dir, final_dir)

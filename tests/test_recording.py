@@ -6,6 +6,7 @@ import pytest
 from timeseries_zarr.recording import (
     RECORDING_FILE,
     recording_document,
+    session_start_us,
     write_recording_json,
 )
 from timeseries_zarr.types import RecordingMeta
@@ -126,3 +127,18 @@ def test_write_recording_json_requires_an_existing_directory(tmp_path):
 def test_write_recording_json_rejects_a_value_that_is_not_json(tmp_path):
     with pytest.raises(TypeError):
         write_recording_json(tmp_path, {"subject": {"tags": {1, 2}}})
+
+
+def test_session_start_us_is_exact_microseconds_since_the_epoch():
+    start = datetime(2023, 11, 14, 22, 13, 20, 123457, tzinfo=UTC)
+    assert session_start_us(_meta(start=start)) == 1_700_000_000_123_457
+
+
+def test_session_start_us_is_the_same_instant_in_any_offset():
+    start = datetime(2024, 3, 14, 4, 15, tzinfo=timezone(timedelta(hours=-5)))
+    assert session_start_us(_meta(start=start)) == _NOON_UTC_US
+
+
+def test_session_start_us_rejects_a_start_without_a_utc_offset():
+    with pytest.raises(ValueError, match="UTC offset"):
+        session_start_us(_meta(start=datetime(2024, 3, 14, 9, 15)))

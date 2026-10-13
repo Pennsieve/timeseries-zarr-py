@@ -1,4 +1,7 @@
+import datetime as dt
 import json
+import math
+import re
 
 import numpy as np
 import pytest
@@ -12,7 +15,8 @@ from timeseries_zarr.bundle import (
     write_all_channels,
     write_bundle,
 )
-from timeseries_zarr.types import WriteOpts
+from timeseries_zarr.recording import RECORDING_FILE, session_start_us
+from timeseries_zarr.types import RecordingMeta, WriteOpts
 from timeseries_zarr.zarr_io import open_group
 
 
@@ -334,3 +338,377 @@ def test_max_key_does_not_assume_contiguous_keys(continuous_source):
 
 def test_max_key_of_no_channels_is_zero():
     assert max_key([]) == 0
+
+
+_SPEC_OPTS = WriteOpts(
+    min_bins=256, max_levels=8, inner_len=256, target_shard_bytes=4096
+)
+_SESSION = dt.datetime(
+    2024, 3, 14, 9, 15, tzinfo=dt.timezone(dt.timedelta(hours=-5))
+)
+_SESSION_US = session_start_us(
+    RecordingMeta(start=_SESSION, subject={}, session={}, source={})
+)
+_RECORDING = RecordingMeta(
+    start=_SESSION,
+    subject={"id": "sub-0931", "species": "Homo sapiens"},
+    session={"id": "ses-01"},
+    source={"converter": "timeseries-zarr-py"},
+)
+
+
+def _signal(n, seed):
+    rng = np.random.default_rng(seed)
+    samples = (5000.0 + 8.0 * rng.standard_normal(n)).astype(np.float32)
+    samples[300:340] = np.nan
+    return samples
+
+
+def _mixed_sources(continuous_source, event_source, base=_SESSION_US):
+    rng = np.random.default_rng(3)
+    lead = continuous_source(
+        _signal(8192, 0), id="LA1", name="LA1", rate_hz=256.0, start_us=base
+    )
+    lag = continuous_source(
+        _signal(16384, 1),
+        id="LA2",
+        name="LA2",
+        rate_hz=512.0,
+        start_us=base + 500_000,
+    )
+    spike_times = np.sort(rng.integers(0, 30_000_000, 400)) + base
+    spikes = event_source(
+        spike_times,
+        labels=rng.integers(0, 3, 400),
+        label_names=["unit-0", "unit-1", "unit-2"],
+        waveform_mean=rng.standard_normal((3, 16)),
+        waveform_period_us=122.0703125,
+        id="units",
+        name="units",
+    )
+    marks = event_source(
+        base + np.array([1, 4, 9, 15, 22, 28]) * 1_000_000,
+        durations=[0, 0, 5_000_000, 0, 12_000_000, 0],
+        labels=[1, 1, 0, 2, 0, 2],
+        label_names=["seizure", "spike", "note"],
+        text=["spike", "spike", "seizure onset", "note", "seizure", "x"],
+        channel_ids=[["LA1"], [], ["LA1", "LA2"], [], ["LA2"], []],
+        id="marks",
+        name="curated marks",
+    )
+    dense_times = np.sort(rng.integers(0, 700_000_000, 70_000))
+    dense_times[-1] = 700_000_000
+    dense = event_source(
+        dense_times + base,
+        labels=rng.integers(0, 2, 70_000),
+        label_names=["ripple", "fast-ripple"],
+        id="hfo",
+        name="hfo detector",
+    )
+    return [lead, lag], [spikes, marks, dense]
+
+
+def _read_nodes(path):
+    return {
+        "/".join(file.parent.relative_to(path).parts): json.loads(
+            file.read_text()
+        )
+        for file in path.rglob("zarr.json")
+    }
+
+
+def _array_ok(node, shape, dtype, names):
+    fill = "NaN" if dtype.startswith("float") else 0
+    return (
+        node["node_type"] == "array"
+        and tuple(node["shape"]) == tuple(shape)
+        and node["data_type"] == dtype
+        and node["fill_value"] == fill
+        and node.get("dimension_names") == names
+    )
+
+
+def _children(nodes, key):
+    prefix = key + "/"
+    return {
+        p[len(prefix) :]
+        for p in nodes
+        if p.startswith(prefix) and "/" not in p[len(prefix) :]
+    }
+
+
+def _check_root(path, nodes):
+    root = nodes[""]
+    assert root["attributes"] == {"tsz": {"version": "1.0"}}
+    assert not any(
+        "version" in n["attributes"].get("tsz", {})
+        for p, n in nodes.items()
+        if p
+    )
+    consolidated = root["consolidated_metadata"]
+    assert consolidated["kind"] == "inline"
+    assert consolidated["must_understand"] is False
+    assert set(consolidated["metadata"]) == set(nodes) - {""}
+    for p, entry in consolidated["metadata"].items():
+        stored = {
+            k: v for k, v in nodes[p].items() if k != "consolidated_metadata"
+        }
+        listed = {
+            k: v for k, v in entry.items() if k != "consolidated_metadata"
+        }
+        assert listed == stored, p
+    assert all(
+        isinstance(n["attributes"].get("tsz"), dict)
+        for n in nodes.values()
+        if n.get("attributes")
+    )
+    texts = [(path / p / "zarr.json").read_text() for p in nodes]
+    assert not any(re.search(r"\d{4}-\d{2}-\d{2}", text) for text in texts)
+    assert not any("sub-0931" in text for text in texts)
+
+
+def _check_continuous(nodes, key, attrs):
+    rate = attrs["rate_hz"]
+    assert rate > 0
+    assert isinstance(attrs["offset_us"], int) and attrs["offset_us"] >= 0
+    samples = nodes[f"{key}/raw"]["shape"][0]
+    assert _array_ok(nodes[f"{key}/raw"], (samples,), "float32", ["time"])
+    levels = sorted(int(c) for c in _children(nodes, key) if c.isdigit())
+    assert levels and levels == list(range(1, len(levels) + 1))
+    for k in levels:
+        period = nodes[f"{key}/{k}"]["attributes"]["tsz"]["period_us"]
+        assert math.isclose(period, 4**k * 1e6 / rate, rel_tol=1e-12)
+        members = _children(nodes, f"{key}/{k}")
+        assert (
+            {"minmax", "mean", "count"}
+            <= members
+            <= {
+                "minmax",
+                "mean",
+                "var",
+                "count",
+            }
+        )
+        bins = math.ceil(samples / 4**k)
+        expected = {
+            "minmax": ((bins, 2), "float32", ["time", None]),
+            "mean": ((bins,), "float32", ["time"]),
+            "var": ((bins,), "float32", ["time"]),
+            "count": ((bins,), "uint32", ["time"]),
+        }
+        for member in members:
+            assert _array_ok(nodes[f"{key}/{k}/{member}"], *expected[member])
+
+
+def _check_count_levels(nodes, key, events, labels, categories):
+    levels = sorted(int(c) for c in _children(nodes, key) if c.isdigit())
+    assert levels == list(range(1, len(levels) + 1))
+    data = open_group(PATH_HOLDER["path"])[key]
+    previous = None
+    for k in levels:
+        period = nodes[f"{key}/{k}"]["attributes"]["tsz"]["period_us"]
+        assert _children(nodes, f"{key}/{k}") == {"count"}
+        node = nodes[f"{key}/{k}/count"]
+        bins = node["shape"][0]
+        assert _array_ok(node, (bins, categories), "uint32", ["time", None])
+        counts = data[str(k)]["count"][:]
+        assert bins * period > events[-1]
+        assert (
+            counts.sum(axis=0).tolist()
+            == np.bincount(labels, minlength=categories).tolist()
+        )
+        if previous is None:
+            rung = int(period)
+            while rung % 4 == 0 and rung > 1000:
+                rung //= 4
+            assert float(period).is_integer() and rung == 1000
+        else:
+            assert period == 4 * previous
+        previous = period
+
+
+PATH_HOLDER = {}
+
+
+def _check_text_and_channels(nodes, key, data, n, group_keys):
+    text = nodes.get(f"{key}/text")
+    if text is not None:
+        width = text["shape"][1]
+        assert _array_ok(text, (n, width), "uint8", ["event", None])
+        rows = [bytes(row).rstrip(b"\0") for row in data["text"][:]]
+        assert all(b"\0" not in row for row in rows)
+        assert max(len(row.decode("utf-8")) for row in rows) <= width
+        assert max(len(row) for row in rows) == width
+    channels = nodes.get(f"{key}/channels")
+    if channels is not None:
+        width = (max(group_keys) + 1 + 7) // 8
+        assert _array_ok(channels, (n, width), "uint8", ["event", None])
+        bits = np.unpackbits(data["channels"][:], axis=1, bitorder="little")
+        assert set(np.flatnonzero(bits.any(axis=0)).tolist()) <= set(group_keys)
+
+
+def _check_event(path, nodes, key, attrs, group_keys):
+    n = nodes[f"{key}/events"]["shape"][0]
+    assert _array_ok(nodes[f"{key}/events"], (n,), "int64", ["event"])
+    data = open_group(path)[key]
+    events = data["events"][:]
+    assert (events >= 0).all() and (np.diff(events) >= 0).all()
+    arrays = {c for c in _children(nodes, key) if not c.isdigit()}
+    assert arrays <= {
+        "events",
+        "durations",
+        "labels",
+        "text",
+        "channels",
+        "waveform_mean",
+    }
+    assert all(
+        nodes[f"{key}/{a}"]["shape"][0] == n for a in arrays - {"waveform_mean"}
+    )
+    labels = data["labels"][:] if "labels" in arrays else None
+    names = attrs.get("label_names")
+    categories = (
+        len(names)
+        if names
+        else (int(labels.max()) + 1 if labels is not None else 1)
+    )
+    if labels is not None:
+        assert _array_ok(nodes[f"{key}/labels"], (n,), "uint16", ["event"])
+        assert int(labels.max()) < categories
+    if "durations" in arrays:
+        durations = data["durations"][:]
+        assert _array_ok(nodes[f"{key}/durations"], (n,), "int64", ["event"])
+        assert (
+            durations.min() >= 0 and durations.max() <= attrs["max_duration_us"]
+        )
+    if "waveform_mean" in arrays:
+        node = nodes[f"{key}/waveform_mean"]
+        assert _array_ok(node, tuple(node["shape"]), "float32", ["label", None])
+        assert node["shape"][0] == categories and labels is not None
+        assert node["attributes"]["tsz"]["period_us"] > 0
+    _check_text_and_channels(nodes, key, data, n, group_keys)
+    if any(c.isdigit() for c in _children(nodes, key)):
+        PATH_HOLDER["path"] = path
+        _check_count_levels(
+            nodes,
+            key,
+            events,
+            labels if labels is not None else np.zeros(n, int),
+            categories,
+        )
+
+
+def _check_recording(path, nodes):
+    document = json.loads((path / RECORDING_FILE).read_text("utf-8"))
+    start = dt.datetime.fromisoformat(document["start"])
+    assert start.utcoffset() is not None
+    assert all(
+        isinstance(document.get(k, {}), dict)
+        for k in ("subject", "session", "source")
+    )
+    assert RECORDING_FILE not in nodes[""]["consolidated_metadata"]["metadata"]
+    return start
+
+
+def _validate_bundle(path):
+    """Check a bundle against the specification's validation list."""
+    nodes = _read_nodes(path)
+    _check_root(path, nodes)
+    group_keys = sorted(int(p) for p in nodes if p and "/" not in p)
+    for key in map(str, group_keys):
+        assert key == str(int(key))
+        attrs = nodes[key]["attributes"]["tsz"]
+        assert isinstance(attrs["name"], str)
+        if attrs["kind"] == "continuous":
+            _check_continuous(nodes, key, attrs)
+        else:
+            assert attrs["kind"] == "event"
+            _check_event(path, nodes, key, attrs, group_keys)
+    return nodes
+
+
+def _write_mixed(
+    tmp_path,
+    continuous_source,
+    event_source,
+    recording=_RECORDING,
+    base=_SESSION_US,
+):
+    continuous, events = _mixed_sources(continuous_source, event_source, base)
+    final = tmp_path / "bundle"
+    write_bundle(
+        continuous,
+        events,
+        staging_dir=tmp_path / "staging",
+        final_dir=final,
+        opts=_SPEC_OPTS,
+        recording=recording,
+    )
+    return final
+
+
+def test_write_bundle_conforms_to_the_specification_validation_list(
+    tmp_path, continuous_source, event_source
+):
+    final = _write_mixed(tmp_path, continuous_source, event_source)
+    nodes = _validate_bundle(final)
+    assert sorted(p for p in nodes if p and "/" not in p) == [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+    ]
+    start = _check_recording(final, nodes)
+    assert start == _SESSION
+
+
+def test_write_bundle_without_a_recording_has_no_recording_json_and_conforms(
+    tmp_path, continuous_source, event_source
+):
+    final = _write_mixed(
+        tmp_path, continuous_source, event_source, recording=None
+    )
+    _validate_bundle(final)
+    assert not (final / RECORDING_FILE).exists()
+
+
+def test_write_bundle_recording_start_is_the_origin_when_a_channel_starts_earlier(
+    tmp_path, continuous_source, event_source
+):
+    final = _write_mixed(
+        tmp_path, continuous_source, event_source, base=_SESSION_US - 2_000_000
+    )
+    nodes = _validate_bundle(final)
+    start = _check_recording(final, nodes)
+    assert start == _SESSION - dt.timedelta(seconds=2)
+    assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
+
+
+def test_write_bundle_keeps_identity_and_the_date_out_of_every_zarr_node(
+    tmp_path, continuous_source, event_source
+):
+    final = _write_mixed(tmp_path, continuous_source, event_source)
+    document = json.loads((final / RECORDING_FILE).read_text("utf-8"))
+    assert document["subject"] == {"id": "sub-0931", "species": "Homo sapiens"}
+    assert "sub-0931" not in (final / "zarr.json").read_text()
+    assert document["start"][:10] not in (final / "zarr.json").read_text()
+
+
+def test_write_bundle_rejects_a_recording_start_without_an_offset_before_writing(
+    tmp_path, continuous_source
+):
+    naive = RecordingMeta(
+        start=dt.datetime(2024, 3, 14, 9, 15), subject={}, session={}, source={}
+    )
+    cont = continuous_source(np.zeros(8, np.float32), id="c0")
+    with pytest.raises(ValueError, match="UTC offset"):
+        write_bundle(
+            [cont],
+            [],
+            staging_dir=tmp_path / "staging",
+            final_dir=tmp_path / "bundle",
+            opts=_OPTS,
+            recording=naive,
+        )
+    assert not (tmp_path / "staging").exists()
