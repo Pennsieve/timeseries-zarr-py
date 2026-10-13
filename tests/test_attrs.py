@@ -1,7 +1,6 @@
 import pytest
 
 from timeseries_zarr.attrs import (
-    channel_group_attrs,
     continuous_channel_attrs,
     event_channel_attrs,
     level_group_attrs,
@@ -121,18 +120,3 @@ def test_waveform_array_attrs_rejects_a_non_positive_period():
 def test_waveform_array_attrs_rejects_a_negative_event_sample():
     with pytest.raises(ValueError, match="event_sample"):
         waveform_array_attrs(31.25, -1)
-
-
-@pytest.mark.parametrize("kind", ["continuous", "unit"])
-def test_channel_group_attrs(kind):
-    attrs = channel_group_attrs(
-        "N:channel:abc", 32000.0, 1000, kind, "channel one", "uV"
-    )
-    assert attrs == {
-        "id": "N:channel:abc",
-        "rate_hz": 32000.0,
-        "start_us": 1000,
-        "kind": kind,
-        "name": "channel one",
-        "unit": "uV",
-    }

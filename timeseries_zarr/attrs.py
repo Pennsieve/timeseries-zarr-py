@@ -5,7 +5,6 @@ returns its object under the single tsz key.
 """
 
 from timeseries_zarr.constants import FORMAT_VERSION
-from timeseries_zarr.types import ChannelKind
 
 
 def _tsz(fields: dict[str, object]) -> dict[str, object]:
@@ -111,25 +110,3 @@ def waveform_array_attrs(
     if event_sample is not None:
         fields["event_sample"] = event_sample
     return _tsz(fields)
-
-
-def channel_group_attrs(
-    id: str,
-    rate_hz: float,
-    start_us: int,
-    kind: ChannelKind,
-    name: str = "",
-    unit: str = "",
-) -> dict[str, object]:
-    """Return the unprefixed channel-group attributes of the superseded format.
-
-    Values pass through unchanged.
-    """
-    return {
-        "id": id,
-        "rate_hz": rate_hz,
-        "start_us": start_us,
-        "kind": kind,
-        "name": name,
-        "unit": unit,
-    }

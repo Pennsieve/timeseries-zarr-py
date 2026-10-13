@@ -1,35 +1,32 @@
 """Top-level bundle orchestration."""
 
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
-    UnitChannelSource,
 )
 from timeseries_zarr.types import WriteOpts
 from timeseries_zarr.write_continuous import write_continuous_channel
-from timeseries_zarr.write_unit import write_unit_channel
+from timeseries_zarr.write_event import write_event_channel
 from timeseries_zarr.zarr_io import ZarrGroup, consolidate, open_group
 
-type AnySource = (
-    ContinuousChannelSource | EventChannelSource | UnitChannelSource
-)
+type AnySource = ContinuousChannelSource | EventChannelSource
 """Any channel source the bundle writes, whichever protocol it follows."""
 
 
 def assign_indices(
     continuous: Sequence[ContinuousChannelSource],
-    units: Sequence[UnitChannelSource],
-) -> list[tuple[int, ContinuousChannelSource | UnitChannelSource]]:
-    """Assign each channel a digit index, continuous first then unit.
+    events: Sequence[EventChannelSource],
+) -> list[tuple[int, AnySource]]:
+    """Assign each channel a digit index, continuous first then event.
 
     Indices are contiguous from 0 and become the bundle's digit-named
     channel-group directories. Sources keep their input order within each kind.
     """
-    return list(enumerate([*continuous, *units]))
+    return list(enumerate([*continuous, *events]))
 
 
 def origin_us(
@@ -104,27 +101,39 @@ def atomic_publish(staging_dir: Path, final_dir: Path) -> None:
 
 def write_all_channels(
     root: ZarrGroup,
-    indexed: Sequence[tuple[int, ContinuousChannelSource | UnitChannelSource]],
+    indexed: Sequence[tuple[int, AnySource]],
+    origin_us: int,
+    channel_keys: Mapping[str, int],
     opts: WriteOpts,
 ) -> None:
     """Write every indexed channel under root, dispatching by source type.
 
     Each (index, source) pair becomes its own channel group beneath root,
-    governed by opts.
+    governed by opts and placed relative to origin_us. channel_keys maps
+    channel ids to keys, which the event channels use to resolve the channels
+    they apply to.
     """
-    origin = origin_us([source for _, source in indexed])
+    largest_key = max_key(indexed)
     for index, source in indexed:
-        if isinstance(source, UnitChannelSource):
-            write_unit_channel(root, index, source, opts=opts)
+        if isinstance(source, EventChannelSource):
+            write_event_channel(
+                root,
+                index,
+                source,
+                origin_us=origin_us,
+                channel_keys=channel_keys,
+                max_key=largest_key,
+                opts=opts,
+            )
         else:
             write_continuous_channel(
-                root, index, source, origin_us=origin, opts=opts
+                root, index, source, origin_us=origin_us, opts=opts
             )
 
 
 def write_bundle(
     continuous: Sequence[ContinuousChannelSource],
-    units: Sequence[UnitChannelSource],
+    events: Sequence[EventChannelSource],
     *,
     staging_dir: Path,
     final_dir: Path,
@@ -133,9 +142,13 @@ def write_bundle(
     """Build the whole viewer bundle and publish it atomically.
 
     Every channel is staged into a fresh root group at staging_dir before the
-    rename onto final_dir. Sizing and compression follow opts.
+    rename onto final_dir. Sizing and compression follow opts. Times count from
+    the earliest channel start. Raises ValueError if two channels share an id.
     """
+    indexed = assign_indices(continuous, events)
+    origin = origin_us([source for _, source in indexed])
+    keys = channel_keys(indexed)
     root = open_group(staging_dir)
-    write_all_channels(root, assign_indices(continuous, units), opts)
+    write_all_channels(root, indexed, origin, keys, opts)
     consolidate(root)
     atomic_publish(staging_dir, final_dir)

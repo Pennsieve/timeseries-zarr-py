@@ -10,7 +10,7 @@ from timeseries_zarr.constants import (
     TARGET_SHARD_BYTES,
 )
 
-type ChannelKind = Literal["continuous", "unit"]
+type ChannelKind = Literal["continuous", "event"]
 
 type EventColumn = Literal[
     "durations", "labels", "text", "channels", "waveform_mean"
