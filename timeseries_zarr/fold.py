@@ -1,12 +1,24 @@
-"""Min/max pyramid folding: reduce a level to the next coarser one in blocks of 4.
+"""Pyramid folding: reduce a level to the next coarser one in blocks of 4.
 
-Every fold uses plain min/max, so a NaN propagates into the bin holding it.
+A folded level travels as a float64 stat block of STAT_COLUMNS columns: min,
+max, mean, population variance, and the count of finite samples. Every
+statistic uses the plain reduction, so a NaN propagates into the bin holding
+it; only the count stays finite.
 """
 
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.constants import DECIMATION_FACTOR, ENVELOPE_PAIR_SIZE
+from timeseries_zarr.constants import (
+    COUNT_COL,
+    DECIMATION_FACTOR,
+    ENVELOPE_PAIR_SIZE,
+    MAX_COL,
+    MEAN_COL,
+    MIN_COL,
+    STAT_COLUMNS,
+    VAR_COL,
+)
 
 
 def _block_split(
@@ -23,26 +35,49 @@ def _block_split(
     return (length // block, length % block)
 
 
-def fold_raw_block(raw: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
-    """Fold raw samples into (min, max) envelope pairs over disjoint blocks of 4.
+def _reduce_into(
+    out: npt.NDArray[np.float64],
+    values: npt.NDArray[np.float64],
+    finite: npt.NDArray[np.bool_],
+) -> None:
+    """Fill out's rows with the statistics of each row of values."""
+    out[:, MIN_COL] = values.min(axis=1)
+    out[:, MAX_COL] = values.max(axis=1)
+    out[:, MEAN_COL] = values.mean(axis=1)
+    out[:, VAR_COL] = values.var(axis=1)
+    out[:, COUNT_COL] = finite.sum(axis=1)
 
-    Takes rank-1 samples and returns rank-2 pairs. A final partial block of 1-3
-    samples becomes one row.
+
+def fold_raw_block(raw: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
+    """Fold raw samples into per-bin statistics over disjoint blocks of 4.
+
+    Returns a float64 stat block with one row per block: the minimum,
+    maximum, mean, and population variance of the block's samples, then the
+    number of finite samples. A non-finite sample (NaN or infinity) counts as
+    NaN, so a block holding one has NaN in its four statistics while the
+    count still reports the finite samples; a block of nothing but non-finite
+    samples has count 0. A final partial block of 1 to 3 samples becomes one
+    row. An empty input yields zero rows. The input is never modified.
     """
     block = DECIMATION_FACTOR
     n_full, tail_len = _block_split(raw.shape[0], block)
     split = n_full * block
+    values = raw.astype(np.float64)
+    finite = np.isfinite(values)
+    values[~finite] = np.nan
     out = np.empty(
-        (n_full + (1 if tail_len else 0), ENVELOPE_PAIR_SIZE), dtype=np.float32
+        (n_full + (1 if tail_len else 0), STAT_COLUMNS), dtype=np.float64
     )
     if n_full:
-        full = raw[:split].reshape(n_full, block)
-        out[:n_full, 0] = full.min(axis=1)
-        out[:n_full, 1] = full.max(axis=1)
+        _reduce_into(
+            out[:n_full],
+            values[:split].reshape(n_full, block),
+            finite[:split].reshape(n_full, block),
+        )
     if tail_len:
-        tail = raw[split:]
-        out[n_full, 0] = tail.min()
-        out[n_full, 1] = tail.max()
+        _reduce_into(
+            out[n_full:], values[split:][None, :], finite[split:][None, :]
+        )
     return out
 
 
@@ -73,12 +108,13 @@ def fold_pair_block(pairs: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
 def fold_block(arr: npt.NDArray[np.float32]) -> npt.NDArray[np.float32]:
     """Fold one pyramid level to the next coarser one, dispatching on rank.
 
-    Rank-1 is raw samples, folded by fold_raw_block; rank-2 is (min, max)
-    pairs, folded by fold_pair_block. Raises ValueError for any other rank.
+    Rank-1 is raw samples, folded by fold_raw_block and reduced to its
+    float32 (min, max) columns; rank-2 is (min, max) pairs, folded by
+    fold_pair_block. Raises ValueError for any other rank.
     """
     match arr.ndim:
         case 1:
-            return fold_raw_block(arr)
+            return fold_raw_block(arr)[:, [MIN_COL, MAX_COL]].astype(np.float32)
         case 2:
             return fold_pair_block(arr)
         case _:
