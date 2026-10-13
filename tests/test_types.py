@@ -1,4 +1,5 @@
 import dataclasses
+from datetime import UTC, datetime
 from typing import get_args
 
 import pytest
@@ -8,30 +9,78 @@ from timeseries_zarr.constants import (
     MAX_LEVELS,
     TARGET_SHARD_BYTES,
 )
-from timeseries_zarr.types import ChannelKind, ChunkShard, LevelPlan, WriteOpts
+from timeseries_zarr.types import (
+    ChannelKind,
+    ChunkShard,
+    EventColumn,
+    LevelMembers,
+    LevelPlan,
+    RecordingMeta,
+    WriteOpts,
+)
 
 
-def test_construction_stores_fields():
-    plan = LevelPlan(level=0, shape=(1000,), period_us=31.25)
-    assert plan.level == 0
-    assert plan.shape == (1000,)
-    assert plan.period_us == 31.25
+def test_levelplan_construction_stores_fields():
+    plan = LevelPlan(level=1, bins=250, period_us=125.0)
+    assert plan.level == 1
+    assert plan.bins == 250
+    assert plan.period_us == 125.0
 
 
-def test_is_raw_true_at_level_0():
-    assert LevelPlan(level=0, shape=(1000,), period_us=31.25).is_raw is True
+@pytest.mark.parametrize("level", [1, 7, 15])
+def test_levelplan_name_is_the_decimal_level(level):
+    assert LevelPlan(level=level, bins=250, period_us=125.0).name == str(level)
 
 
-@pytest.mark.parametrize("level", [1, 7])
-def test_is_raw_false_above_level_0(level):
-    plan = LevelPlan(level=level, shape=(250, 2), period_us=125.0)
-    assert plan.is_raw is False
-
-
-def test_frozen_rejects_mutation():
-    plan = LevelPlan(level=0, shape=(1000,), period_us=31.25)
+def test_levelplan_frozen_rejects_mutation():
+    plan = LevelPlan(level=1, bins=250, period_us=125.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
         plan.level = 5
+
+
+def test_levelmembers_holds_one_handle_per_member():
+    members = LevelMembers(minmax="mm", mean="m", var="v", count="c")
+    assert (members.minmax, members.mean, members.var, members.count) == (
+        "mm",
+        "m",
+        "v",
+        "c",
+    )
+
+
+def test_levelmembers_var_may_be_absent():
+    assert LevelMembers(minmax="mm", mean="m", var=None, count="c").var is None
+
+
+def test_levelmembers_frozen_rejects_mutation():
+    members = LevelMembers(minmax="mm", mean="m", var=None, count="c")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        members.var = "v"
+
+
+def test_recordingmeta_construction_stores_fields():
+    start = datetime(2024, 3, 14, 9, 15, tzinfo=UTC)
+    meta = RecordingMeta(
+        start=start,
+        subject={"id": "sub-01"},
+        session={"id": "ses-01"},
+        source={"converter": "timeseries-zarr-py"},
+    )
+    assert meta.start is start
+    assert meta.subject == {"id": "sub-01"}
+    assert meta.session == {"id": "ses-01"}
+    assert meta.source == {"converter": "timeseries-zarr-py"}
+
+
+def test_recordingmeta_frozen_rejects_mutation():
+    meta = RecordingMeta(
+        start=datetime(2024, 3, 14, tzinfo=UTC),
+        subject={},
+        session={},
+        source={},
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        meta.subject = {"id": "x"}
 
 
 def test_chunkshard_construction_stores_fields():
@@ -56,6 +105,16 @@ def test_channelkind_literal_values():
     assert get_args(ChannelKind.__value__) == ("continuous", "unit")
 
 
+def test_eventcolumn_literal_values():
+    assert get_args(EventColumn.__value__) == (
+        "durations",
+        "labels",
+        "text",
+        "channels",
+        "waveform_mean",
+    )
+
+
 def test_writeopts_defaults():
     opts = WriteOpts()
     assert opts.zstd_level == 5
@@ -63,6 +122,7 @@ def test_writeopts_defaults():
     assert opts.min_bins == 1024
     assert opts.inner_len == INNER_CHUNK_SAMPLES
     assert opts.target_shard_bytes == TARGET_SHARD_BYTES
+    assert opts.write_var is False
 
 
 def test_writeopts_overrides():
@@ -72,12 +132,14 @@ def test_writeopts_overrides():
         min_bins=256,
         inner_len=4096,
         target_shard_bytes=2048,
+        write_var=True,
     )
     assert opts.zstd_level == 9
     assert opts.max_levels == 3
     assert opts.min_bins == 256
     assert opts.inner_len == 4096
     assert opts.target_shard_bytes == 2048
+    assert opts.write_var is True
 
 
 def test_writeopts_frozen_rejects_mutation():

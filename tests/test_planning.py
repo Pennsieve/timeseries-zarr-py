@@ -104,26 +104,22 @@ def test_plan_levels_matches_building_blocks():
     assert len(plan) == level_count(n)
     for k, lp in enumerate(plan):
         assert lp.level == k
-        assert lp.shape == level_shape(n, k)
+        assert lp.bins == level_num_bins(n, k)
         assert lp.period_us == level_period_us(p0, k)
-        assert lp.is_raw == (k == 0)
 
 
 def test_plan_levels_small_n_single_level():
     plan = plan_levels(500, 31.25)
     assert len(plan) == 1
     assert plan[0].level == 0
-    assert plan[0].shape == (500,)
+    assert plan[0].bins == 500
     assert plan[0].period_us == 31.25
-    assert plan[0].is_raw is True
 
 
 def test_plan_levels_concrete_two_levels():
     plan = plan_levels(4096, 31.25)
     assert len(plan) == 2
-    assert plan[0].shape == (4096,)
+    assert plan[0].bins == 4096
     assert plan[0].period_us == 31.25
-    assert plan[0].is_raw is True
-    assert plan[1].shape == (1024, 2)
+    assert plan[1].bins == 1024
     assert plan[1].period_us == 125.0
-    assert plan[1].is_raw is False

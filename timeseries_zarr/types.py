@@ -1,6 +1,7 @@
 """Shared value types for the writer."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal
 
 from timeseries_zarr.constants import (
@@ -11,29 +12,58 @@ from timeseries_zarr.constants import (
 
 type ChannelKind = Literal["continuous", "unit"]
 
+type EventColumn = Literal[
+    "durations", "labels", "text", "channels", "waveform_mean"
+]
+"""Optional per-event column an event channel source can provide."""
+
 
 @dataclass(frozen=True, slots=True)
 class LevelPlan:
-    """Resolved shape and time resolution of one pyramid level of a channel.
+    """Resolved size and time resolution of one pyramid level of a channel.
 
-    Level 0 holds raw samples; levels >= 1 hold (min, max) envelopes. period_us
-    is the wall-clock microseconds that one bin spans, widening with each
-    coarser level.
+    bins is the number of entries along the level's time axis. period_us is
+    the microseconds that one entry spans, widening 4x with each coarser
+    level.
     """
 
     level: int
-    shape: tuple[int, ...]
+    bins: int
     period_us: float
 
     @property
-    def is_raw(self) -> bool:
-        """Whether this level holds raw samples rather than min/max envelopes."""
-        return self.level == 0
-
-    @property
     def name(self) -> str:
-        """Zarr array key for this level: its decimal level number."""
+        """Zarr key for this level: its decimal level number."""
         return str(self.level)
+
+
+@dataclass(frozen=True, slots=True)
+class LevelMembers[T]:
+    """Handles to the member arrays of one pyramid level.
+
+    minmax is the (bins, 2) envelope, mean and count are (bins,), and var is
+    None on a level written without it. T is whatever array handle the caller
+    works with.
+    """
+
+    minmax: T
+    mean: T
+    var: T | None
+    count: T
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingMeta:
+    """Identity and wall-clock start of a recording, for recording.json.
+
+    start is the session's wall-clock start and must carry a UTC offset. The
+    three objects are producer-defined and may be empty.
+    """
+
+    start: datetime
+    subject: dict[str, object]
+    session: dict[str, object]
+    source: dict[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +83,8 @@ class WriteOpts:
     """Tunable settings shared by the channel writers.
 
     max_levels and min_bins bound the pyramid; inner_len and
-    target_shard_bytes size the inner chunk and the outer shard.
+    target_shard_bytes size the inner chunk and the outer shard. write_var
+    adds the var member to every level.
     """
 
     zstd_level: int = 5
@@ -61,3 +92,4 @@ class WriteOpts:
     min_bins: int = 1024
     inner_len: int = INNER_CHUNK_SAMPLES
     target_shard_bytes: int = TARGET_SHARD_BYTES
+    write_var: bool = False

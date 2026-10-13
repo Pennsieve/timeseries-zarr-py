@@ -76,7 +76,7 @@ def plan_levels(
     return [
         LevelPlan(
             level=k,
-            shape=level_shape(num_samples, k),
+            bins=level_num_bins(num_samples, k),
             period_us=level_period_us(level0_period_us, k),
         )
         for k in range(level_count(num_samples, max_levels, min_bins))
