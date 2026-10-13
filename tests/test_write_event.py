@@ -5,8 +5,10 @@ from timeseries_zarr.types import ChunkShard
 from timeseries_zarr.write_event import (
     DURATIONS_KEY,
     EVENTS_KEY,
+    LABELS_KEY,
     write_durations_array,
     write_events_array,
+    write_labels_array,
 )
 from timeseries_zarr.zarr_io import open_group, write_region
 
@@ -220,4 +222,87 @@ def test_write_durations_array_rejects_a_source_without_a_duration_bound(
 
     with pytest.raises(ValueError, match="max_duration_us"):
         _write_durations(tmp_path, Unbounded([1], durations=[0]))
+    assert list(open_group(tmp_path / "bundle").array_keys()) == []
+
+
+def _write_labels(tmp_path, source, sizing=None):
+    group = open_group(tmp_path / "bundle")
+    write_labels_array(group, source, sizing or _sizing(), 5)
+    return open_group(tmp_path / "bundle")
+
+
+def test_write_labels_array_round_trips_uint16_labels(tmp_path, event_source):
+    labels = [0, 3, 1, 65535, 2]
+    source = event_source([1, 2, 3, 4, 5], labels=labels)
+    stored = _write_labels(tmp_path, source)[LABELS_KEY][:]
+    assert stored.tolist() == labels
+    assert stored.dtype == np.uint16
+
+
+def test_write_labels_array_declares_the_event_dimension_and_zero_fill(
+    tmp_path, event_source
+):
+    source = event_source([1, 2], labels=[0, 1])
+    arr = _write_labels(tmp_path, source)[LABELS_KEY]
+    assert arr.shape == (2,)
+    assert dict(arr.attrs) == {}
+    assert arr.metadata.dimension_names == ("event",)
+    assert arr.fill_value == 0
+
+
+def test_write_labels_array_empty_source_creates_a_zero_length_array(
+    tmp_path, event_source
+):
+    source = event_source([], labels=[], label_names=["a"])
+    assert _write_labels(tmp_path, source)[LABELS_KEY].shape == (0,)
+
+
+def test_write_labels_array_accepts_the_highest_label_the_names_allow(
+    tmp_path, event_source
+):
+    source = event_source([1, 2], labels=[0, 2], label_names=["a", "b", "c"])
+    assert _write_labels(tmp_path, source)[LABELS_KEY][:].tolist() == [0, 2]
+
+
+def test_write_labels_array_writes_one_whole_shard_per_write(
+    tmp_path, event_source, monkeypatch
+):
+    writes = []
+
+    def spy(array, start, block):
+        writes.append((start, block.shape[0]))
+        write_region(array, start, block)
+
+    monkeypatch.setattr("timeseries_zarr.write_event.write_region", spy)
+    labels = np.arange(26) % 5
+    source = event_source(np.arange(26), labels=labels)
+    stored = _write_labels(tmp_path, source)[LABELS_KEY][:]
+    assert writes == [(0, 8), (8, 8), (16, 8), (24, 2)]
+    assert np.array_equal(stored, labels)
+
+
+def test_write_labels_array_rejects_a_label_at_or_above_the_category_count(
+    tmp_path, event_source
+):
+    source = event_source([1, 2, 3], labels=[0, 1, 2], label_names=["a", "b"])
+    with pytest.raises(ValueError, match="label 2 is outside the 2 label"):
+        _write_labels(tmp_path, source)
+
+
+def test_write_labels_array_rejects_a_bad_label_in_a_later_block(
+    tmp_path, event_source
+):
+    source = event_source(
+        np.arange(9), labels=[0] * 8 + [4], label_names=["a", "b"]
+    )
+    with pytest.raises(ValueError, match="outside"):
+        _write_labels(tmp_path, source)
+
+
+def test_write_labels_array_rejects_more_categories_than_a_uint16_indexes(
+    tmp_path, event_source
+):
+    source = event_source([1], labels=[0], label_names=["x"] * 65537)
+    with pytest.raises(ValueError, match="uint16 limit"):
+        _write_labels(tmp_path, source)
     assert list(open_group(tmp_path / "bundle").array_keys()) == []
