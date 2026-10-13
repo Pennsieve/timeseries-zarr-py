@@ -11,10 +11,13 @@ from pynwb.ecephys import ElectricalSeries
 from pynwb.misc import Units
 
 from timeseries_zarr.constants import (
+    MAX_LABELS,
     MAX_UNIT_CLUSTERS,
     MICROSECONDS_PER_SECOND,
     UNIT_TO_UV,
 )
+from timeseries_zarr.planning import sample_period_us
+from timeseries_zarr.types import EventColumn
 
 logger = logging.getLogger(__name__)
 
@@ -231,9 +234,10 @@ class NwbUnitSource:
 
     Flattens the table's per-cluster rows into the per-event streams the
     bundle stores: all spikes merged into one timestamp series sorted
-    ascending, each event tagged with its cluster's dense uint8 id in table
-    row order (not the upstream unit id) and carrying that cluster's
-    waveform_mean.
+    ascending, each event labeled with its cluster's dense index in table row
+    order (not the upstream unit id). The table's waveform_mean column, when it
+    has one, becomes the per-label mean snippets. The source serves both the
+    event channel protocol and the unit channel protocol it is replacing.
     """
 
     def __init__(
@@ -247,43 +251,56 @@ class NwbUnitSource:
         waveform_rate_hz is the sample rate within a waveform; the table
         carries no rate of its own. session_start_time places event timestamps
         in absolute microseconds. Raises ValueError if the table holds more
-        than 256 units, past the uint8 cluster-id range.
+        than MAX_LABELS units, past the uint16 label range, or if the units'
+        waveform_mean snippets differ in width.
         """
         unit_count = len(units)
-        if unit_count > MAX_UNIT_CLUSTERS:
-            raise ValueError("a unit channel holds at most 256 clusters")
+        if unit_count > MAX_LABELS:
+            raise ValueError(f"a unit channel holds at most {MAX_LABELS} units")
 
         self._id = str(units.name)
         self._rate_hz = float(waveform_rate_hz)
         self._start_us = round(
             session_start_time.timestamp() * MICROSECONDS_PER_SECOND
         )
+        self._label_names = [
+            str(units["unit_name"][i])
+            if "unit_name" in units.colnames
+            else str(units.id[i])
+            for i in range(unit_count)
+        ]
 
         session_s = session_start_time.timestamp()
         times: list[npt.NDArray[np.float64]] = []
-        clusters: list[npt.NDArray[np.uint8]] = []
-        waveforms: list[npt.NDArray[np.float32]] = []
+        labels: list[npt.NDArray[np.uint16]] = []
         for cluster_id in range(unit_count):
             spike_times: npt.NDArray[np.float64] = np.asarray(
                 units.get_unit_spike_times(cluster_id), dtype=np.float64
             )
-            mean: npt.NDArray[np.float32] = np.asarray(
-                units["waveform_mean"][cluster_id], dtype=np.float32
-            )
-            count = spike_times.shape[0]
             times.append(spike_times)
-            clusters.append(np.full(count, cluster_id, dtype=np.uint8))
-            waveforms.append(np.broadcast_to(mean, (count, mean.shape[0])))
-
-        all_times = np.concatenate(times)
+            labels.append(
+                np.full(spike_times.shape[0], cluster_id, dtype=np.uint16)
+            )
+        all_times = np.concatenate(times) if times else np.empty(0)
         order = np.argsort(all_times, kind="stable")
         self._events = (
             ((all_times[order] + session_s) * MICROSECONDS_PER_SECOND)
             .round()
             .astype(np.int64)
         )
-        self._units = np.concatenate(clusters)[order]
-        self._waveforms = np.concatenate(waveforms)[order]
+        self._labels = (
+            np.concatenate(labels)[order]
+            if labels
+            else np.empty(0, dtype=np.uint16)
+        )
+        self._means: npt.NDArray[np.float32] | None = None
+        if unit_count and "waveform_mean" in units.colnames:
+            self._means = np.stack(
+                [
+                    np.asarray(units["waveform_mean"][i], dtype=np.float32)
+                    for i in range(unit_count)
+                ]
+            )
 
     @property
     def id(self) -> str:
@@ -309,16 +326,45 @@ class NwbUnitSource:
         return self._rate_hz
 
     def start_us(self) -> int:
-        """Return the recording start, rounded to whole microseconds."""
+        """Return the earliest wall-clock microseconds the channel holds.
+
+        The recording start, or the first spike when it precedes the start.
+        """
+        if self._events.shape[0]:
+            return min(self._start_us, int(self._events[0]))
         return self._start_us
 
     def num_events(self) -> int:
         """Return the total number of spike events across all units."""
         return int(self._events.shape[0])
 
+    def columns(self) -> frozenset[EventColumn]:
+        """Return the optional columns: labels, and waveform_mean when present."""
+        if not self._label_names:
+            return frozenset()
+        if self._means is None:
+            return frozenset({"labels"})
+        return frozenset({"labels", "waveform_mean"})
+
+    def label_names(self) -> list[str] | None:
+        """Return the unit_name of each unit, or its id, in table row order."""
+        return list(self._label_names)
+
+    def num_labels(self) -> int:
+        """Return the number of units."""
+        return len(self._label_names)
+
+    def max_duration_us(self) -> int | None:
+        """Return None, because spikes have no duration."""
+        return None
+
+    def text_width(self) -> int:
+        """Return 0, because spikes carry no text."""
+        return 0
+
     def points_per_event(self) -> int:
-        """Return the width of the waveform_mean template, shared by every event."""
-        return int(self._waveforms.shape[1])
+        """Return the width of the waveform_mean template, or 0 without one."""
+        return 0 if self._means is None else int(self._means.shape[1])
 
     def read_events(self, start: int, stop: int) -> npt.NDArray[np.int64]:
         """Return the half-open [start, stop) window of event timestamps.
@@ -328,21 +374,56 @@ class NwbUnitSource:
         """
         return self._events[start:stop]
 
+    def read_labels(self, start: int, stop: int) -> npt.NDArray[np.uint16]:
+        """Return the [start, stop) window of dense unit indices as uint16."""
+        return self._labels[start:stop]
+
     def read_units(self, start: int, stop: int) -> npt.NDArray[np.uint8]:
-        """Return the half-open [start, stop) window of per-event cluster ids.
+        """Return the half-open [start, stop) window of cluster ids as uint8.
 
         Aligned with the events at the same indices. An empty range yields a
-        length-0 array.
+        length-0 array. Raises ValueError if the table holds more than
+        MAX_UNIT_CLUSTERS units, which a uint8 cannot index.
         """
-        return self._units[start:stop]
+        if self.num_labels() > MAX_UNIT_CLUSTERS:
+            raise ValueError(
+                f"a uint8 cluster id indexes at most {MAX_UNIT_CLUSTERS} units"
+            )
+        return self._labels[start:stop].astype(np.uint8)
 
     def read_waveforms(self, start: int, stop: int) -> npt.NDArray[np.float32]:
         """Return float32 waveforms for events [start, stop).
 
         Row k is the waveform_mean of the cluster that produced event k. An
-        empty range yields a (0, points_per_event) array.
+        empty range yields a (0, points_per_event) array. Raises ValueError if
+        the table has no waveform_mean column.
         """
-        return self._waveforms[start:stop]
+        return self.waveform_mean()[self._labels[start:stop]]
+
+    def read_durations(self, start: int, stop: int) -> npt.NDArray[np.int64]:
+        """Raise ValueError, because spikes have no durations column."""
+        raise ValueError("a unit channel has no durations column")
+
+    def read_text(self, start: int, stop: int) -> list[str]:
+        """Raise ValueError, because spikes have no text column."""
+        raise ValueError("a unit channel has no text column")
+
+    def read_channel_ids(self, start: int, stop: int) -> list[list[str]]:
+        """Raise ValueError, because spikes have no channels column."""
+        raise ValueError("a unit channel has no channels column")
+
+    def waveform_mean(self) -> npt.NDArray[np.float32]:
+        """Return the mean snippet of each unit, shaped (units, samples).
+
+        Raises ValueError if the table has no waveform_mean column.
+        """
+        if self._means is None:
+            raise ValueError("the Units table has no waveform_mean column")
+        return self._means
+
+    def waveform_period_us(self) -> float:
+        """Return the microseconds between adjacent snippet samples."""
+        return sample_period_us(self._rate_hz)
 
 
 def _iter_units_tables(nwbfile: NWBFile) -> Iterator[Units]:

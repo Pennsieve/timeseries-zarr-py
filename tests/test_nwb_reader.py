@@ -17,6 +17,7 @@ from timeseries_zarr.nwb_reader import (
     NwbUnitSource,
     build_sources_from_nwb,
 )
+from timeseries_zarr.protocols import EventChannelSource, UnitChannelSource
 
 STARTED = datetime(2021, 6, 1, 12, 0, tzinfo=UTC)
 
@@ -51,13 +52,17 @@ def _series_with_electrode_columns(extra_columns, n=3):
     )
 
 
-def _make_units(unit_specs, *, name="my_units"):
+def _make_units(unit_specs, *, name="my_units", unit_names=None):
     """Build a pynwb Units table from (spike_times, waveform_mean) pairs."""
     units = Units(name=name)
-    for spike_times, waveform_mean in unit_specs:
+    if unit_names is not None:
+        units.add_column(name="unit_name", description="unit name")
+    for index, (spike_times, waveform_mean) in enumerate(unit_specs):
+        extra = {} if unit_names is None else {"unit_name": unit_names[index]}
         units.add_unit(
             spike_times=list(spike_times),
             waveform_mean=np.asarray(waveform_mean, dtype=float),
+            **extra,
         )
     return units
 
@@ -302,10 +307,112 @@ def test_unit_read_waveforms_empty_range_keeps_point_axis():
     assert src.read_waveforms(2, 2).shape == (0, 4)
 
 
-def test_unit_init_rejects_more_than_256_units():
+def test_unit_read_units_rejects_more_than_256_units():
     specs = [([float(i)], [0.0]) for i in range(257)]
-    with pytest.raises(ValueError):
+    src = NwbUnitSource(_make_units(specs), 30000.0, STARTED)
+    with pytest.raises(ValueError, match="at most 256"):
+        src.read_units(0, 5)
+
+
+def test_unit_init_rejects_more_units_than_a_uint16_label_holds(monkeypatch):
+    monkeypatch.setattr("timeseries_zarr.nwb_reader.MAX_LABELS", 3)
+    specs = [([float(i)], [0.0]) for i in range(4)]
+    with pytest.raises(ValueError, match="at most 3 units"):
         NwbUnitSource(_make_units(specs), 30000.0, STARTED)
+
+
+def test_unit_source_serves_both_the_event_and_the_unit_protocol():
+    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
+    assert isinstance(src, EventChannelSource)
+    assert isinstance(src, UnitChannelSource)
+
+
+def test_unit_read_labels_are_dense_uint16_indices_in_time_order():
+    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
+    labels = src.read_labels(0, 5)
+    assert labels.dtype == np.uint16
+    assert labels.tolist() == _SORTED_CLUSTERS
+    assert src.read_labels(1, 3).tolist() == _SORTED_CLUSTERS[1:3]
+    assert src.read_labels(2, 2).shape == (0,)
+
+
+def test_unit_source_holds_more_than_256_units_as_labels():
+    specs = [([float(i)], [0.0]) for i in range(300)]
+    src = NwbUnitSource(_make_units(specs), 30000.0, STARTED)
+    assert src.num_labels() == 300
+    assert int(src.read_labels(0, 300).max()) == 299
+
+
+def test_unit_label_names_default_to_the_unit_ids():
+    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
+    assert src.label_names() == ["0", "1"]
+    assert src.num_labels() == 2
+
+
+def test_unit_label_names_use_the_unit_name_column_when_present():
+    units = _make_units(_TWO_UNITS, unit_names=["alpha", "beta"])
+    src = NwbUnitSource(units, 30000.0, STARTED)
+    assert src.label_names() == ["alpha", "beta"]
+
+
+def test_unit_columns_are_labels_and_waveform_mean():
+    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
+    assert src.columns() == {"labels", "waveform_mean"}
+
+
+def test_unit_waveform_mean_is_the_per_unit_table_in_float32():
+    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
+    means = src.waveform_mean()
+    assert means.dtype == np.float32
+    assert means.tolist() == [_WM0, _WM1]
+
+
+def test_unit_waveform_period_is_the_sample_period_in_microseconds():
+    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
+    assert src.waveform_period_us() == 1_000_000 / 30000.0
+
+
+def test_unit_without_a_waveform_mean_column_offers_only_labels():
+    units = Units(name="bare")
+    units.add_unit(spike_times=[0.1, 0.2])
+    src = NwbUnitSource(units, 30000.0, STARTED)
+    assert src.columns() == {"labels"}
+    assert src.points_per_event() == 0
+    with pytest.raises(ValueError, match="no waveform_mean"):
+        src.waveform_mean()
+    with pytest.raises(ValueError, match="no waveform_mean"):
+        src.read_waveforms(0, 2)
+
+
+def test_unit_spikes_carry_no_durations_text_or_channels():
+    src = NwbUnitSource(_make_units(_TWO_UNITS), 30000.0, STARTED)
+    assert src.max_duration_us() is None
+    assert src.text_width() == 0
+    for reader in (src.read_durations, src.read_text, src.read_channel_ids):
+        with pytest.raises(ValueError, match="has no"):
+            reader(0, 2)
+
+
+def test_unit_start_is_the_first_spike_when_it_precedes_the_session():
+    specs = [([-2.0, 0.5], _WM0)]
+    src = NwbUnitSource(_make_units(specs), 30000.0, STARTED)
+    assert src.start_us() == round((STARTED.timestamp() - 2.0) * 1_000_000)
+
+
+def test_unit_table_without_units_has_no_events_and_no_columns():
+    src = NwbUnitSource(Units(name="none"), 30000.0, STARTED)
+    assert src.num_events() == 0
+    assert src.num_labels() == 0
+    assert src.columns() == frozenset()
+    assert src.start_us() == round(STARTED.timestamp() * 1_000_000)
+
+
+def test_unit_table_whose_units_have_no_spikes_has_labels_and_no_events():
+    specs = [([], _WM0), ([], _WM1)]
+    src = NwbUnitSource(_make_units(specs), 30000.0, STARTED)
+    assert src.num_events() == 0
+    assert src.columns() == {"labels", "waveform_mean"}
+    assert src.read_labels(0, 0).shape == (0,)
 
 
 def test_build_yields_one_continuous_source_per_channel():
