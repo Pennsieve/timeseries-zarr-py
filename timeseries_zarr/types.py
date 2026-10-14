@@ -12,6 +12,13 @@ from timeseries_zarr.constants import (
 
 type ChannelKind = Literal["continuous", "event"]
 
+type VoltagePolicy = Literal["convert", "require_uv"]
+"""How the writer treats the unit of a continuous channel.
+
+convert scales a recognized volts-family unit to microvolts. require_uv
+raises unless such a unit is exactly "uV".
+"""
+
 type EventColumn = Literal[
     "durations", "labels", "text", "channels", "waveform_mean"
 ]
@@ -53,6 +60,18 @@ class LevelMembers[T]:
 
 
 @dataclass(frozen=True, slots=True)
+class ResolvedUnit:
+    """Scale factor and stored unit string of one continuous channel.
+
+    factor multiplies the source samples. unit is the string the channel
+    group declares.
+    """
+
+    factor: float
+    unit: str
+
+
+@dataclass(frozen=True, slots=True)
 class RecordingMeta:
     """Identity and wall-clock start of a recording, for recording.json.
 
@@ -84,7 +103,8 @@ class WriteOpts:
 
     max_levels and min_bins bound the pyramid; inner_len and
     target_shard_bytes size the inner chunk and the outer shard. write_var
-    adds the var member to every level.
+    adds the var member to every level. voltage_policy sets how a continuous
+    channel with a volts-family unit reaches microvolts.
     """
 
     zstd_level: int = 5
@@ -93,3 +113,4 @@ class WriteOpts:
     inner_len: int = INNER_CHUNK_SAMPLES
     target_shard_bytes: int = TARGET_SHARD_BYTES
     write_var: bool = False
+    voltage_policy: VoltagePolicy = "convert"

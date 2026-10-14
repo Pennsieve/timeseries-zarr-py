@@ -33,6 +33,7 @@ from timeseries_zarr.streaming import (
     iter_member_blocks,
     iter_raw_blocks,
     regroup,
+    scale,
     tap,
 )
 from timeseries_zarr.types import (
@@ -41,6 +42,7 @@ from timeseries_zarr.types import (
     LevelPlan,
     WriteOpts,
 )
+from timeseries_zarr.units import resolve_unit
 from timeseries_zarr.zarr_io import (
     ZarrArray,
     ZarrGroup,
@@ -88,14 +90,15 @@ def write_raw(
     source: ContinuousChannelSource,
     sizing: ChunkShard,
     zstd_level: int,
+    factor: float = 1.0,
 ) -> ZarrArray:
     """Create the raw array under group and stream the source's samples into it.
 
     A rank-1 float32 array named "raw" of shape (num_samples,), with the
     dimension name "time" and no attributes: the sample period is the
-    channel's rate_hz, which the channel group carries. The samples are stored
-    as the source gives them, so a non-finite sample stays a gap and a DC
-    offset stays in. They are read in shard-sized blocks, so every write covers
+    channel's rate_hz, which the channel group carries. The samples are
+    multiplied by factor, so a non-finite sample stays a gap and a DC offset
+    stays in. They are read in shard-sized blocks, so every write covers
     a whole shard. An empty source creates a zero-length array and writes
     nothing.
     """
@@ -110,7 +113,9 @@ def write_raw(
         zstd_level,
         dimension_names=(TIME_DIMENSION,),
     )
-    _write_blocks(array, iter_raw_blocks(source, sizing.shard_shape[0]))
+    _write_blocks(
+        array, scale(iter_raw_blocks(source, sizing.shard_shape[0]), factor)
+    )
     return array
 
 
@@ -305,9 +310,11 @@ def write_continuous_channel(
     the level below. With it true, every level is folded in one pass from the
     raw samples through float64 statistics, which keeps the variance exact on a
     channel with a large DC offset. Raises ValueError if the channel starts
-    before origin_us.
+    before origin_us, or, under voltage_policy require_uv, if a voltage unit is
+    not "uV".
     """
     rate_hz = source.rate_hz()
+    resolved = resolve_unit(source.unit, opts.voltage_policy)
     group = create_group_with_attrs(
         parent,
         str(key),
@@ -316,7 +323,7 @@ def write_continuous_channel(
             source.id,
             rate_hz,
             source.start_us() - origin_us,
-            source.unit,
+            resolved.unit,
         ),
     )
     raw = write_raw(
@@ -329,6 +336,7 @@ def write_continuous_channel(
             opts.target_shard_bytes,
         ),
         opts.zstd_level,
+        resolved.factor,
     )
     plans = plan_levels(
         source.num_samples(), rate_hz, opts.max_levels, opts.min_bins

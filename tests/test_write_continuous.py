@@ -558,3 +558,32 @@ def test_write_continuous_channel_returns_none(tmp_path, continuous_source):
         opts=_OPTS,
     )
     assert result is None
+
+
+def test_write_continuous_channel_scales_a_volts_source_to_microvolts(
+    tmp_path, continuous_source, opts
+):
+    samples = _series(1000, offset=0.005, scale=0.001)
+    group = _write(tmp_path, continuous_source(samples, unit="volts"), opts)
+    want = samples * np.float32(1e6)
+    assert group.attrs["tsz"]["unit"] == "uV"
+    assert np.array_equal(group[RAW_KEY][:], want, equal_nan=True)
+
+
+def test_write_continuous_channel_folds_levels_from_the_scaled_samples(
+    tmp_path, continuous_source, opts
+):
+    samples = _series(1000, offset=0.005, scale=0.001)
+    group = _write(tmp_path, continuous_source(samples, unit="volts"), opts)
+    scaled = (samples * np.float32(1e6)).astype(np.float32)
+    want = _direct(scaled, 4)[:, 2]
+    assert _close(group["1"]["mean"][:], want)
+
+
+def test_write_continuous_channel_leaves_an_unknown_unit_unchanged(
+    tmp_path, continuous_source, opts
+):
+    samples = _series(1000)
+    group = _write(tmp_path, continuous_source(samples, unit="pA"), opts)
+    assert group.attrs["tsz"]["unit"] == "pA"
+    assert np.array_equal(group[RAW_KEY][:], samples, equal_nan=True)
