@@ -10,24 +10,12 @@ source exposes one channel's metadata and windowed sample reads. An event source
 its event times and the optional columns it provides. Its `columns()` method names them,
 and the writer calls a column's reader only for a column named there.
 
-`nwb_reader.py` and `nwb_events.py` hold the concrete NWB adapters. Everything downstream
-depends on the protocols, not on NWB. The core is testable against in-memory sources, and
-a second input format costs new adapters and no changes elsewhere.
-
-Two continuous adapters live in `nwb_reader.py`. `NwbContinuousSource` reads one column of
-an `ElectricalSeries` and normalizes it to microvolts. `NwbTimeSeriesSource` reads one
-column of any other numeric `TimeSeries` in the acquisition. It normalizes the samples to
-microvolts when the unit is in the volts family and keeps any other unit.
-
-Four event adapters present NWB structures as event channels. `NwbUnitSource` flattens a
-`Units` table into spike times, unit labels, and the per-unit `waveform_mean` snippets.
-`NwbIntervalSource` reads any `TimeIntervals` table, with its tags as labels, its other
-columns as JSON text, and its timeseries references as channels. `NwbEventsTableSource`
-reads an `EventsTable`, and `NwbAnnotationSeriesSource` reads an `AnnotationSeries`.
-
-`build_sources_from_nwb` finds every source in a fixed order and returns them with the
-recording metadata that `recording_meta` reads. Waveforms carry no unit metadata in NWB
-and are stored unscaled.
+Everything downstream depends on the protocols. An adapter for an input format lives in
+its own package and implements them. The NWB adapter is
+[timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb). An adapter
+normalizes voltage samples to microvolts and keeps any other unit, so every channel
+reaching the writer carries the unit its group attribute names. The writer is tested
+against the in-memory sources in `tests/conftest.py`.
 
 ## Decision layer
 
@@ -85,7 +73,5 @@ earliest start of any channel or of the session. It maps channel ids to keys. Ev
 channels use that map to name the channels they apply to. It then writes each channel, consolidates
 the metadata, writes `recording.json`, and publishes the bundle atomically.
 
-`main.py` and `config.py` are the CLI and environment-config shell around it.
-`config.py` resolves both invocation forms, positional arguments and the
-`INPUT_DIR`/`OUTPUT_DIR` convention. After publishing, `properties.py` writes the
-`asset-properties.json` sidecar that records the bundle's directory name.
+A converter calls `write_bundle` with its sources, a `WriteOpts`, and an optional
+`RecordingMeta`.
