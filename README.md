@@ -1,68 +1,94 @@
 # timeseries-zarr-py
 
-Converts a neurophysiology recording into a TS-Zarr 1.0 bundle. The bundle is a static
+Python library and reference writer for TS-Zarr bundles. A bundle is a static
 directory of Zarr v3 arrays that a browser reads over HTTP range requests to render any
-time window interactively.
+time window of a neurophysiology recording. The writer takes channel sources,
+precomputes per-bin statistics at several levels, and publishes the bundle in one
+atomic rename.
 
-Raw recordings can be terabytes large, but a view is about 2000 pixels wide. The writer
-precomputes per-bin statistics at several resolutions. A reader then fetches only the bins
-the visible window needs. A continuous channel holds its raw samples and levels of
-per-bin minimum, maximum, mean, and count. Spikes, intervals, and annotations become event
-channels.
-
-This repository is a reference implementation of a bundle writer. The format is specified
-in [docs/bundle-format.md](./docs/bundle-format.md). The reference reader is
+The format is specified in [docs/bundle-format.md](./docs/bundle-format.md). The
+reference reader is
 [`@pennsieve/timeseries-zarr-reader`](https://github.com/Pennsieve/timeseries-zarr-reader).
+The NWB converter built on this library is
+[timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb).
+
+## Install
+
+```bash
+pip install git+https://github.com/Pennsieve/timeseries-zarr-py.git
+```
 
 ## Usage
 
-NWB is currently the only supported input format.
-[docs/architecture.md](./docs/architecture.md) explains how additional formats plug in.
+A caller implements `ContinuousChannelSource` or `EventChannelSource` from
+`timeseries_zarr.protocols` and passes its sources to `write_bundle`. This example
+writes one channel holding a minute of a 10 Hz sine sampled at 1000 Hz:
 
-Read one NWB file and write one bundle:
+```python
+from pathlib import Path
 
-```bash
-python -m timeseries_zarr.main recording.nwb /data/recording.zarr
+import numpy as np
+
+from timeseries_zarr.bundle import write_bundle
+from timeseries_zarr.types import WriteOpts
+
+
+class SineSource:
+    id = "sine-0"
+    name = "sine"
+    unit = "uV"
+
+    def __init__(self):
+        t = np.arange(60_000) / 1000.0
+        self._samples = (100.0 * np.sin(2 * np.pi * 10 * t)).astype(np.float32)
+
+    def rate_hz(self):
+        return 1000.0
+
+    def start_us(self):
+        return 0
+
+    def num_samples(self):
+        return self._samples.shape[0]
+
+    def read_samples(self, start, stop):
+        return self._samples[start:stop]
+
+
+write_bundle(
+    [SineSource()],
+    [],
+    staging_dir=Path("sine.zarr.staging"),
+    final_dir=Path("sine.zarr"),
+    opts=WriteOpts(),
+)
 ```
 
-With no arguments the writer takes the directory convention instead: it reads the single
-`.nwb` file in `INPUT_DIR` and publishes to `OUTPUT_DIR/<input-stem>.zarr`. This is how
-the container runs.
+Every time in a bundle is int64 microseconds. A source reports `start_us` as wall-clock
+microseconds since the Unix epoch, and the bundle counts from the earliest start of any
+source or of the session. The writer stores samples as the source gives them and
+declares the source's `unit`. Voltage sources report microvolts and `"uV"`.
 
-The writer reads every `ElectricalSeries` and every other numeric `TimeSeries` in the
-acquisition as continuous channels, one per column. It reads `Units` tables, interval
-tables (epochs, trials, invalid times, and any other `TimeIntervals`), `EventsTable`
-tables, and `AnnotationSeries` as event channels. Voltage samples are stored in
-microvolts. A series in any other unit keeps its unit.
+`staging_dir` and `final_dir` must sit on one filesystem. The staged bundle replaces
+an existing bundle at `final_dir`. A `RecordingMeta` passed as `recording` must carry a
+UTC offset in its start. Its subject, session, and source objects go into
+`recording.json` at the bundle root and nowhere else, so deleting that file de-identifies
+the bundle.
 
-The subject, the session, and the wall-clock start time go into `recording.json` at the
-bundle root and into no other metadata. Delete that file to de-identify a bundle. Free text
-in event channels can still hold identity.
+`WriteOpts` fields:
 
-Every run also writes a sibling properties file next to the bundle, `asset-properties.json`
-by default, or whatever `ASSET_PROPERTIES_FILE` names instead. It records the bundle's
-directory name under the key `root_path`.
-
-```bash
-make run        # docker-compose build + up, against data/input and data/output
-```
-
-Writer settings come from the environment under the `ZARR_WRITER_` prefix. Every
-setting is optional.
-
-| Variable | Governs | Default |
+| Field | Governs | Default |
 |---|---|---|
-| `ZARR_WRITER_STAGING_DIR` | scratch path for the atomic publish | alongside the output |
-| `ZARR_WRITER_ZSTD_LEVEL` | Zstd compression level | 5 |
-| `ZARR_WRITER_MAX_LEVELS` | most levels above the raw samples | 15 |
-| `ZARR_WRITER_MIN_BINS` | bin threshold for keeping a coarser level | 1024 |
-| `ZARR_WRITER_INNER_LEN` | inner Zarr chunk length in samples | 8192 |
-| `ZARR_WRITER_TARGET_SHARD_BYTES` | target outer shard size in bytes | 16 MiB |
-| `ZARR_WRITER_VAR` | write the per-bin variance member, 0 or 1 | 0 |
+| `zstd_level` | Zstd compression level | 5 |
+| `max_levels` | most levels above the raw samples | 15 |
+| `min_bins` | bin threshold for keeping a coarser level | 1024 |
+| `inner_len` | inner Zarr chunk length in samples | 8192 |
+| `target_shard_bytes` | target outer shard size in bytes | 16 MiB |
+| `write_var` | write the per-bin variance member | False |
 
-`ZARR_WRITER_VAR=1` adds a variance array to every level of every continuous channel. The
-writer then folds every level from the raw samples in one pass. That pass holds one shard
-of statistics per level in memory.
+`write_var=True` adds a variance array to every level of every continuous channel. The
+writer then folds every level from the raw samples in one pass. That pass holds one
+shard of statistics per level in memory.
 
 ## Development
 
@@ -70,7 +96,7 @@ Python 3.12, fully typed under `mypy --strict`, with a strict `ruff` ruleset. Te
 `tests/` mirror `timeseries_zarr/` one to one.
 
 ```bash
-make venv        # create the virtualenv and install deps
+make venv        # create the virtualenv and install the package with its extras
 source venv/bin/activate
 
 make test        # pytest
@@ -89,8 +115,8 @@ The module layout and data flow are in [docs/architecture.md](./docs/architectur
 
 ## Dependencies
 
-Runtime: `zarr>=3`, `numcodecs`, `numpy`, `pynwb`, `h5py`. Development: `pytest`,
-`pytest-cov`, `pytest-mock`, `mypy`, `ruff`, `pre-commit`.
+Runtime: `zarr>=3`, `numpy`. Development: `pytest`, `pytest-cov`, `pytest-mock`,
+`mypy`, `ruff`, `pre-commit`.
 
 ## License
 
