@@ -56,8 +56,7 @@ class SineSource:
 write_bundle(
     [SineSource()],
     [],
-    staging_dir=Path("sine.zarr.staging"),
-    final_dir=Path("sine.zarr"),
+    output_path=Path("sine.zarr"),
     opts=WriteOpts(),
 )
 ```

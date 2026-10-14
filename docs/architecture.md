@@ -1,7 +1,7 @@
 # Architecture
 
-Data flows one way through the writer: read, plan, stream and fold, write, publish. No
-stage reaches back into an earlier one.
+Data flows one way through the writer: read, plan, stream and fold, write. No stage
+reaches back into an earlier one.
 
 ## Input adapters
 
@@ -72,7 +72,7 @@ wall-clock start.
 `bundle.py` runs the whole job. It assigns each channel a key and finds the origin, the
 earliest start of any channel or of the session. It maps channel ids to keys. Event
 channels use that map to name the channels they apply to. It then writes each channel, consolidates
-the metadata, writes `recording.json`, and publishes the bundle atomically.
+the metadata, and writes `recording.json`.
 
 A converter calls `write_bundle` with its sources, a `WriteOpts`, and an optional
 `RecordingMeta`.

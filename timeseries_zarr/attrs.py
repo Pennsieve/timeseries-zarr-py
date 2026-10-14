@@ -4,12 +4,12 @@ docs/bundle-format.md specifies the keys and their types. Every 1.0 builder
 returns its object under the single tsz key.
 """
 
-from timeseries_zarr.constants import FORMAT_VERSION
+from timeseries_zarr.constants import FORMAT_VERSION, TSZ_KEY
 
 
 def _tsz(fields: dict[str, object]) -> dict[str, object]:
     """Return fields as the value of the tsz attribute key."""
-    return {"tsz": fields}
+    return {TSZ_KEY: fields}
 
 
 def root_attrs() -> dict[str, object]:

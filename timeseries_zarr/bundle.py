@@ -1,11 +1,12 @@
 """Top-level bundle orchestration."""
 
+import json
 import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from timeseries_zarr.attrs import root_attrs
-from timeseries_zarr.constants import ZARR_METADATA_FILE
+from timeseries_zarr.constants import TSZ_KEY, ZARR_METADATA_FILE
 from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
@@ -83,45 +84,53 @@ def max_key(indexed: Sequence[tuple[int, AnySource]]) -> int:
     return max((index for index, _ in indexed), default=0)
 
 
-def clear_staging(staging_dir: Path) -> None:
-    """Remove a bundle an interrupted run left at staging_dir.
+def clear_output_path(output_path: Path) -> None:
+    """Empty output_path of a bundle an earlier run left there.
 
-    Does nothing when staging_dir is absent or empty. A staged bundle has a
-    root zarr.json. Raises ValueError if staging_dir holds anything else, and
-    removes nothing, so a mistyped path loses no files.
+    Does nothing when output_path is absent or empty. Keeps the directory
+    itself and removes its root zarr.json last, so an interrupted clear still
+    leaves a bundle the next run recognizes. Raises ValueError, and removes
+    nothing, if output_path is not a directory or holds files but no bundle.
     """
-    if not staging_dir.is_dir() or not any(staging_dir.iterdir()):
+    if not output_path.exists():
         return
-    if not (staging_dir / ZARR_METADATA_FILE).is_file():
+    if not output_path.is_dir():
         raise ValueError(
-            f"staging_dir {staging_dir} holds files but no staged bundle; "
-            "use an empty or absent directory"
+            f"output_path {output_path} is not a directory; "
+            "use an absent path, an empty directory, or an existing bundle"
         )
-    shutil.rmtree(staging_dir)
-
-
-def atomic_publish(staging_dir: Path, final_dir: Path) -> None:
-    """Move a fully-staged bundle to its final path in one atomic rename.
-
-    Replaces final_dir if it already exists. A reader never sees a partial
-    write: it sees the old bundle, the complete new one, or nothing for the
-    brief window while final_dir is replaced. Both paths must be on the same
-    filesystem; a cross-device move raises OSError.
-    """
-    if not final_dir.exists():
-        staging_dir.replace(final_dir)
+    entries = list(output_path.iterdir())
+    if not entries:
         return
+    root = output_path / ZARR_METADATA_FILE
+    if not _is_bundle_root(root):
+        raise ValueError(
+            f"output_path {output_path} holds files but no bundle; "
+            "use an absent path, an empty directory, or an existing bundle"
+        )
+    for entry in entries:
+        if entry == root:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    root.unlink()
 
-    # A single os.replace cannot overwrite a non-empty directory, so the old
-    # bundle is moved aside first and survives until the swap succeeds.
-    backup = final_dir.with_name(final_dir.name + ".old")
-    final_dir.replace(backup)
+
+def _is_bundle_root(path: Path) -> bool:
+    """Return whether path is a root zarr.json that carries tsz.version."""
     try:
-        staging_dir.replace(final_dir)
-    except OSError:
-        backup.replace(final_dir)
-        raise
-    shutil.rmtree(backup)
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(document, dict):
+        return False
+    attributes = document.get("attributes")
+    if not isinstance(attributes, dict):
+        return False
+    tsz = attributes.get(TSZ_KEY)
+    return isinstance(tsz, dict) and isinstance(tsz.get("version"), str)
 
 
 def write_all_channels(
@@ -160,25 +169,24 @@ def write_bundle(
     continuous: Sequence[ContinuousChannelSource],
     events: Sequence[EventChannelSource],
     *,
-    staging_dir: Path,
-    final_dir: Path,
+    output_path: Path,
     opts: WriteOpts,
     recording: RecordingMeta | None = None,
 ) -> None:
-    """Build the whole viewer bundle and publish it atomically.
+    """Write the whole viewer bundle at output_path.
 
-    The root group carries the format version. Every channel is staged into a
-    fresh root group at staging_dir, the metadata of every node is consolidated
-    into the root, and then recording.json is written when recording is given,
-    so identity and the wall-clock start never enter the root object. The
-    staged bundle is renamed onto final_dir last. A bundle an interrupted run
-    left at staging_dir is removed first. Every time counts from the origin,
-    the earliest of the session start in recording and every channel start,
-    and recording.json holds that instant as its start. Sizing and compression
-    follow opts. Raises ValueError if two channels share an id,
-    recording.start has no UTC offset, a voltage unit is not "uV" under
-    voltage_policy require_uv, or staging_dir holds files that are not
-    a staged bundle, before anything is written.
+    The root group carries the format version. Every channel is written into
+    a fresh root group at output_path, the metadata of every node is
+    consolidated into the root, and then recording.json is written when
+    recording is given, so identity and the wall-clock start never enter the
+    root object. A bundle an earlier run left at output_path is replaced.
+    Every time counts from the origin, the earliest of the session start in
+    recording and every channel start, and recording.json holds that instant
+    as its start. Sizing and compression follow opts. Raises ValueError if
+    two channels share an id, recording.start has no UTC offset, a voltage
+    unit is not "uV" under voltage_policy require_uv, or output_path is not
+    absent, empty, or a bundle, before anything is written. A failed write
+    leaves a partial bundle with no consolidated metadata.
     """
     indexed = assign_indices(continuous, events)
     session_start = None if recording is None else session_start_us(recording)
@@ -192,10 +200,9 @@ def write_bundle(
                 raise ValueError(
                     f"channel {index} ({source.id!r}): {error}"
                 ) from error
-    clear_staging(staging_dir)
-    root = open_group(staging_dir, root_attrs())
+    clear_output_path(output_path)
+    root = open_group(output_path, root_attrs())
     write_all_channels(root, indexed, origin, keys, opts)
     consolidate(root)
     if recording is not None:
-        write_recording_json(staging_dir, recording_document(recording, origin))
-    atomic_publish(staging_dir, final_dir)
+        write_recording_json(output_path, recording_document(recording, origin))
