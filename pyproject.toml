@@ -9,7 +9,6 @@ description = "Producer for pyramid Zarr v3 viewer bundles from neurophysiology 
 requires-python = ">=3.12"
 dependencies = [
     "zarr>=3",
-    "numcodecs",
     "numpy",
 ]
 
