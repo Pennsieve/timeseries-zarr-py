@@ -2,7 +2,6 @@
 
 import numpy as np
 import pytest
-from pynwb.testing.mock.ecephys import mock_ElectricalSeries
 
 from timeseries_zarr.columns import text_width
 
@@ -44,16 +43,6 @@ class ArrayContinuousSource:
 def continuous_source():
     """Return the ArrayContinuousSource factory."""
     return ArrayContinuousSource
-
-
-@pytest.fixture
-def electrical_series():
-    """Return the mock_ElectricalSeries factory.
-
-    The mock builds its own electrode table and accepts data, rate, and
-    starting_time overrides.
-    """
-    return mock_ElectricalSeries
 
 
 class ArrayEventSource:
