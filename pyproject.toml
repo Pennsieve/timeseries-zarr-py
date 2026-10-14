@@ -11,8 +11,6 @@ dependencies = [
     "zarr>=3",
     "numcodecs",
     "numpy",
-    "pynwb",
-    "h5py",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +35,6 @@ timeseries_zarr = ["py.typed"]
 source = ["timeseries_zarr"]
 omit = [
     "timeseries_zarr/__init__.py",
-    "timeseries_zarr/main.py",
 ]
 
 [tool.coverage.report]
@@ -99,13 +96,3 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 files = ["timeseries_zarr"]
-
-# Third-party libraries without complete type information.
-[[tool.mypy.overrides]]
-module = [
-    "pynwb.*",
-    "hdmf.*",
-    "h5py.*",
-    "numcodecs.*",
-]
-ignore_missing_imports = true
