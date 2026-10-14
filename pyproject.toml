@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "timeseries-zarr-py"
 version = "0.3.0"
@@ -22,6 +26,9 @@ dev = [
     "ruff",
     "pre-commit",
 ]
+
+[tool.setuptools.packages.find]
+include = ["timeseries_zarr*"]
 
 [tool.coverage.run]
 source = ["timeseries_zarr"]
