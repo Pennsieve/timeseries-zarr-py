@@ -6,11 +6,11 @@ import re
 import numpy as np
 import pytest
 
+from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.bundle import (
     assign_indices,
-    atomic_publish,
     channel_keys,
-    clear_staging,
+    clear_output_path,
     max_key,
     origin_us,
     write_all_channels,
@@ -64,49 +64,6 @@ def test_assign_indices_only_events():
     assert assign_indices([], [u0]) == [(0, u0)]
 
 
-def test_atomic_publish_to_fresh_path(tmp_path):
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    (staging / "zarr.json").write_text("root")
-    (staging / "0").mkdir()
-    final = tmp_path / "bundle"
-    atomic_publish(staging, final)
-    assert not staging.exists()
-    assert (final / "zarr.json").read_text() == "root"
-    assert (final / "0").is_dir()
-
-
-def test_atomic_publish_replaces_existing_final(tmp_path):
-    final = tmp_path / "bundle"
-    final.mkdir()
-    (final / "stale.txt").write_text("old")
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    (staging / "zarr.json").write_text("new")
-    atomic_publish(staging, final)
-    assert not staging.exists()
-    assert (final / "zarr.json").read_text() == "new"
-    assert not (final / "stale.txt").exists()
-
-
-def test_atomic_publish_returns_none(tmp_path):
-    staging = tmp_path / "staging"
-    staging.mkdir()
-    result = atomic_publish(staging, tmp_path / "bundle")
-    assert result is None
-
-
-def test_atomic_publish_restores_final_on_failure(tmp_path):
-    final = tmp_path / "bundle"
-    final.mkdir()
-    (final / "stale.txt").write_text("old")
-    missing_staging = tmp_path / "nope"  # does not exist -> os.replace fails
-    with pytest.raises(OSError):
-        atomic_publish(missing_staging, final)
-    assert (final / "stale.txt").read_text() == "old"
-    assert not (tmp_path / "bundle.old").exists()
-
-
 def test_write_all_channels_dispatches_by_type(
     tmp_path, continuous_source, event_source
 ):
@@ -148,20 +105,16 @@ def test_write_all_channels_resolves_event_channel_ids_through_the_keys(
     assert channels.tolist() == [[2], [3]]
 
 
-def test_write_bundle_publishes_mixed_bundle(
+def test_write_bundle_writes_a_mixed_bundle(
     tmp_path, continuous_source, event_source
 ):
-    staging = tmp_path / "staging"
-    final = tmp_path / "bundle"
+    output = tmp_path / "bundle"
     samples = np.arange(64, dtype=np.float32)
     cont = continuous_source(samples, id="c0")
     event = event_source([5, 6, 7], id="e0")
-    write_bundle(
-        [cont], [event], staging_dir=staging, final_dir=final, opts=_OPTS
-    )
-    assert final.exists()
-    assert not staging.exists()
-    g = open_group(final)
+    write_bundle([cont], [event], output_path=output, opts=_OPTS)
+    assert output.exists()
+    g = open_group(output)
     assert dict(g["0"].attrs)["tsz"]["kind"] == "continuous"
     assert dict(g["1"].attrs)["tsz"]["kind"] == "event"
     assert np.array_equal(g["0"]["raw"][:], samples)
@@ -173,11 +126,9 @@ def test_write_bundle_counts_every_time_from_the_earliest_start(
 ):
     cont = continuous_source(np.zeros(8, np.float32), id="c0", start_us=1_000)
     event = event_source([500, 700], id="e0")
-    final = tmp_path / "bundle"
-    write_bundle(
-        [cont], [event], staging_dir=tmp_path / "s", final_dir=final, opts=_OPTS
-    )
-    g = open_group(final)
+    output = tmp_path / "bundle"
+    write_bundle([cont], [event], output_path=output, opts=_OPTS)
+    g = open_group(output)
     assert dict(g["0"].attrs)["tsz"]["offset_us"] == 500
     assert g["1"]["events"][:].tolist() == [0, 200]
 
@@ -185,100 +136,179 @@ def test_write_bundle_counts_every_time_from_the_earliest_start(
 def test_write_bundle_rejects_two_channels_with_one_id_before_writing(
     tmp_path, continuous_source, event_source
 ):
-    staging, final = tmp_path / "staging", tmp_path / "bundle"
+    output = tmp_path / "bundle"
     cont = continuous_source(np.zeros(8, np.float32), id="same")
     event = event_source([1], id="same")
     with pytest.raises(ValueError, match="share the id"):
-        write_bundle(
-            [cont], [event], staging_dir=staging, final_dir=final, opts=_OPTS
-        )
-    assert not staging.exists()
-    assert not final.exists()
-
-
-def test_write_bundle_discards_a_bundle_an_interrupted_run_left_in_staging(
-    tmp_path, continuous_source
-):
-    staging, final = tmp_path / "staging", tmp_path / "bundle"
-    leftover = tmp_path / "leftover"
-    stale = [
-        continuous_source(np.arange(64, dtype=np.float32), id="c0"),
-        continuous_source(np.arange(64, dtype=np.float32), id="c1"),
-    ]
-    write_bundle(
-        stale, [], staging_dir=tmp_path / "s", final_dir=leftover, opts=_OPTS
-    )
-    leftover.rename(staging)
-    fresh = continuous_source(np.ones(64, dtype=np.float32), id="c0")
-    write_bundle([fresh], [], staging_dir=staging, final_dir=final, opts=_OPTS)
-    published = open_group(final)
-    assert not staging.exists()
-    assert published["0"]["raw"][:].tolist() == [1.0] * 64
-    assert "1" not in published
-
-
-def test_write_bundle_uses_an_empty_staging_directory(
-    tmp_path, continuous_source
-):
-    staging, final = tmp_path / "staging", tmp_path / "bundle"
-    staging.mkdir()
-    cont = continuous_source(np.arange(8, dtype=np.float32))
-    write_bundle([cont], [], staging_dir=staging, final_dir=final, opts=_OPTS)
-    assert (final / "zarr.json").exists()
-    assert not staging.exists()
-
-
-def test_clear_staging_ignores_a_path_that_is_not_a_directory(tmp_path):
-    clear_staging(tmp_path / "absent")
-    file = tmp_path / "file"
-    file.write_text("keep")
-    clear_staging(file)
-    assert file.read_text() == "keep"
-
-
-def test_write_bundle_rejects_a_staging_directory_holding_other_files(
-    tmp_path, continuous_source
-):
-    staging, final = tmp_path / "staging", tmp_path / "bundle"
-    staging.mkdir()
-    (staging / "notes.txt").write_text("keep")
-    cont = continuous_source(np.arange(8, dtype=np.float32))
-    with pytest.raises(ValueError, match="holds files but no staged bundle"):
-        write_bundle(
-            [cont], [], staging_dir=staging, final_dir=final, opts=_OPTS
-        )
-    assert (staging / "notes.txt").read_text() == "keep"
-    assert not final.exists()
+        write_bundle([cont], [event], output_path=output, opts=_OPTS)
+    assert not output.exists()
 
 
 def test_write_bundle_consolidates_root_inline(tmp_path, continuous_source):
-    staging = tmp_path / "staging"
-    final = tmp_path / "bundle"
+    output = tmp_path / "bundle"
     cont = continuous_source(np.arange(8, dtype=np.float32))
-    write_bundle([cont], [], staging_dir=staging, final_dir=final, opts=_OPTS)
-    root_json = json.loads((final / "zarr.json").read_text())
+    write_bundle([cont], [], output_path=output, opts=_OPTS)
+    root_json = json.loads((output / "zarr.json").read_text())
     assert "consolidated_metadata" in root_json
-    assert not (final / ".zmetadata").exists()
+    assert not (output / ".zmetadata").exists()
 
 
 def test_write_bundle_empty_inputs(tmp_path):
-    staging = tmp_path / "staging"
-    final = tmp_path / "bundle"
-    write_bundle([], [], staging_dir=staging, final_dir=final, opts=_OPTS)
-    assert final.exists()
-    assert list(open_group(final).group_keys()) == []
+    output = tmp_path / "bundle"
+    write_bundle([], [], output_path=output, opts=_OPTS)
+    assert output.exists()
+    assert list(open_group(output).group_keys()) == []
 
 
 def test_write_bundle_returns_none(tmp_path, continuous_source):
     cont = continuous_source(np.arange(8, dtype=np.float32))
     result = write_bundle(
-        [cont],
-        [],
-        staging_dir=tmp_path / "staging",
-        final_dir=tmp_path / "bundle",
-        opts=_OPTS,
+        [cont], [], output_path=tmp_path / "bundle", opts=_OPTS
     )
     assert result is None
+
+
+def test_write_bundle_creates_missing_parent_directories(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "a" / "b" / "bundle"
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    write_bundle([cont], [], output_path=output, opts=_OPTS)
+    assert open_group(output)["0"]["raw"].shape == (8,)
+
+
+def test_write_bundle_writes_into_an_empty_directory_and_keeps_it(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    output.mkdir()
+    inode = output.stat().st_ino
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    write_bundle([cont], [], output_path=output, opts=_OPTS)
+    assert output.stat().st_ino == inode
+    assert open_group(output)["0"]["raw"].shape == (8,)
+
+
+def test_write_bundle_replaces_a_bundle_and_keeps_its_directory(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    first = [
+        continuous_source(np.arange(64, dtype=np.float32), id="c0"),
+        continuous_source(np.arange(64, dtype=np.float32), id="c1"),
+    ]
+    write_bundle(first, [], output_path=output, opts=_OPTS)
+    inode = output.stat().st_ino
+    second = continuous_source(np.ones(64, dtype=np.float32), id="c0")
+    write_bundle([second], [], output_path=output, opts=_OPTS)
+    replaced = open_group(output)
+    assert output.stat().st_ino == inode
+    assert replaced["0"]["raw"][:].tolist() == [1.0] * 64
+    assert "1" not in replaced
+    assert not (output / "1").exists()
+
+
+def test_write_bundle_replaces_a_partial_bundle_an_interrupted_run_left(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    open_group(output, root_attrs()).create_group("7")
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    write_bundle([cont], [], output_path=output, opts=_OPTS)
+    root_json = json.loads((output / "zarr.json").read_text())
+    assert not (output / "7").exists()
+    assert "consolidated_metadata" in root_json
+
+
+def test_write_bundle_rejects_a_directory_holding_other_files(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    output.mkdir()
+    (output / "notes.txt").write_text("keep")
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    with pytest.raises(ValueError, match="holds files but no bundle"):
+        write_bundle([cont], [], output_path=output, opts=_OPTS)
+    assert (output / "notes.txt").read_text() == "keep"
+    assert not (output / "zarr.json").exists()
+
+
+@pytest.mark.parametrize(
+    "root_json",
+    [
+        "{not json",
+        "[]",
+        '{"attributes": []}',
+        '{"attributes": {}}',
+        '{"attributes": {"tsz": {}}}',
+    ],
+)
+def test_write_bundle_rejects_a_root_zarr_json_without_a_format_version(
+    tmp_path, continuous_source, root_json
+):
+    output = tmp_path / "bundle"
+    output.mkdir()
+    (output / "zarr.json").write_text(root_json)
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    with pytest.raises(ValueError, match="holds files but no bundle"):
+        write_bundle([cont], [], output_path=output, opts=_OPTS)
+    assert (output / "zarr.json").read_text() == root_json
+
+
+def test_write_bundle_rejects_a_file_at_the_output_path(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    output.write_text("keep")
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    with pytest.raises(ValueError, match="is not a directory"):
+        write_bundle([cont], [], output_path=output, opts=_OPTS)
+    assert output.read_text() == "keep"
+
+
+def test_write_bundle_leaves_an_existing_bundle_when_validation_fails(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    first = continuous_source(np.arange(8, dtype=np.float32), id="c0")
+    write_bundle([first], [], output_path=output, opts=_OPTS)
+    before = (output / "zarr.json").read_text()
+    twins = [
+        continuous_source(np.zeros(8, np.float32), id="same"),
+        continuous_source(np.zeros(8, np.float32), id="same"),
+    ]
+    with pytest.raises(ValueError, match="share the id"):
+        write_bundle(twins, [], output_path=output, opts=_OPTS)
+    assert (output / "zarr.json").read_text() == before
+    assert open_group(output)["0"]["raw"][:].tolist() == list(range(8))
+
+
+def test_clear_output_path_removes_the_root_metadata_last(
+    tmp_path, continuous_source, monkeypatch
+):
+    output = tmp_path / "bundle"
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    write_bundle([cont], [], output_path=output, opts=_OPTS)
+
+    def fail(path):
+        raise OSError(f"cannot remove {path}")
+
+    monkeypatch.setattr("timeseries_zarr.bundle.shutil.rmtree", fail)
+    with pytest.raises(OSError, match="cannot remove"):
+        clear_output_path(output)
+    assert (output / "zarr.json").is_file()
+
+
+def test_clear_output_path_unlinks_a_symlink_and_keeps_its_target(tmp_path):
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "data.txt").write_text("keep")
+    output = tmp_path / "bundle"
+    open_group(output, root_attrs())
+    (output / "link").symlink_to(target)
+    clear_output_path(output)
+    assert list(output.iterdir()) == []
+    assert (target / "data.txt").read_text() == "keep"
 
 
 def test_write_all_channels_places_continuous_channels_relative_to_the_earliest_start(
@@ -691,23 +721,22 @@ def _write_mixed(
     base=_SESSION_US,
 ):
     continuous, events = _mixed_sources(continuous_source, event_source, base)
-    final = tmp_path / "bundle"
+    output = tmp_path / "bundle"
     write_bundle(
         continuous,
         events,
-        staging_dir=tmp_path / "staging",
-        final_dir=final,
+        output_path=output,
         opts=_SPEC_OPTS,
         recording=recording,
     )
-    return final
+    return output
 
 
 def test_write_bundle_conforms_to_the_specification_validation_list(
     tmp_path, continuous_source, event_source
 ):
-    final = _write_mixed(tmp_path, continuous_source, event_source)
-    nodes = _validate_bundle(final)
+    output = _write_mixed(tmp_path, continuous_source, event_source)
+    nodes = _validate_bundle(output)
     assert sorted(p for p in nodes if p and "/" not in p) == [
         "0",
         "1",
@@ -715,28 +744,28 @@ def test_write_bundle_conforms_to_the_specification_validation_list(
         "3",
         "4",
     ]
-    start = _check_recording(final, nodes)
+    start = _check_recording(output, nodes)
     assert start == _SESSION
 
 
 def test_write_bundle_without_a_recording_has_no_recording_json_and_conforms(
     tmp_path, continuous_source, event_source
 ):
-    final = _write_mixed(
+    output = _write_mixed(
         tmp_path, continuous_source, event_source, recording=None
     )
-    _validate_bundle(final)
-    assert not (final / RECORDING_FILE).exists()
+    _validate_bundle(output)
+    assert not (output / RECORDING_FILE).exists()
 
 
 def test_write_bundle_recording_start_is_the_origin_when_a_channel_starts_earlier(
     tmp_path, continuous_source, event_source
 ):
-    final = _write_mixed(
+    output = _write_mixed(
         tmp_path, continuous_source, event_source, base=_SESSION_US - 2_000_000
     )
-    nodes = _validate_bundle(final)
-    start = _check_recording(final, nodes)
+    nodes = _validate_bundle(output)
+    start = _check_recording(output, nodes)
     assert start == _SESSION - dt.timedelta(seconds=2)
     assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
 
@@ -744,11 +773,11 @@ def test_write_bundle_recording_start_is_the_origin_when_a_channel_starts_earlie
 def test_write_bundle_keeps_identity_and_the_date_out_of_every_zarr_node(
     tmp_path, continuous_source, event_source
 ):
-    final = _write_mixed(tmp_path, continuous_source, event_source)
-    document = json.loads((final / RECORDING_FILE).read_text("utf-8"))
+    output = _write_mixed(tmp_path, continuous_source, event_source)
+    document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
     assert document["subject"] == {"id": "sub-0931", "species": "Homo sapiens"}
-    assert "sub-0931" not in (final / "zarr.json").read_text()
-    assert document["start"][:10] not in (final / "zarr.json").read_text()
+    assert "sub-0931" not in (output / "zarr.json").read_text()
+    assert document["start"][:10] not in (output / "zarr.json").read_text()
 
 
 def test_write_bundle_rejects_a_recording_start_without_an_offset_before_writing(
@@ -762,42 +791,32 @@ def test_write_bundle_rejects_a_recording_start_without_an_offset_before_writing
         write_bundle(
             [cont],
             [],
-            staging_dir=tmp_path / "staging",
-            final_dir=tmp_path / "bundle",
+            output_path=tmp_path / "bundle",
             opts=_OPTS,
             recording=naive,
         )
-    assert not (tmp_path / "staging").exists()
+    assert not (tmp_path / "bundle").exists()
 
 
 def test_write_bundle_with_a_channel_too_short_for_a_level_still_conforms(
     tmp_path, continuous_source
 ):
     short = continuous_source(_signal(100, 5), id="short", name="short")
-    final = tmp_path / "bundle"
-    write_bundle(
-        [short],
-        [],
-        staging_dir=tmp_path / "staging",
-        final_dir=final,
-        opts=_SPEC_OPTS,
-    )
-    nodes = _validate_bundle(final)
+    output = tmp_path / "bundle"
+    write_bundle([short], [], output_path=output, opts=_SPEC_OPTS)
+    nodes = _validate_bundle(output)
     assert sorted(p for p in nodes if p.startswith("0/")) == ["0/raw"]
 
 
 def test_write_bundle_require_uv_rejects_a_volts_source_before_writing(
     tmp_path, continuous_source
 ):
-    staging, final = tmp_path / "staging", tmp_path / "bundle"
+    output = tmp_path / "bundle"
     cont = continuous_source(np.zeros(8, np.float32), id="ch-7", unit="volts")
     opts = WriteOpts(voltage_policy="require_uv")
     with pytest.raises(ValueError, match=r"channel 0 \('ch-7'\).*'volts'"):
-        write_bundle(
-            [cont], [], staging_dir=staging, final_dir=final, opts=opts
-        )
-    assert not staging.exists()
-    assert not final.exists()
+        write_bundle([cont], [], output_path=output, opts=opts)
+    assert not output.exists()
 
 
 def test_write_bundle_convert_leaves_a_microvolt_source_bit_identical(
@@ -805,13 +824,7 @@ def test_write_bundle_convert_leaves_a_microvolt_source_bit_identical(
 ):
     samples = np.linspace(-3000.0, 3000.0, 64, dtype=np.float32)
     source = continuous_source(samples, unit="uV")
-    final = tmp_path / "bundle"
-    write_bundle(
-        [source],
-        [],
-        staging_dir=tmp_path / "staging",
-        final_dir=final,
-        opts=_OPTS,
-    )
-    stored = open_group(final)["0"]["raw"][:]
+    output = tmp_path / "bundle"
+    write_bundle([source], [], output_path=output, opts=_OPTS)
+    stored = open_group(output)["0"]["raw"][:]
     assert stored.tobytes() == samples.tobytes()

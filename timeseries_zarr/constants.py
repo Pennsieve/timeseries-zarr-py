@@ -5,6 +5,9 @@ from typing import Final
 FORMAT_VERSION: Final = "1.0"
 """Version of the TS-Zarr specification the writer produces, the root tsz.version."""
 
+TSZ_KEY: Final = "tsz"
+"""Attribute key that holds the TS-Zarr fields of every node."""
+
 ZARR_METADATA_FILE: Final = "zarr.json"
 """Name of the metadata file every Zarr v3 node holds, the root group included."""
 
