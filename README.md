@@ -1,7 +1,7 @@
 # timeseries-zarr-py
 
 Python library and reference writer for TS-Zarr bundles. A bundle is a static
-directory of Zarr v3 arrays that a browser reads over HTTP range requests to render any
+directory of Zarr v3 arrays. A browser reads it over HTTP range requests to render any
 time window of a neurophysiology recording. The writer takes channel sources,
 precomputes per-bin statistics at several levels, and publishes the bundle in one
 atomic rename.
@@ -12,7 +12,7 @@ reference reader is
 The NWB converter built on this library is
 [timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb).
 
-## Install
+## Installation
 
 ```bash
 pip install git+https://github.com/Pennsieve/timeseries-zarr-py.git
@@ -65,15 +65,15 @@ write_bundle(
 ```
 
 Every time in a bundle is int64 microseconds. A source reports `start_us` as wall-clock
-microseconds since the Unix epoch, and the bundle counts from the earliest start of any
+microseconds since the Unix epoch. The bundle counts from the earliest start of any
 source or of the session. The writer stores samples as the source gives them and
 declares the source's `unit`. Voltage sources report microvolts and `"uV"`.
 
 `staging_dir` and `final_dir` must sit on one filesystem. The staged bundle replaces
 an existing bundle at `final_dir`. A `RecordingMeta` passed as `recording` must carry a
 UTC offset in its start. Its subject, session, and source objects go into
-`recording.json` at the bundle root and nowhere else, so deleting that file de-identifies
-the bundle.
+`recording.json` at the bundle root and nowhere else. Deleting that file removes
+structured identity and the date. Free text in event channels can still hold identity.
 
 `WriteOpts` fields:
 
