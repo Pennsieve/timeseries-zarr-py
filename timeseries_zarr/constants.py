@@ -5,6 +5,9 @@ from typing import Final
 FORMAT_VERSION: Final = "1.0"
 """Version of the TS-Zarr specification the writer produces, the root tsz.version."""
 
+ZARR_METADATA_FILE: Final = "zarr.json"
+"""Name of the metadata file every Zarr v3 node holds, the root group included."""
+
 DECIMATION_FACTOR: Final = 4
 """Samples folded into one bin per pyramid level (4x coarser each level)."""
 

@@ -70,8 +70,10 @@ source or of the session. The writer stores samples as the source gives them and
 declares the source's `unit`. Voltage sources report microvolts and `"uV"`.
 
 `staging_dir` and `final_dir` must sit on one filesystem. The staged bundle replaces
-an existing bundle at `final_dir`. A `RecordingMeta` passed as `recording` must carry a
-UTC offset in its start. Its subject, session, and source objects go into
+an existing bundle at `final_dir`. The writer removes a bundle that an interrupted run
+left at `staging_dir`, and it raises `ValueError` for a non-empty `staging_dir` that
+holds no bundle. A `RecordingMeta` passed as `recording` must carry a UTC offset in its
+start. Its subject, session, and source objects go into
 `recording.json` at the bundle root and nowhere else. Deleting that file removes
 structured identity and the date. Free text in event channels can still hold identity.
 

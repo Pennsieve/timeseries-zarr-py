@@ -10,6 +10,7 @@ from timeseries_zarr.bundle import (
     assign_indices,
     atomic_publish,
     channel_keys,
+    clear_staging,
     max_key,
     origin_us,
     write_all_channels,
@@ -192,6 +193,61 @@ def test_write_bundle_rejects_two_channels_with_one_id_before_writing(
             [cont], [event], staging_dir=staging, final_dir=final, opts=_OPTS
         )
     assert not staging.exists()
+    assert not final.exists()
+
+
+def test_write_bundle_discards_a_bundle_an_interrupted_run_left_in_staging(
+    tmp_path, continuous_source
+):
+    staging, final = tmp_path / "staging", tmp_path / "bundle"
+    leftover = tmp_path / "leftover"
+    stale = [
+        continuous_source(np.arange(64, dtype=np.float32), id="c0"),
+        continuous_source(np.arange(64, dtype=np.float32), id="c1"),
+    ]
+    write_bundle(
+        stale, [], staging_dir=tmp_path / "s", final_dir=leftover, opts=_OPTS
+    )
+    leftover.rename(staging)
+    fresh = continuous_source(np.ones(64, dtype=np.float32), id="c0")
+    write_bundle([fresh], [], staging_dir=staging, final_dir=final, opts=_OPTS)
+    published = open_group(final)
+    assert not staging.exists()
+    assert published["0"]["raw"][:].tolist() == [1.0] * 64
+    assert "1" not in published
+
+
+def test_write_bundle_uses_an_empty_staging_directory(
+    tmp_path, continuous_source
+):
+    staging, final = tmp_path / "staging", tmp_path / "bundle"
+    staging.mkdir()
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    write_bundle([cont], [], staging_dir=staging, final_dir=final, opts=_OPTS)
+    assert (final / "zarr.json").exists()
+    assert not staging.exists()
+
+
+def test_clear_staging_ignores_a_path_that_is_not_a_directory(tmp_path):
+    clear_staging(tmp_path / "absent")
+    file = tmp_path / "file"
+    file.write_text("keep")
+    clear_staging(file)
+    assert file.read_text() == "keep"
+
+
+def test_write_bundle_rejects_a_staging_directory_holding_other_files(
+    tmp_path, continuous_source
+):
+    staging, final = tmp_path / "staging", tmp_path / "bundle"
+    staging.mkdir()
+    (staging / "notes.txt").write_text("keep")
+    cont = continuous_source(np.arange(8, dtype=np.float32))
+    with pytest.raises(ValueError, match="holds files but no staged bundle"):
+        write_bundle(
+            [cont], [], staging_dir=staging, final_dir=final, opts=_OPTS
+        )
+    assert (staging / "notes.txt").read_text() == "keep"
     assert not final.exists()
 
 
