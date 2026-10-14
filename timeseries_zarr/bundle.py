@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from timeseries_zarr.attrs import root_attrs
+from timeseries_zarr.constants import ZARR_METADATA_FILE
 from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
@@ -81,6 +82,23 @@ def max_key(indexed: Sequence[tuple[int, AnySource]]) -> int:
     return max((index for index, _ in indexed), default=0)
 
 
+def clear_staging(staging_dir: Path) -> None:
+    """Remove a bundle an interrupted run left at staging_dir.
+
+    Does nothing when staging_dir is absent or empty. A staged bundle has a
+    root zarr.json. Raises ValueError if staging_dir holds anything else, and
+    removes nothing, so a mistyped path loses no files.
+    """
+    if not staging_dir.is_dir() or not any(staging_dir.iterdir()):
+        return
+    if not (staging_dir / ZARR_METADATA_FILE).is_file():
+        raise ValueError(
+            f"staging_dir {staging_dir} holds files but no staged bundle; "
+            "use an empty or absent directory"
+        )
+    shutil.rmtree(staging_dir)
+
+
 def atomic_publish(staging_dir: Path, final_dir: Path) -> None:
     """Move a fully-staged bundle to its final path in one atomic rename.
 
@@ -152,16 +170,19 @@ def write_bundle(
     fresh root group at staging_dir, the metadata of every node is consolidated
     into the root, and then recording.json is written when recording is given,
     so identity and the wall-clock start never enter the root object. The
-    staged bundle is renamed onto final_dir last. Every time counts from the
-    origin, the earliest of the session start in recording and every channel
-    start, and recording.json holds that instant as its start. Sizing and
-    compression follow opts. Raises ValueError if two channels share an id or
-    recording.start has no UTC offset, before anything is written.
+    staged bundle is renamed onto final_dir last. A bundle an interrupted run
+    left at staging_dir is removed first. Every time counts from the origin,
+    the earliest of the session start in recording and every channel start,
+    and recording.json holds that instant as its start. Sizing and compression
+    follow opts. Raises ValueError if two channels share an id,
+    recording.start has no UTC offset, or staging_dir holds files that are not
+    a staged bundle, before anything is written.
     """
     indexed = assign_indices(continuous, events)
     session_start = None if recording is None else session_start_us(recording)
     origin = origin_us([source for _, source in indexed], session_start)
     keys = channel_keys(indexed)
+    clear_staging(staging_dir)
     root = open_group(staging_dir, root_attrs())
     write_all_channels(root, indexed, origin, keys, opts)
     consolidate(root)
