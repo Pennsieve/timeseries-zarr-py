@@ -1,18 +1,11 @@
 # timeseries-zarr-py
 
-Python library and reference writer for TS-Zarr bundles. A bundle is a static
-directory of Zarr v3 arrays. A browser reads it over HTTP range requests to render any
-time window of a neurophysiology recording. The writer takes channel sources,
-precomputes per-bin statistics at several levels, and publishes the bundle in one
-atomic rename.
-
-The format is specified in [docs/bundle-format.md](./docs/bundle-format.md). The
-reference reader is
-[`@pennsieve/timeseries-zarr-reader`](https://github.com/Pennsieve/timeseries-zarr-reader).
-The NWB converter built on this library is
-[timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb).
+Python library and reference implementation for the
+[TS-Zarr specification](./docs/bundle-format.md).
 
 ## Installation
+
+Requires Python 3.12 or later. The runtime dependencies are `zarr>=3` and `numpy`.
 
 ```bash
 pip install git+https://github.com/Pennsieve/timeseries-zarr-py.git
@@ -20,9 +13,14 @@ pip install git+https://github.com/Pennsieve/timeseries-zarr-py.git
 
 ## Usage
 
-A caller implements `ContinuousChannelSource` or `EventChannelSource` from
-`timeseries_zarr.protocols` and passes its sources to `write_bundle`. This example
-writes one channel holding a minute of a 10 Hz sine sampled at 1000 Hz:
+`write_bundle` reads channel sources, computes per-bin statistics up
+to the specified maximum number of levels of time resolution, and writes the
+bundle to disk.
+
+Each source implements `ContinuousChannelSource` or `EventChannelSource` from
+[`timeseries_zarr.protocols`](./timeseries_zarr/protocols.py).
+
+This example writes a single channel holding a minute of a 10 Hz sine sampled at 1000 Hz:
 
 ```python
 from pathlib import Path
@@ -64,38 +62,35 @@ write_bundle(
 )
 ```
 
-Every time in a bundle is int64 microseconds. A source reports `start_us` as wall-clock
-microseconds since the Unix epoch. The bundle counts from the earliest start of any
-source or of the session. The writer stores samples as the source gives them and
-declares the source's `unit`. Voltage sources report microvolts and `"uV"`.
+Passing a `RecordingMeta` as `recording` adds a `recording.json` with the session
+start time and subject, session, and source details. Its `start` must be a
+timezone-aware `datetime`. The [recording metadata](./docs/bundle-format.md#recording-metadata)
+section of the specification lists what the file can hold.
 
-`staging_dir` and `final_dir` must sit on one filesystem. The staged bundle replaces
-an existing bundle at `final_dir`. The writer removes a bundle that an interrupted run
-left at `staging_dir`, and it raises `ValueError` for a non-empty `staging_dir` that
-holds no bundle. A `RecordingMeta` passed as `recording` must carry a UTC offset in its
-start. Its subject, session, and source objects go into
-`recording.json` at the bundle root and nowhere else. Deleting that file removes
-structured identity and the date. Free text in event channels can still hold identity.
+Sources must provide times in microseconds since the Unix epoch.
+The writer stores them as offsets from the earliest start time in the recording.
 
 `WriteOpts` fields:
 
-| Field | Governs | Default |
+| Field | Description | Default |
 |---|---|---|
 | `zstd_level` | Zstd compression level | 5 |
-| `max_levels` | most levels above the raw samples | 15 |
-| `min_bins` | bin threshold for keeping a coarser level | 1024 |
+| `max_levels` | maximum number of levels | 15 |
+| `min_bins` | fewest bins a level may hold | 1024 |
 | `inner_len` | inner Zarr chunk length in samples | 8192 |
 | `target_shard_bytes` | target outer shard size in bytes | 16 MiB |
-| `write_var` | write the per-bin variance member | False |
+| `write_var` | include per-bin variance | `False` |
+| `voltage_policy` | `"convert"` or `"require_uv"` | `"convert"` |
 
-`write_var=True` adds a variance array to every level of every continuous channel. The
-writer then folds every level from the raw samples in one pass. That pass holds one
-shard of statistics per level in memory.
+`write_var=True` uses more memory. The writer holds one shard of statistics per level
+while it writes.
+
+`voltage_policy` specifies whether the writer should convert voltage channels to
+microvolts and label them `uV` or raise `ValueError` for voltage channels not
+already in `uV`. `UNIT_TO_UV` in [`constants.py`](./timeseries_zarr/constants.py)
+lists which units are considered voltage units. All other units are stored as given.
 
 ## Development
-
-Python 3.12, fully typed under `mypy --strict`, with a strict `ruff` ruleset. Tests in
-`tests/` mirror `timeseries_zarr/` one to one.
 
 ```bash
 make venv        # create the virtualenv and install the package with its extras
@@ -108,17 +103,12 @@ make check       # the gate: ruff check + format check + mypy + pytest
 make pre-commit  # install the git pre-commit hook
 ```
 
-`make check` must stay green.
+## Related projects
 
-Ruff enforces absolute imports through its `TID` rules. It does not enforce that `zarr`
-is imported only in `zarr_io.py`. That boundary holds by convention alone.
-
-The module layout and data flow are in [docs/architecture.md](./docs/architecture.md).
-
-## Dependencies
-
-Runtime: `zarr>=3`, `numpy`. Development: `pytest`, `pytest-cov`, `pytest-mock`,
-`mypy`, `ruff`, `pre-commit`.
+- [timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb) uses this
+  library to convert NWB recordings to TS-Zarr bundles.
+- [`@pennsieve/timeseries-zarr-reader`](https://github.com/Pennsieve/timeseries-zarr-reader)
+  is the TypeScript reference reader.
 
 ## License
 
