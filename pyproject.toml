@@ -30,6 +30,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["timeseries_zarr*"]
 
+[tool.setuptools.package-data]
+timeseries_zarr = ["py.typed"]
+
 [tool.coverage.run]
 source = ["timeseries_zarr"]
 omit = [
