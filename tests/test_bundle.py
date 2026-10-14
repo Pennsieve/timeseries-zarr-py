@@ -784,3 +784,34 @@ def test_write_bundle_with_a_channel_too_short_for_a_level_still_conforms(
     )
     nodes = _validate_bundle(final)
     assert sorted(p for p in nodes if p.startswith("0/")) == ["0/raw"]
+
+
+def test_write_bundle_require_uv_rejects_a_volts_source_before_writing(
+    tmp_path, continuous_source
+):
+    staging, final = tmp_path / "staging", tmp_path / "bundle"
+    cont = continuous_source(np.zeros(8, np.float32), id="ch-7", unit="volts")
+    opts = WriteOpts(voltage_policy="require_uv")
+    with pytest.raises(ValueError, match=r"channel 0 \('ch-7'\).*'volts'"):
+        write_bundle(
+            [cont], [], staging_dir=staging, final_dir=final, opts=opts
+        )
+    assert not staging.exists()
+    assert not final.exists()
+
+
+def test_write_bundle_convert_leaves_a_microvolt_source_bit_identical(
+    tmp_path, continuous_source
+):
+    samples = np.linspace(-3000.0, 3000.0, 64, dtype=np.float32)
+    source = continuous_source(samples, unit="uV")
+    final = tmp_path / "bundle"
+    write_bundle(
+        [source],
+        [],
+        staging_dir=tmp_path / "staging",
+        final_dir=final,
+        opts=_OPTS,
+    )
+    stored = open_group(final)["0"]["raw"][:]
+    assert stored.tobytes() == samples.tobytes()

@@ -149,6 +149,22 @@ def tap[T: np.generic](
         yield block
 
 
+def scale(
+    blocks: Iterable[npt.NDArray[np.float32]], factor: float
+) -> Iterator[npt.NDArray[np.float32]]:
+    """Yield each block multiplied by factor, in float32.
+
+    A factor of 1.0 yields the input blocks themselves. NaN and infinity stay
+    non-finite.
+    """
+    if factor == 1.0:
+        yield from blocks
+        return
+    multiplier = np.float32(factor)
+    for block in blocks:
+        yield block * multiplier
+
+
 def iter_member_blocks(
     members: LevelMembers[BlockReadableArray], block_len: int
 ) -> Iterator[npt.NDArray[np.float64]]:

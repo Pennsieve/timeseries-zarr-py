@@ -12,21 +12,22 @@ and the writer calls a column's reader only for a column named there.
 
 Everything downstream depends on the protocols. An adapter for an input format lives in
 its own package and implements them. The NWB adapter is
-[timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb). An adapter
-normalizes voltage samples to microvolts and keeps any other unit, so every channel
-reaching the writer carries the unit its group attribute names. The writer is tested
-against the in-memory sources in `tests/conftest.py`.
+[timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb). The writer
+scales a voltage channel to microvolts and keeps any other unit, so every channel
+carries the unit its group attribute names. The writer is tested against the in-memory
+sources in `tests/conftest.py`.
 
 ## Decision layer
 
-`planning.py`, `sizing.py`, `counts.py`, and `columns.py` are pure functions with no I/O.
-`planning.py` decides how many levels a continuous channel gets, numbered from 1, and each
+`planning.py`, `sizing.py`, `counts.py`, `columns.py`, and `units.py` are pure functions
+with no I/O. `planning.py` decides how many levels a continuous channel gets, numbered from 1, and each
 level's bin count and `period_us`. `sizing.py` decides the inner chunk and outer shard
 shapes for one array. Every member of a level takes the row counts of its `minmax` array.
 
 `counts.py` plans the count levels of a dense event channel. Level 1 takes its period
 from a ladder of `1000 * 4^j` microseconds, and each level above it spans 4x the time.
 `columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows.
+`units.py` resolves the factor and stored unit of a continuous channel.
 
 Keeping these separate from the write path means the format's arithmetic is unit-testable
 without touching a store.

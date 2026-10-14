@@ -24,7 +24,7 @@ class ContinuousChannelSource(Protocol):
 
     @property
     def unit(self) -> str:
-        """Physical unit of the stored samples, for example "uV"."""
+        """Unit of the samples read_samples returns, for example "uV"."""
         ...
 
     def rate_hz(self) -> float:

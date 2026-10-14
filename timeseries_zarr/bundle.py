@@ -16,6 +16,7 @@ from timeseries_zarr.recording import (
     write_recording_json,
 )
 from timeseries_zarr.types import RecordingMeta, WriteOpts
+from timeseries_zarr.units import resolve_unit
 from timeseries_zarr.write_continuous import write_continuous_channel
 from timeseries_zarr.write_event import write_event_channel
 from timeseries_zarr.zarr_io import ZarrGroup, consolidate, open_group
@@ -175,13 +176,22 @@ def write_bundle(
     the earliest of the session start in recording and every channel start,
     and recording.json holds that instant as its start. Sizing and compression
     follow opts. Raises ValueError if two channels share an id,
-    recording.start has no UTC offset, or staging_dir holds files that are not
+    recording.start has no UTC offset, a voltage unit is not "uV" under
+    voltage_policy require_uv, or staging_dir holds files that are not
     a staged bundle, before anything is written.
     """
     indexed = assign_indices(continuous, events)
     session_start = None if recording is None else session_start_us(recording)
     origin = origin_us([source for _, source in indexed], session_start)
     keys = channel_keys(indexed)
+    for index, source in indexed:
+        if not isinstance(source, EventChannelSource):
+            try:
+                resolve_unit(source.unit, opts.voltage_policy)
+            except ValueError as error:
+                raise ValueError(
+                    f"channel {index} ({source.id!r}): {error}"
+                ) from error
     clear_staging(staging_dir)
     root = open_group(staging_dir, root_attrs())
     write_all_channels(root, indexed, origin, keys, opts)

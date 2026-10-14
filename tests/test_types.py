@@ -123,6 +123,7 @@ def test_writeopts_defaults():
     assert opts.inner_len == INNER_CHUNK_SAMPLES
     assert opts.target_shard_bytes == TARGET_SHARD_BYTES
     assert opts.write_var is False
+    assert opts.voltage_policy == "convert"
 
 
 def test_writeopts_overrides():

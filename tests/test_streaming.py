@@ -14,6 +14,7 @@ from timeseries_zarr.streaming import (
     iter_member_blocks,
     iter_raw_blocks,
     regroup,
+    scale,
     tap,
 )
 from timeseries_zarr.types import LevelMembers
@@ -395,3 +396,26 @@ def test_iter_member_blocks_rejects_members_with_different_row_counts(
     )
     with pytest.raises(ValueError, match=name):
         list(iter_member_blocks(mismatched, 4))
+
+
+def test_scale_multiplies_and_keeps_float32():
+    block = np.array([1.0, -2.0, 3.5], dtype=np.float32)
+    (out,) = scale([block], 1e6)
+    assert out.dtype == np.float32
+    assert np.array_equal(out, block * np.float32(1e6))
+
+
+def test_scale_yields_the_same_objects_at_factor_one():
+    blocks = [np.arange(3, dtype=np.float32), np.arange(2, dtype=np.float32)]
+    out = list(scale(blocks, 1.0))
+    assert len(out) == 2
+    assert all(a is b for a, b in zip(out, blocks, strict=True))
+
+
+def test_scale_leaves_non_finite_samples_non_finite():
+    block = np.array([np.nan, np.inf, -np.inf, 1.0], dtype=np.float32)
+    (out,) = scale([block], 1e3)
+    assert np.isnan(out[0])
+    assert out[1] == np.inf
+    assert out[2] == -np.inf
+    assert out[3] == 1000.0
