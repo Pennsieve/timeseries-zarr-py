@@ -1,13 +1,12 @@
-.PHONY: help run clean venv install test test-cov lint typecheck check pre-commit
+.PHONY: help venv install test test-cov lint typecheck check pre-commit
 
-SERVICE_NAME  ?= "timeseries-zarr-py"
 VENV_DIR      ?= venv
 PYTHON        ?= python3
 
 .DEFAULT: help
 
 help:
-	@echo "Make Help for $(SERVICE_NAME)"
+	@echo "Make Help for timeseries-zarr-py"
 	@echo ""
 	@echo "make venv       - create virtual environment and install all dependencies"
 	@echo "make install    - install dependencies into existing venv"
@@ -17,8 +16,6 @@ help:
 	@echo "make lint       - run linter + formatter with auto-fix"
 	@echo "make typecheck  - run mypy --strict"
 	@echo "make check      - run lint check, typecheck, and tests"
-	@echo "make run        - run the writer locally via docker-compose"
-	@echo "make clean      - remove all files from locally mounted input / output directories"
 
 venv:
 	$(PYTHON) -m venv $(VENV_DIR)
@@ -55,12 +52,3 @@ check:
 
 pre-commit:
 	$(VENV_DIR)/bin/pre-commit install
-
-run:
-	docker-compose -f docker-compose.yml down --remove-orphans
-	docker-compose -f docker-compose.yml build
-	docker-compose -f docker-compose.yml up --exit-code-from writer
-
-clean:
-	rm -f data/input/*
-	rm -f data/output/*
