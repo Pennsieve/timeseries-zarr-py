@@ -99,7 +99,7 @@ source venv/bin/activate
 make test        # pytest
 make typecheck   # mypy --strict
 make lint        # ruff check --fix + ruff format (rewrites files)
-make check       # the gate: ruff check + format check + mypy + pytest
+make check       # ruff check + format check + mypy + pytest
 make pre-commit  # install the git pre-commit hook
 ```
 

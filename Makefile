@@ -36,16 +36,16 @@ test-cov:
 	$(VENV_DIR)/bin/python -m pytest tests/ -v --cov=timeseries_zarr --cov-report=term-missing
 
 lint:
-	$(VENV_DIR)/bin/ruff check --fix timeseries_zarr/ tests/
-	$(VENV_DIR)/bin/ruff format timeseries_zarr/ tests/
+	$(VENV_DIR)/bin/ruff check --fix timeseries_zarr/ tests/ scripts/
+	$(VENV_DIR)/bin/ruff format timeseries_zarr/ tests/ scripts/
 
 typecheck:
-	$(VENV_DIR)/bin/mypy timeseries_zarr/
+	$(VENV_DIR)/bin/mypy timeseries_zarr/ scripts/
 
 check:
-	$(VENV_DIR)/bin/ruff check timeseries_zarr/ tests/
-	$(VENV_DIR)/bin/ruff format --check timeseries_zarr/ tests/
-	$(VENV_DIR)/bin/mypy timeseries_zarr/
+	$(VENV_DIR)/bin/ruff check timeseries_zarr/ tests/ scripts/
+	$(VENV_DIR)/bin/ruff format --check timeseries_zarr/ tests/ scripts/
+	$(VENV_DIR)/bin/mypy timeseries_zarr/ scripts/
 	$(VENV_DIR)/bin/python -m pytest tests/
 
 pre-commit:

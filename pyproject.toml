@@ -50,7 +50,7 @@ test = [
 ]
 dev = [
     "mypy>=1.8.0",
-    "ruff",
+    "ruff==0.17.0",
     "pre-commit",
 ]
 
@@ -129,7 +129,7 @@ warn_unreachable = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
-files = ["timeseries_zarr"]
+files = ["timeseries_zarr", "scripts"]
 
 [[tool.mypy.overrides]]
 module = "timeseries_zarr._version"
