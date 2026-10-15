@@ -1,3 +1,4 @@
+import dataclasses
 import datetime as dt
 import json
 import math
@@ -719,6 +720,7 @@ def _write_mixed(
     event_source,
     recording=_RECORDING,
     base=_SESSION_US,
+    opts=_SPEC_OPTS,
 ):
     continuous, events = _mixed_sources(continuous_source, event_source, base)
     output = tmp_path / "bundle"
@@ -726,7 +728,7 @@ def _write_mixed(
         continuous,
         events,
         output_path=output,
-        opts=_SPEC_OPTS,
+        opts=opts,
         recording=recording,
     )
     return output
@@ -806,6 +808,26 @@ def test_write_bundle_with_a_channel_too_short_for_a_level_still_conforms(
     write_bundle([short], [], output_path=output, opts=_SPEC_OPTS)
     nodes = _validate_bundle(output)
     assert sorted(p for p in nodes if p.startswith("0/")) == ["0/raw"]
+
+
+def test_write_bundle_with_max_levels_0_writes_no_level_and_conforms(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(
+        tmp_path,
+        continuous_source,
+        event_source,
+        opts=dataclasses.replace(_SPEC_OPTS, max_levels=0),
+    )
+    nodes = _validate_bundle(output)
+    for key in ("0", "1", "2", "3", "4"):
+        assert not any(child.isdigit() for child in _children(nodes, key))
+    assert _children(nodes, "0") == {"raw"}
+    assert _children(nodes, "4") == {"events", "labels"}
+    consolidated = nodes[""]["consolidated_metadata"]["metadata"]
+    assert not any(
+        part.isdigit() for path in consolidated for part in path.split("/")[1:]
+    )
 
 
 def test_write_bundle_require_uv_rejects_a_volts_source_before_writing(

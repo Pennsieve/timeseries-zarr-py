@@ -102,9 +102,13 @@ class WriteOpts:
     """Tunable settings shared by the channel writers.
 
     max_levels and min_bins bound the pyramid; inner_len and
-    target_shard_bytes size the inner chunk and the outer shard. write_var
+    target_shard_bytes size the inner chunk and the outer shard. A max_levels
+    of 0 writes the raw samples and event arrays with no levels. write_var
     adds the var member to every level. voltage_policy sets how a continuous
-    channel with a volts-family unit reaches microvolts.
+    channel with a volts-family unit reaches microvolts. Raises ValueError if
+    max_levels is outside 0 through MAX_LEVELS, if min_bins, inner_len, or
+    target_shard_bytes is below 1, or if write_var is true with a max_levels
+    of 0.
     """
 
     zstd_level: int = 5
@@ -114,3 +118,23 @@ class WriteOpts:
     target_shard_bytes: int = TARGET_SHARD_BYTES
     write_var: bool = False
     voltage_policy: VoltagePolicy = "convert"
+
+    def __post_init__(self) -> None:
+        """Raise ValueError on a setting outside its range."""
+        if not 0 <= self.max_levels <= MAX_LEVELS:
+            raise ValueError(
+                f"max_levels must be 0 through {MAX_LEVELS}, "
+                f"got {self.max_levels}"
+            )
+        for name, value in (
+            ("min_bins", self.min_bins),
+            ("inner_len", self.inner_len),
+            ("target_shard_bytes", self.target_shard_bytes),
+        ):
+            if value < 1:
+                raise ValueError(f"{name} must be 1 or more, got {value}")
+        if self.write_var and self.max_levels == 0:
+            raise ValueError(
+                "write_var adds var to every level and max_levels 0 writes no "
+                "level; set max_levels to 1 or more, or write_var to False"
+            )

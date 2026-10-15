@@ -147,3 +147,37 @@ def test_writeopts_frozen_rejects_mutation():
     opts = WriteOpts()
     with pytest.raises(dataclasses.FrozenInstanceError):
         opts.zstd_level = 1
+
+
+@pytest.mark.parametrize("max_levels", [0, 1, MAX_LEVELS])
+def test_writeopts_accepts_max_levels_from_0_through_max_levels(max_levels):
+    assert WriteOpts(max_levels=max_levels).max_levels == max_levels
+
+
+@pytest.mark.parametrize("max_levels", [-1, MAX_LEVELS + 1])
+def test_writeopts_rejects_max_levels_outside_its_range(max_levels):
+    with pytest.raises(ValueError, match=f"0 through {MAX_LEVELS}"):
+        WriteOpts(max_levels=max_levels)
+
+
+def test_writeopts_rejects_write_var_with_no_levels():
+    with pytest.raises(ValueError, match="write_var"):
+        WriteOpts(max_levels=0, write_var=True)
+
+
+@pytest.mark.parametrize(
+    "field", ["min_bins", "inner_len", "target_shard_bytes"]
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_writeopts_rejects_a_size_below_1(field, value):
+    with pytest.raises(
+        ValueError, match=f"^{field} must be 1 or more, got {value}$"
+    ):
+        WriteOpts(**{field: value})
+
+
+@pytest.mark.parametrize(
+    "field", ["min_bins", "inner_len", "target_shard_bytes"]
+)
+def test_writeopts_accepts_a_size_of_1(field):
+    assert getattr(WriteOpts(**{field: 1}), field) == 1
