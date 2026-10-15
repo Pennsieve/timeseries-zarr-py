@@ -444,6 +444,25 @@ _RECORDING = RecordingMeta(
 )
 
 
+_ACQUIRE = {
+    "software": "acquire 4.1",
+    "settings": {"gain": 2, "bands_hz": [1, 70], "notch": True},
+}
+_SORTER = {
+    "software": "sorter 2.1",
+    "parameters": {"threshold": 4.5, "detect_sign": -1},
+    "notes": None,
+}
+_REVIEW = {"software": "review-tool 3.2"}
+_MIXED_PROVENANCE = {
+    "0": _ACQUIRE,
+    "1": None,
+    "2": _SORTER,
+    "3": _REVIEW,
+    "4": None,
+}
+
+
 def _signal(n, seed):
     rng = np.random.default_rng(seed)
     samples = (5000.0 + 8.0 * rng.standard_normal(n)).astype(np.float32)
@@ -451,10 +470,23 @@ def _signal(n, seed):
     return samples
 
 
-def _mixed_sources(continuous_source, event_source, base=_SESSION_US):
+def _mixed_sources(
+    continuous_source,
+    event_source,
+    base=_SESSION_US,
+    with_provenance=True,
+):
+    def given(provenance):
+        return provenance if with_provenance else None
+
     rng = np.random.default_rng(3)
     lead = continuous_source(
-        _signal(8192, 0), id="LA1", name="LA1", rate_hz=256.0, start_us=base
+        _signal(8192, 0),
+        id="LA1",
+        name="LA1",
+        rate_hz=256.0,
+        start_us=base,
+        provenance=given(_ACQUIRE),
     )
     lag = continuous_source(
         _signal(16384, 1),
@@ -472,6 +504,7 @@ def _mixed_sources(continuous_source, event_source, base=_SESSION_US):
         waveform_period_us=122.0703125,
         id="units",
         name="units",
+        provenance=given(_SORTER),
     )
     marks = event_source(
         base + np.array([1, 4, 9, 15, 22, 28]) * 1_000_000,
@@ -482,6 +515,7 @@ def _mixed_sources(continuous_source, event_source, base=_SESSION_US):
         channel_ids=[["LA1"], [], ["LA1", "LA2"], [], ["LA2"], []],
         id="marks",
         name="curated marks",
+        provenance=given(_REVIEW),
     )
     dense_times = np.sort(rng.integers(0, 700_000_000, 70_000))
     dense_times[-1] = 700_000_000
@@ -697,10 +731,22 @@ def _check_recording(path, nodes):
     return start
 
 
+def _check_provenance(nodes):
+    holders = [
+        path
+        for path, node in nodes.items()
+        if "provenance" in node.get("attributes", {}).get("tsz", {})
+    ]
+    assert all(path and "/" not in path for path in holders)
+    for path in holders:
+        assert isinstance(nodes[path]["attributes"]["tsz"]["provenance"], dict)
+
+
 def _validate_bundle(path):
     """Check a bundle against the specification's validation list."""
     nodes = _read_nodes(path)
     _check_root(path, nodes)
+    _check_provenance(nodes)
     group_keys = sorted(int(p) for p in nodes if p and "/" not in p)
     for key in map(str, group_keys):
         assert key == str(int(key))
@@ -721,9 +767,13 @@ def _write_mixed(
     recording=_RECORDING,
     base=_SESSION_US,
     opts=_SPEC_OPTS,
+    with_provenance=True,
+    name="bundle",
 ):
-    continuous, events = _mixed_sources(continuous_source, event_source, base)
-    output = tmp_path / "bundle"
+    continuous, events = _mixed_sources(
+        continuous_source, event_source, base, with_provenance
+    )
+    output = tmp_path / name
     write_bundle(
         continuous,
         events,
@@ -865,3 +915,372 @@ def test_write_bundle_convert_leaves_a_microvolt_source_bit_identical(
     write_bundle([source], [], output_path=output, opts=_OPTS)
     stored = open_group(output)["0"]["raw"][:]
     assert stored.tobytes() == samples.tobytes()
+
+
+def _channel_attrs(path):
+    """Return each channel's tsz object, read from its own zarr.json."""
+    return {
+        file.parent.name: json.loads(file.read_text())["attributes"]["tsz"]
+        for file in sorted(path.glob("*/zarr.json"))
+    }
+
+
+def _consolidated_attrs(path):
+    """Return each channel's tsz object, read from the root's listing."""
+    root = json.loads((path / "zarr.json").read_text())
+    listing = root["consolidated_metadata"]["metadata"]
+    return {
+        key: entry["attributes"]["tsz"]
+        for key, entry in listing.items()
+        if "/" not in key
+    }
+
+
+def _assert_provenance_matches(attrs, expected):
+    assert set(attrs) == set(expected)
+    for key, provenance in expected.items():
+        if provenance is None:
+            assert "provenance" not in attrs[key], key
+        else:
+            assert attrs[key]["provenance"] == provenance, key
+
+
+def test_write_bundle_writes_each_source_provenance_on_its_channel_group(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(tmp_path, continuous_source, event_source)
+    attrs = _channel_attrs(output)
+    _assert_provenance_matches(attrs, _MIXED_PROVENANCE)
+    kinds = {key: attrs[key]["kind"] for key in attrs}
+    assert kinds == {
+        "0": "continuous",
+        "1": "continuous",
+        "2": "event",
+        "3": "event",
+        "4": "event",
+    }
+
+
+def test_write_bundle_lists_provenance_in_the_consolidated_root_metadata(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(tmp_path, continuous_source, event_source)
+    _assert_provenance_matches(_consolidated_attrs(output), _MIXED_PROVENANCE)
+    root = json.loads((output / "zarr.json").read_text())
+    assert root["attributes"] == {"tsz": {"version": "1.0"}}
+
+
+def test_write_bundle_reads_provenance_back_through_the_zarr_library(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(tmp_path, continuous_source, event_source)
+    group = open_group(output)
+    attrs = {key: dict(group[key].attrs)["tsz"] for key in group.group_keys()}
+    _assert_provenance_matches(attrs, _MIXED_PROVENANCE)
+
+
+_JSON_VALUES = {
+    "text": 'caf\N{LATIN SMALL LETTER E WITH ACUTE} "quoted" \\ path\nline',
+    "integer": 7,
+    "large_integer": 10**12,
+    "negative": -3,
+    "fraction": 0.1,
+    "small": 1e-9,
+    "large": 2.5e9,
+    "flags": [True, False],
+    "missing": None,
+    "empty_list": [],
+    "empty_object": {},
+    "nested": [{"a": [1, 2, {"b": "c"}]}, [[]], "x"],
+}
+
+
+def test_write_bundle_round_trips_every_json_value_type_in_provenance(
+    tmp_path, continuous_source, event_source
+):
+    output = tmp_path / "bundle"
+    cont = continuous_source(
+        np.arange(64, dtype=np.float32), id="c", provenance=_JSON_VALUES
+    )
+    event = event_source([1, 2, 3], id="e", provenance=_JSON_VALUES)
+    write_bundle([cont], [event], output_path=output, opts=_OPTS)
+    expected = {"0": _JSON_VALUES, "1": _JSON_VALUES}
+    _assert_provenance_matches(_channel_attrs(output), expected)
+    _assert_provenance_matches(_consolidated_attrs(output), expected)
+
+
+def test_write_bundle_keeps_each_channels_provenance_separate(
+    tmp_path, continuous_source, event_source
+):
+    shared = {"software": "shared 1.0"}
+    continuous = [
+        continuous_source(np.zeros(8, np.float32), id="c0", provenance=shared),
+        continuous_source(np.zeros(8, np.float32), id="c1", provenance=shared),
+        continuous_source(
+            np.zeros(8, np.float32),
+            id="c2",
+            provenance={"software": "shared 1.0"},
+        ),
+        continuous_source(np.zeros(8, np.float32), id="c3"),
+        continuous_source(
+            np.zeros(8, np.float32), id="c4", provenance={"software": "own 2"}
+        ),
+    ]
+    events = [
+        event_source([1], id="e0", provenance={"software": "own 3"}),
+        event_source([1], id="e1"),
+        event_source([1], id="e2", provenance=shared),
+        event_source([1], id="e3", provenance={}),
+    ]
+    output = tmp_path / "bundle"
+    write_bundle(continuous, events, output_path=output, opts=_OPTS)
+    expected = {
+        "0": shared,
+        "1": shared,
+        "2": {"software": "shared 1.0"},
+        "3": None,
+        "4": {"software": "own 2"},
+        "5": {"software": "own 3"},
+        "6": None,
+        "7": shared,
+        "8": {},
+    }
+    _assert_provenance_matches(_channel_attrs(output), expected)
+    _assert_provenance_matches(_consolidated_attrs(output), expected)
+
+
+def _strip_provenance(document):
+    """Return document without any provenance key under a tsz object."""
+    document = json.loads(json.dumps(document))
+    nodes = [document]
+    nodes += (
+        document.get("consolidated_metadata", {}).get("metadata", {}).values()
+    )
+    for node in nodes:
+        node.get("attributes", {}).get("tsz", {}).pop("provenance", None)
+    return document
+
+
+def test_write_bundle_provenance_changes_no_other_stored_object(
+    tmp_path, continuous_source, event_source
+):
+    plain = _write_mixed(
+        tmp_path,
+        continuous_source,
+        event_source,
+        with_provenance=False,
+        name="plain",
+    )
+    marked = _write_mixed(
+        tmp_path,
+        continuous_source,
+        event_source,
+        with_provenance=True,
+        name="marked",
+    )
+    files = sorted(
+        p.relative_to(plain) for p in plain.rglob("*") if p.is_file()
+    )
+    assert files == sorted(
+        p.relative_to(marked) for p in marked.rglob("*") if p.is_file()
+    )
+    assert len(files) > 20
+    for file in files:
+        if file.name == "zarr.json":
+            before = json.loads((plain / file).read_text())
+            after = json.loads((marked / file).read_text())
+            assert _strip_provenance(after) == before, file
+        else:
+            assert (plain / file).read_bytes() == (marked / file).read_bytes()
+    assert (plain / "zarr.json").read_text() != (
+        marked / "zarr.json"
+    ).read_text()
+
+
+@pytest.mark.parametrize(
+    "opts",
+    [
+        dataclasses.replace(_SPEC_OPTS, write_var=True),
+        dataclasses.replace(_SPEC_OPTS, max_levels=0),
+        dataclasses.replace(_SPEC_OPTS, voltage_policy="require_uv"),
+        dataclasses.replace(_SPEC_OPTS, zstd_level=1, max_levels=2),
+    ],
+    ids=["write_var", "no_levels", "require_uv", "two_levels"],
+)
+def test_write_bundle_carries_provenance_under_every_write_option(
+    tmp_path, continuous_source, event_source, opts
+):
+    output = _write_mixed(tmp_path, continuous_source, event_source, opts=opts)
+    _validate_bundle(output)
+    _assert_provenance_matches(_channel_attrs(output), _MIXED_PROVENANCE)
+    _assert_provenance_matches(_consolidated_attrs(output), _MIXED_PROVENANCE)
+
+
+def test_write_bundle_carries_provenance_on_a_channel_converted_to_microvolts(
+    tmp_path, continuous_source
+):
+    source = continuous_source(
+        np.linspace(-3.0, 3.0, 64, dtype=np.float32),
+        unit="mV",
+        provenance=_ACQUIRE,
+    )
+    output = tmp_path / "bundle"
+    write_bundle([source], [], output_path=output, opts=_OPTS)
+    attrs = _channel_attrs(output)["0"]
+    assert attrs["unit"] == "uV"
+    assert attrs["provenance"] == _ACQUIRE
+
+
+def test_write_bundle_carries_provenance_on_a_channel_too_short_for_a_level(
+    tmp_path, continuous_source
+):
+    short = continuous_source(_signal(100, 5), id="short", provenance=_ACQUIRE)
+    output = tmp_path / "bundle"
+    write_bundle([short], [], output_path=output, opts=_SPEC_OPTS)
+    nodes = _validate_bundle(output)
+    assert sorted(p for p in nodes if p.startswith("0/")) == ["0/raw"]
+    assert nodes["0"]["attributes"]["tsz"]["provenance"] == _ACQUIRE
+
+
+def test_write_bundle_carries_provenance_on_an_event_channel_with_no_events(
+    tmp_path, event_source
+):
+    empty = event_source([], start_us=0, id="none", provenance=_REVIEW)
+    output = tmp_path / "bundle"
+    write_bundle([], [empty], output_path=output, opts=_OPTS)
+    assert _channel_attrs(output)["0"]["provenance"] == _REVIEW
+
+
+def test_write_bundle_replacing_a_bundle_drops_the_provenance_it_held(
+    tmp_path, continuous_source, event_source
+):
+    _write_mixed(tmp_path, continuous_source, event_source)
+    output = _write_mixed(
+        tmp_path, continuous_source, event_source, with_provenance=False
+    )
+    _assert_provenance_matches(
+        _channel_attrs(output), dict.fromkeys(_MIXED_PROVENANCE)
+    )
+    for file in output.rglob("zarr.json"):
+        assert "provenance" not in file.read_text(), file
+    assert not any(
+        b"acquire" in f.read_bytes() for f in output.rglob("*") if f.is_file()
+    )
+
+
+_BAD_PROVENANCE = [
+    pytest.param({"threshold": float("nan")}, "finite", id="nan"),
+    pytest.param({"bands": [1.0, float("inf")]}, "finite", id="infinity"),
+    pytest.param({"when": dt.datetime(2024, 1, 1)}, "JSON", id="datetime"),
+    pytest.param({"threshold": np.float32(3.5)}, "JSON", id="numpy-float"),
+    pytest.param(["acquire"], "must be a dict", id="list"),
+]
+
+
+@pytest.mark.parametrize(("provenance", "reason"), _BAD_PROVENANCE)
+def test_write_bundle_rejects_a_bad_continuous_provenance_before_writing(
+    tmp_path, continuous_source, event_source, provenance, reason
+):
+    output = tmp_path / "bundle"
+    good = event_source([1], id="e0", provenance=_REVIEW)
+    bad = continuous_source(
+        np.zeros(8, np.float32), id="c9", provenance=provenance
+    )
+    with pytest.raises(ValueError, match=rf"channel 0 \('c9'\).*{reason}"):
+        write_bundle([bad], [good], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(("provenance", "reason"), _BAD_PROVENANCE)
+def test_write_bundle_rejects_a_bad_event_provenance_before_writing(
+    tmp_path, continuous_source, event_source, provenance, reason
+):
+    output = tmp_path / "bundle"
+    good = continuous_source(np.zeros(8, np.float32), id="c0")
+    bad = event_source([1], id="e9", provenance=provenance)
+    with pytest.raises(ValueError, match=rf"channel 1 \('e9'\).*{reason}"):
+        write_bundle([good], [bad], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_leaves_an_existing_bundle_when_provenance_is_invalid(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(tmp_path, continuous_source, event_source)
+    before = (output / "zarr.json").read_text()
+    bad = event_source([1], id="e9", provenance={"threshold": float("nan")})
+    with pytest.raises(ValueError, match="provenance"):
+        write_bundle([], [bad], output_path=output, opts=_OPTS)
+    assert (output / "zarr.json").read_text() == before
+    _assert_provenance_matches(_channel_attrs(output), _MIXED_PROVENANCE)
+
+
+def test_write_bundle_accepts_sources_that_have_no_provenance_method(
+    tmp_path,
+):
+    class Bare:
+        """A continuous source written before provenance existed."""
+
+        id, name, unit = "bare-c", "bare", "uV"
+
+        def rate_hz(self):
+            return 512.0
+
+        def start_us(self):
+            return 0
+
+        def num_samples(self):
+            return 64
+
+        def read_samples(self, start, stop):
+            return np.zeros(stop - start, dtype=np.float32)
+
+    class BareEvents:
+        id, name, unit = "bare-e", "bare events", None
+
+        def start_us(self):
+            return 0
+
+        def num_events(self):
+            return 2
+
+        def columns(self):
+            return frozenset()
+
+        def label_names(self):
+            return None
+
+        def num_labels(self):
+            return 0
+
+        def max_duration_us(self):
+            return None
+
+        def text_width(self):
+            return 0
+
+        def read_events(self, start, stop):
+            return np.array([1, 2], dtype=np.int64)[start:stop]
+
+        def read_durations(self, start, stop):
+            raise NotImplementedError
+
+        def read_labels(self, start, stop):
+            raise NotImplementedError
+
+        def read_text(self, start, stop):
+            raise NotImplementedError
+
+        def read_channel_ids(self, start, stop):
+            raise NotImplementedError
+
+        def waveform_mean(self):
+            raise NotImplementedError
+
+        def waveform_period_us(self):
+            return 1.0
+
+    output = tmp_path / "bundle"
+    write_bundle([Bare()], [BareEvents()], output_path=output, opts=_OPTS)
+    _assert_provenance_matches(_channel_attrs(output), {"0": None, "1": None})
+    assert _channel_attrs(output)["1"]["kind"] == "event"

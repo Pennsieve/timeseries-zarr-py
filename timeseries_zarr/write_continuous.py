@@ -24,7 +24,10 @@ from timeseries_zarr.fold import (
     split_members,
 )
 from timeseries_zarr.planning import plan_levels, raw_shape
-from timeseries_zarr.protocols import ContinuousChannelSource
+from timeseries_zarr.protocols import (
+    ContinuousChannelSource,
+    source_provenance,
+)
 from timeseries_zarr.sizing import chunk_and_shard, level_sizing, member_sizing
 from timeseries_zarr.streaming import (
     BlockReadableArray,
@@ -302,7 +305,8 @@ def write_continuous_channel(
 
     The channel group carries the continuous attributes, with offset_us the
     distance in microseconds from origin_us, the bundle origin, to the first
-    sample. The raw samples are written first. The levels are planned from the
+    sample, and the source's provenance when it has one. The raw samples are
+    written first. The levels are planned from the
     sample count and rate, and every array is sized and compressed per opts.
     A channel too short for level 1 gets raw and nothing else.
 
@@ -310,8 +314,8 @@ def write_continuous_channel(
     the level below. With it true, every level is folded in one pass from the
     raw samples through float64 statistics, which keeps the variance exact on a
     channel with a large DC offset. Raises ValueError if the channel starts
-    before origin_us, or, under voltage_policy require_uv, if a voltage unit is
-    not "uV".
+    before origin_us, if the source's provenance is not a JSON object of finite
+    values, or, under voltage_policy require_uv, if a voltage unit is not "uV".
     """
     rate_hz = source.rate_hz()
     resolved = resolve_unit(source.unit, opts.voltage_policy)
@@ -324,6 +328,7 @@ def write_continuous_channel(
             rate_hz,
             source.start_us() - origin_us,
             resolved.unit,
+            source_provenance(source),
         ),
     )
     raw = write_raw(

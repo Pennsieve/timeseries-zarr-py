@@ -388,6 +388,92 @@ def test_write_continuous_channel_offset_is_zero_at_the_origin(
     assert dict(group.attrs)["tsz"]["offset_us"] == 0
 
 
+_PROVENANCE = {
+    "software": "acquire 4.1",
+    "settings": {"gain": 2, "bands": [1, 70]},
+}
+
+
+def test_write_continuous_channel_writes_the_source_provenance_under_tsz(
+    tmp_path, continuous_source
+):
+    src = continuous_source(
+        np.arange(64, dtype=np.float32), provenance=_PROVENANCE
+    )
+    group = _write(tmp_path, src, _OPTS)
+    assert dict(group.attrs)["tsz"]["provenance"] == _PROVENANCE
+
+
+def test_write_continuous_channel_writes_every_other_attribute_beside_provenance(
+    tmp_path, continuous_source
+):
+    src = continuous_source(
+        np.arange(64, dtype=np.float32),
+        id="N:ch:xyz",
+        rate_hz=32000.0,
+        start_us=7,
+        name="ch name",
+        unit="uV",
+        provenance=_PROVENANCE,
+    )
+    group = _write(tmp_path, src, _OPTS, origin_us=5)
+    assert dict(group.attrs) == {
+        "tsz": {
+            "kind": "continuous",
+            "name": "ch name",
+            "id": "N:ch:xyz",
+            "rate_hz": 32000.0,
+            "offset_us": 2,
+            "unit": "uV",
+            "provenance": _PROVENANCE,
+        }
+    }
+
+
+def test_write_continuous_channel_writes_no_provenance_key_without_provenance(
+    tmp_path, continuous_source
+):
+    src = continuous_source(np.arange(64, dtype=np.float32))
+    group = _write(tmp_path, src, _OPTS)
+    assert "provenance" not in dict(group.attrs)["tsz"]
+
+
+def test_write_continuous_channel_keeps_provenance_off_the_arrays_and_levels(
+    tmp_path, continuous_source, opts
+):
+    src = continuous_source(
+        np.arange(256, dtype=np.float32), provenance=_PROVENANCE
+    )
+    group = _write(tmp_path, src, opts)
+    levels = [group[key] for key in sorted(group.group_keys())]
+    assert len(levels) >= 2
+    nodes = [group[RAW_KEY], *levels]
+    nodes += [level[key] for level in levels for key in level.array_keys()]
+    assert all("provenance" not in str(dict(node.attrs)) for node in nodes)
+
+
+def test_write_continuous_channel_writes_provenance_on_a_channel_with_no_level(
+    tmp_path, continuous_source
+):
+    src = continuous_source(
+        np.arange(3, dtype=np.float32), provenance=_PROVENANCE
+    )
+    group = _write(tmp_path, src, _OPTS)
+    assert list(group.group_keys()) == []
+    assert dict(group.attrs)["tsz"]["provenance"] == _PROVENANCE
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_write_continuous_channel_rejects_a_non_finite_provenance_number(
+    tmp_path, continuous_source, value
+):
+    src = continuous_source(
+        np.arange(64, dtype=np.float32), provenance={"threshold": value}
+    )
+    with pytest.raises(ValueError, match="provenance"):
+        _write(tmp_path, src, _OPTS)
+
+
 def test_write_continuous_channel_rejects_a_channel_that_starts_before_the_origin(
     tmp_path, continuous_source
 ):

@@ -5,11 +5,12 @@ import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from timeseries_zarr.attrs import root_attrs
+from timeseries_zarr.attrs import check_provenance, root_attrs
 from timeseries_zarr.constants import TSZ_KEY, ZARR_METADATA_FILE
 from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
+    source_provenance,
 )
 from timeseries_zarr.recording import (
     recording_document,
@@ -182,24 +183,26 @@ def write_bundle(
     root object. A bundle an earlier run left at output_path is replaced.
     Every time counts from the origin, the earliest of the session start in
     recording and every channel start. recording.json holds that instant as
-    its start when recording has a start. Sizing and compression follow opts. Raises ValueError if
-    two channels share an id, recording.start has no UTC offset, a voltage
-    unit is not "uV" under voltage_policy require_uv, or output_path is not
-    absent, empty, or a bundle, before anything is written. A failed write
-    leaves a partial bundle with no consolidated metadata.
+    its start when recording has a start. Sizing and compression follow opts.
+    Raises ValueError if two channels share an id, recording.start has no UTC
+    offset, a voltage unit is not "uV" under voltage_policy require_uv, a
+    channel's provenance is not a JSON object of finite values, or output_path
+    is not absent, empty, or a bundle, before anything is written. A failed
+    write leaves a partial bundle with no consolidated metadata.
     """
     indexed = assign_indices(continuous, events)
     session_start = None if recording is None else session_start_us(recording)
     origin = origin_us([source for _, source in indexed], session_start)
     keys = channel_keys(indexed)
     for index, source in indexed:
-        if not isinstance(source, EventChannelSource):
-            try:
+        try:
+            if not isinstance(source, EventChannelSource):
                 resolve_unit(source.unit, opts.voltage_policy)
-            except ValueError as error:
-                raise ValueError(
-                    f"channel {index} ({source.id!r}): {error}"
-                ) from error
+            check_provenance(source_provenance(source))
+        except ValueError as error:
+            raise ValueError(
+                f"channel {index} ({source.id!r}): {error}"
+            ) from error
     clear_output_path(output_path)
     root = open_group(output_path, root_attrs())
     write_all_channels(root, indexed, origin, keys, opts)

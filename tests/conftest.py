@@ -18,6 +18,7 @@ class ArrayContinuousSource:
         start_us=0,
         name="ch-0",
         unit="uV",
+        provenance=None,
     ):
         self._samples = np.asarray(samples, dtype=np.float32)
         self.id = id
@@ -25,6 +26,10 @@ class ArrayContinuousSource:
         self.unit = unit
         self._rate_hz = rate_hz
         self._start_us = start_us
+        self._provenance = provenance
+
+    def provenance(self):
+        return self._provenance
 
     def rate_hz(self):
         return self._rate_hz
@@ -69,6 +74,7 @@ class ArrayEventSource:
         id="evt-0",
         name="evt-0",
         unit=None,
+        provenance=None,
     ):
         self._events = np.asarray(events, dtype=np.int64)
         self._durations = (
@@ -93,6 +99,10 @@ class ArrayEventSource:
         self.id = id
         self.name = name
         self.unit = unit
+        self._provenance = provenance
+
+    def provenance(self):
+        return self._provenance
 
     def start_us(self):
         if self._start_us is not None:

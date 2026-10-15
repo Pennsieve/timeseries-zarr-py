@@ -12,6 +12,7 @@ import zarr
 import timeseries_zarr as tsz
 
 SAMPLE_COUNT = 60_000
+PROVENANCE: dict[str, object] = {"software": "smoke-test 1.0"}
 
 warnings.filterwarnings(
     "ignore",
@@ -31,6 +32,10 @@ class SineSource:
         """Generate the samples."""
         t = np.arange(SAMPLE_COUNT) / 1000.0
         self._samples = (100.0 * np.sin(2 * np.pi * 10 * t)).astype(np.float32)
+
+    def provenance(self) -> dict[str, object]:
+        """Return the producing software."""
+        return PROVENANCE
 
     def rate_hz(self) -> float:
         """Return the sample rate."""
@@ -75,6 +80,7 @@ def main() -> None:
         channel = root.get("0")
         assert isinstance(channel, zarr.Group), "channel group missing"
         assert dict(channel.attrs["tsz"]).get("id") == SineSource.id  # type: ignore[arg-type]
+        assert dict(channel.attrs["tsz"]).get("provenance") == PROVENANCE  # type: ignore[arg-type]
         assert "1" in channel.group_keys(), "level 1 missing"
         raw_array = channel.get("raw")
         assert isinstance(raw_array, zarr.Array), "raw array missing"

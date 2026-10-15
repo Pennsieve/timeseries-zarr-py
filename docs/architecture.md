@@ -6,9 +6,11 @@ reaches back into an earlier one.
 ## Input adapters
 
 `protocols.py` declares `ContinuousChannelSource` and `EventChannelSource`. A continuous
-source exposes one channel's metadata and windowed sample reads. An event source exposes
-its event times and the optional columns it provides. Its `columns()` method names them,
-and the writer calls a column's reader only for a column named there.
+source exposes one channel's metadata and windowed sample reads. An event source
+exposes its metadata, its event times, and the optional columns it provides. Its
+`columns()` method names them, and the writer calls a column's reader only for a column
+named there. Either kind of source may also define `provenance()`, which the protocols
+leave optional.
 
 Everything downstream depends on the protocols. An adapter for an input format lives in
 its own package and implements them. The NWB adapter is
@@ -71,7 +73,8 @@ wall-clock start.
 
 `bundle.py` runs the whole job. It assigns each channel a key and finds the origin, the
 earliest start of any channel or of the session. It maps channel ids to keys. Event
-channels use that map to name the channels they apply to. It then writes each channel, consolidates
+channels use that map to name the channels they apply to. It checks each channel's unit
+and provenance before it clears `output_path`. It then writes each channel, consolidates
 the metadata, and writes `recording.json`.
 
 A converter calls `write_bundle` with its sources, a `WriteOpts`, and an optional

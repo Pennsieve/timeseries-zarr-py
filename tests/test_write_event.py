@@ -945,6 +945,103 @@ def test_write_event_channel_group_attributes_sit_under_tsz(
     }
 
 
+_PROVENANCE = {"software": "review-tool 3.2", "settings": {"threshold": 3.5}}
+
+
+def test_write_event_channel_writes_the_source_provenance_last_under_tsz(
+    tmp_path, event_source
+):
+    source = _full(event_source, provenance=_PROVENANCE)
+    group = _write_channel(tmp_path, source)["7"]
+    assert dict(group.attrs) == {
+        "tsz": {
+            "kind": "event",
+            "name": "marks",
+            "id": "evt",
+            "unit": "a.u.",
+            "label_names": ["onset", "offset", "note"],
+            "max_duration_us": 110,
+            "provenance": _PROVENANCE,
+        }
+    }
+    assert list(dict(group.attrs)["tsz"])[-1] == "provenance"
+
+
+def test_write_event_channel_writes_provenance_on_a_minimal_source(
+    tmp_path, event_source
+):
+    source = event_source(
+        [_ORIGIN_US, _ORIGIN_US + 5],
+        id="e",
+        name="plain",
+        provenance=_PROVENANCE,
+    )
+    group = _write_channel(tmp_path, source)["7"]
+    assert dict(group.attrs) == {
+        "tsz": {
+            "kind": "event",
+            "name": "plain",
+            "id": "e",
+            "provenance": _PROVENANCE,
+        }
+    }
+    assert list(group.array_keys()) == ["events"]
+
+
+def test_write_event_channel_writes_no_provenance_key_without_provenance(
+    tmp_path, event_source
+):
+    group = _write_channel(tmp_path, _full(event_source))["7"]
+    assert "provenance" not in dict(group.attrs)["tsz"]
+
+
+def test_write_event_channel_keeps_provenance_off_the_arrays(
+    tmp_path, event_source
+):
+    source = _full(event_source, provenance=_PROVENANCE)
+    group = _write_channel(tmp_path, source)["7"]
+    assert all(
+        "provenance" not in str(dict(group[key].attrs))
+        for key in group.array_keys()
+    )
+
+
+def test_write_event_channel_keeps_provenance_off_the_count_levels(
+    tmp_path, event_source
+):
+    n = 70_000
+    times = _ORIGIN_US + np.sort(
+        np.random.default_rng(0).integers(0, _SPAN_US, n)
+    ).astype(np.int64)
+    times[-1] = _ORIGIN_US + _SPAN_US
+    source = event_source(
+        times,
+        labels=np.arange(n) % 3,
+        label_names=["a", "b", "c"],
+        id="d",
+        name="d",
+        provenance=_PROVENANCE,
+    )
+    opts = WriteOpts(
+        min_bins=256, max_levels=8, inner_len=256, target_shard_bytes=4096
+    )
+    group = _write_channel(tmp_path, source, opts=opts)["7"]
+    levels = [group[key] for key in sorted(group.group_keys())]
+    assert len(levels) >= 2
+    nodes = [*levels, *(level[COUNT_KEY] for level in levels)]
+    assert dict(group.attrs)["tsz"]["provenance"] == _PROVENANCE
+    assert all("provenance" not in str(dict(node.attrs)) for node in nodes)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("-inf")])
+def test_write_event_channel_rejects_a_non_finite_provenance_number(
+    tmp_path, event_source, value
+):
+    source = _full(event_source, provenance={"threshold": value})
+    with pytest.raises(ValueError, match="provenance"):
+        _write_channel(tmp_path, source)
+
+
 def test_write_event_channel_writes_every_column_the_source_names(
     tmp_path, event_source
 ):

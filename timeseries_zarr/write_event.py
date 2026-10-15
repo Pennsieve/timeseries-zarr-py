@@ -32,7 +32,7 @@ from timeseries_zarr.counts import (
     iter_count_blocks,
     plan_count_levels,
 )
-from timeseries_zarr.protocols import EventChannelSource
+from timeseries_zarr.protocols import EventChannelSource, source_provenance
 from timeseries_zarr.sizing import chunk_and_shard
 from timeseries_zarr.streaming import (
     BlockReadableArray,
@@ -536,14 +536,16 @@ def write_event_channel(
     """Write one event channel as the subgroup named str(key).
 
     The channel group carries the event attributes: kind, name, id, the unit,
-    and, when the source provides the column, label_names and the duration
-    bound max_duration_us. The events array comes first, then each optional
-    column the source names in columns(), then the count levels of a dense
-    channel. Times are stored from origin_us, the bundle origin. channel_keys
-    maps channel ids to keys and max_key is the largest key in the bundle,
-    which sizes the channels bitmask. Every array is sized and compressed per
-    opts. Raises ValueError if the source offers waveform_mean without labels,
-    and whatever the column writers raise for data that breaks the format.
+    the source's provenance, and, when the source provides the column,
+    label_names and the duration bound max_duration_us. The events array
+    comes first, then each optional column the source names in columns(),
+    then the count levels of a dense channel. Times are stored from origin_us,
+    the bundle origin. channel_keys maps channel ids to keys and max_key is
+    the largest key in the bundle, which sizes the channels bitmask. Every
+    array is sized and compressed per opts. Raises ValueError if the source
+    offers waveform_mean without labels or its provenance is not a JSON object
+    of finite values, and whatever the column writers raise for data that
+    breaks the format.
     """
     columns = source.columns()
     if "waveform_mean" in columns and "labels" not in columns:
@@ -557,7 +559,7 @@ def write_event_channel(
             source.unit,
             source.label_names() if "labels" in columns else None,
             source.max_duration_us() if "durations" in columns else None,
-            None,
+            source_provenance(source),
         ),
     )
     total = source.num_events()

@@ -40,6 +40,9 @@ class SineSource:
         t = np.arange(60_000) / 1000.0
         self._samples = (100.0 * np.sin(2 * np.pi * 10 * t)).astype(np.float32)
 
+    def provenance(self):
+        return {"software": "sine-example 1.0"}
+
     def rate_hz(self):
         return 1000.0
 

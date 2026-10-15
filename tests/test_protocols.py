@@ -4,6 +4,8 @@ import pytest
 from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
+    ProvenanceSource,
+    source_provenance,
 )
 
 
@@ -228,3 +230,23 @@ def test_array_event_source_reads_windows_of_each_column(event_source):
 def test_array_event_source_without_waveform_mean_raises_on_read(event_source):
     with pytest.raises(ValueError, match="waveform_mean"):
         event_source([1]).waveform_mean()
+
+
+def test_a_source_without_provenance_still_satisfies_both_protocols():
+    assert isinstance(FakeContinuous(), ContinuousChannelSource)
+    fake = type("Fake", (), _event_members())()
+    assert isinstance(fake, EventChannelSource)
+    assert not isinstance(fake, ProvenanceSource)
+
+
+def test_source_provenance_is_none_without_a_provenance_method():
+    assert source_provenance(FakeContinuous()) is None
+
+
+def test_source_provenance_returns_what_the_source_gives():
+    class Marked(FakeContinuous):
+        def provenance(self):
+            return {"software": "x 1"}
+
+    assert isinstance(Marked(), ProvenanceSource)
+    assert source_provenance(Marked()) == {"software": "x 1"}

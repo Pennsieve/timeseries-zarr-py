@@ -9,6 +9,28 @@ from timeseries_zarr.types import EventColumn
 
 
 @runtime_checkable
+class ProvenanceSource(Protocol):
+    """An optional addition to a channel source that records its producer."""
+
+    def provenance(self) -> dict[str, object] | None:
+        """Return what produced the channel, or None when unrecorded.
+
+        The object names the producing software, for example its name and
+        version. Its content is the producer's choice. It must be JSON
+        serializable with finite numbers, and it must not identify a person
+        or hold a date.
+        """
+        ...
+
+
+def source_provenance(source: object) -> dict[str, object] | None:
+    """Return the provenance of source, or None when it has no provenance method."""
+    if isinstance(source, ProvenanceSource):
+        return source.provenance()
+    return None
+
+
+@runtime_checkable
 class ContinuousChannelSource(Protocol):
     """A continuous channel the writer reads raw samples from."""
 
