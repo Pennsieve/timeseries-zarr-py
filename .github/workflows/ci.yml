@@ -17,6 +17,8 @@ jobs:
         python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -32,3 +34,24 @@ jobs:
         run: mypy timeseries_zarr/
       - name: Test
         run: python -m pytest tests/
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build
+        run: |
+          python -m pip install build twine
+          python -m build
+      - name: Check metadata
+        run: python -m twine check --strict dist/*
+      - name: Smoke test the wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/wheel-venv"
+          "$RUNNER_TEMP/wheel-venv/bin/pip" install dist/*.whl
+          "$RUNNER_TEMP/wheel-venv/bin/python" -c "import timeseries_zarr; print(timeseries_zarr.__version__)"

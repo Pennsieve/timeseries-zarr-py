@@ -1,16 +1,46 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "timeseries-zarr-py"
-version = "0.3.0"
-description = "Producer for pyramid Zarr v3 viewer bundles from neurophysiology time series"
+name = "timeseries-zarr"
+dynamic = ["version"]
+description = "Produces Zarr v3 viewer bundles from neurophysiology time series"
+readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-    "zarr>=3",
-    "numpy",
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Rohan Shah" }]
+keywords = [
+    "zarr",
+    "time series",
+    "neurophysiology",
+    "electrophysiology",
+    "downsampling",
+    "pyramid",
 ]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "zarr>=3,<4",
+    "numpy>=1.26",
+]
+
+[project.urls]
+Source = "https://github.com/Pennsieve/timeseries-zarr-py"
+Issues = "https://github.com/Pennsieve/timeseries-zarr-py/issues"
+Specification = "https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md"
+Changelog = "https://github.com/Pennsieve/timeseries-zarr-py/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 test = [
@@ -30,10 +60,14 @@ include = ["timeseries_zarr*"]
 [tool.setuptools.package-data]
 timeseries_zarr = ["py.typed"]
 
+[tool.setuptools_scm]
+version_file = "timeseries_zarr/_version.py"
+
 [tool.coverage.run]
 source = ["timeseries_zarr"]
 omit = [
     "timeseries_zarr/__init__.py",
+    "timeseries_zarr/_version.py",
 ]
 
 [tool.coverage.report]
@@ -50,6 +84,7 @@ exclude_lines = [
 [tool.ruff]
 target-version = "py312"
 line-length = 80
+extend-exclude = ["timeseries_zarr/_version.py"]
 
 [tool.ruff.lint]
 select = [
@@ -95,3 +130,8 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
 files = ["timeseries_zarr"]
+
+[[tool.mypy.overrides]]
+module = "timeseries_zarr._version"
+ignore_errors = true
+ignore_missing_imports = true

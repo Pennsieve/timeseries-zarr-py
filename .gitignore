@@ -30,6 +30,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Written by setuptools-scm at build time
+timeseries_zarr/_version.py
+
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

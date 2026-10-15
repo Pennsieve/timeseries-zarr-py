@@ -37,7 +37,7 @@ without touching a store.
 `fold.py` reduces one level to the next over disjoint blocks of 4. A folded block is a
 float64 statistics block with one column each for the minimum, maximum, mean, population
 variance, and count of finite samples. `fold.py` also splits a block into the member
-arrays a level stores and assembles one from them. See [the format spec](./bundle-format.md)
+arrays a level stores and assembles one from them. See [the format spec](./spec.md)
 for the exact rules and the NaN behavior.
 
 `streaming.py` drives the folds one block at a time. It buffers across block boundaries,

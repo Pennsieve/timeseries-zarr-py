@@ -1,6 +1,6 @@
 """Build the attribute dicts written into the bundle's zarr.json files.
 
-docs/bundle-format.md specifies the keys and their types. Every 1.0 builder
+docs/spec.md specifies the keys and their types. Every 1.0 builder
 returns its object under the single tsz key.
 """
 

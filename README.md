@@ -1,14 +1,14 @@
 # timeseries-zarr-py
 
 Python library and reference implementation for the
-[TS-Zarr specification](./docs/bundle-format.md).
+[TS-Zarr specification](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md).
 
 ## Installation
 
 Requires Python 3.12 or later. The runtime dependencies are `zarr>=3` and `numpy`.
 
 ```bash
-pip install git+https://github.com/Pennsieve/timeseries-zarr-py.git
+pip install timeseries-zarr
 ```
 
 ## Usage
@@ -17,8 +17,9 @@ pip install git+https://github.com/Pennsieve/timeseries-zarr-py.git
 to the specified maximum number of levels of time resolution, and writes the
 bundle to disk.
 
-Each source implements `ContinuousChannelSource` or `EventChannelSource` from
-[`timeseries_zarr.protocols`](./timeseries_zarr/protocols.py).
+Each source implements `ContinuousChannelSource` or `EventChannelSource`, which
+[`timeseries_zarr.protocols`](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/timeseries_zarr/protocols.py)
+defines.
 
 This example writes a single channel holding a minute of a 10 Hz sine sampled at 1000 Hz:
 
@@ -27,8 +28,7 @@ from pathlib import Path
 
 import numpy as np
 
-from timeseries_zarr.bundle import write_bundle
-from timeseries_zarr.types import WriteOpts
+from timeseries_zarr import WriteOpts, write_bundle
 
 
 class SineSource:
@@ -63,7 +63,8 @@ write_bundle(
 
 Passing a `RecordingMeta` as `recording` adds a `recording.json` with the session
 start time and subject, session, and source details. Its `start` must be a
-timezone-aware `datetime`. The [recording metadata](./docs/bundle-format.md#recording-metadata)
+timezone-aware `datetime`. The
+[recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#recording-metadata)
 section of the specification lists what the file can hold.
 
 Sources must provide times in microseconds since the Unix epoch.
@@ -86,8 +87,8 @@ while it writes.
 
 `voltage_policy` specifies whether the writer should convert voltage channels to
 microvolts and label them `uV` or raise `ValueError` for voltage channels not
-already in `uV`. `UNIT_TO_UV` in [`constants.py`](./timeseries_zarr/constants.py)
-lists which units are considered voltage units. All other units are stored as given.
+already in `uV`. `timeseries_zarr.UNIT_TO_UV` maps each unit name treated as a voltage
+unit to its factor to microvolts. All other units are stored as given.
 
 ## Development
 
@@ -102,13 +103,16 @@ make check       # the gate: ruff check + format check + mypy + pytest
 make pre-commit  # install the git pre-commit hook
 ```
 
+[Releasing](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/releasing.md)
+describes how to publish a release.
+
 ## Related projects
 
 - [timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb) uses this
   library to convert NWB recordings to TS-Zarr bundles.
 - [`@pennsieve/timeseries-zarr-reader`](https://github.com/Pennsieve/timeseries-zarr-reader)
-  is the TypeScript reference reader.
+  is a TypeScript implementation of a TS-Zarr bundle reader.
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/LICENSE).
