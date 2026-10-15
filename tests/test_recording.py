@@ -63,6 +63,16 @@ def test_recording_document_omits_objects_that_are_empty():
     assert list(recording_document(_meta(), 0)) == ["start"]
 
 
+def test_recording_document_without_a_start_has_no_start_key():
+    meta = RecordingMeta(subject={"id": "sub-0931"})
+    doc = recording_document(meta, _NOON_UTC_US)
+    assert doc == {"subject": {"id": "sub-0931"}}
+
+
+def test_recording_document_of_an_empty_meta_is_empty():
+    assert recording_document(RecordingMeta(), _NOON_UTC_US) == {}
+
+
 def test_recording_document_copies_the_objects_in_a_fixed_order():
     meta = _meta(
         subject={"id": "sub-0931", "sex": "F"},
@@ -137,6 +147,10 @@ def test_session_start_us_is_exact_microseconds_since_the_epoch():
 def test_session_start_us_is_the_same_instant_in_any_offset():
     start = datetime(2024, 3, 14, 4, 15, tzinfo=timezone(timedelta(hours=-5)))
     assert session_start_us(_meta(start=start)) == _NOON_UTC_US
+
+
+def test_session_start_us_without_a_start_is_none():
+    assert session_start_us(RecordingMeta(subject={"id": "sub-0931"})) is None
 
 
 def test_session_start_us_rejects_a_start_without_a_utc_offset():

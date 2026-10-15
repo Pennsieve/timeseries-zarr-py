@@ -83,6 +83,21 @@ def test_recordingmeta_frozen_rejects_mutation():
         meta.subject = {"id": "x"}
 
 
+def test_recordingmeta_defaults_to_no_start_and_empty_objects():
+    meta = RecordingMeta()
+    assert meta.start is None
+    assert meta.subject == {}
+    assert meta.session == {}
+    assert meta.source == {}
+
+
+def test_recordingmeta_default_objects_are_distinct_per_instance():
+    first, second = RecordingMeta(), RecordingMeta()
+    assert first.subject is not second.subject
+    assert first.session is not second.session
+    assert first.source is not second.source
+
+
 def test_chunkshard_construction_stores_fields():
     cs = ChunkShard(chunk_shape=(262144,), shard_shape=(1048576,))
     assert cs.chunk_shape == (262144,)

@@ -760,6 +760,21 @@ def test_write_bundle_without_a_recording_has_no_recording_json_and_conforms(
     assert not (output / RECORDING_FILE).exists()
 
 
+def test_write_bundle_recording_without_a_start_writes_no_start_and_conforms(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(
+        tmp_path,
+        continuous_source,
+        event_source,
+        recording=RecordingMeta(subject={"id": "sub-0931"}),
+    )
+    nodes = _validate_bundle(output)
+    document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
+    assert document == {"subject": {"id": "sub-0931"}}
+    assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
+
+
 def test_write_bundle_recording_start_is_the_origin_when_a_channel_starts_earlier(
     tmp_path, continuous_source, event_source
 ):

@@ -181,8 +181,8 @@ def write_bundle(
     recording is given, so identity and the wall-clock start never enter the
     root object. A bundle an earlier run left at output_path is replaced.
     Every time counts from the origin, the earliest of the session start in
-    recording and every channel start, and recording.json holds that instant
-    as its start. Sizing and compression follow opts. Raises ValueError if
+    recording and every channel start. recording.json holds that instant as
+    its start when recording has a start. Sizing and compression follow opts. Raises ValueError if
     two channels share an id, recording.start has no UTC offset, a voltage
     unit is not "uV" under voltage_policy require_uv, or output_path is not
     absent, empty, or a bundle, before anything is written. A failed write

@@ -62,8 +62,9 @@ write_bundle(
 ```
 
 Passing a `RecordingMeta` as `recording` adds a `recording.json` with the session
-start time and subject, session, and source details. Its `start` must be a
-timezone-aware `datetime`. The
+start time and subject, session, and source details. Every field is optional. A
+`start` must be a timezone-aware `datetime`. Without one, `recording.json` holds no
+date. The
 [recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#recording-metadata)
 section of the specification lists what the file can hold.
 

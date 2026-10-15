@@ -1,6 +1,6 @@
 """Shared value types for the writer."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -75,14 +75,15 @@ class ResolvedUnit:
 class RecordingMeta:
     """Identity and wall-clock start of a recording, for recording.json.
 
-    start is the session's wall-clock start and must carry a UTC offset. The
-    three objects are producer-defined and may be empty.
+    start is the session's wall-clock start and must carry a UTC offset. A
+    start of None leaves the date out of recording.json. The three objects are
+    producer-defined and default to empty.
     """
 
-    start: datetime
-    subject: dict[str, object]
-    session: dict[str, object]
-    source: dict[str, object]
+    start: datetime | None = None
+    subject: dict[str, object] = field(default_factory=dict)
+    session: dict[str, object] = field(default_factory=dict)
+    source: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

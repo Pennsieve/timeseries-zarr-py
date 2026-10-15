@@ -12,12 +12,14 @@ RECORDING_FILE = "recording.json"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
-def session_start_us(meta: RecordingMeta) -> int:
+def session_start_us(meta: RecordingMeta) -> int | None:
     """Return the session start in microseconds since the Unix epoch.
 
-    The arithmetic is exact in integers. Raises ValueError if meta.start has
-    no UTC offset.
+    The arithmetic is exact in integers. A meta without a start returns None.
+    Raises ValueError if meta.start has no UTC offset.
     """
+    if meta.start is None:
+        return None
     if meta.start.utcoffset() is None:
         raise ValueError("meta.start must carry a UTC offset")
     return (meta.start - _EPOCH) // timedelta(microseconds=1)
@@ -32,18 +34,19 @@ def recording_document(
     from, as an RFC 3339 string with microsecond precision. It is written in
     the UTC offset of meta.start, and it comes from origin_us and not from
     meta.start, because a channel can begin before the session start. origin_us
-    is wall-clock microseconds since the Unix epoch. subject, session, and
-    source are copied in that order and only when they hold something.
-    Raises ValueError if meta.start has no UTC offset.
+    is wall-clock microseconds since the Unix epoch. A meta without a start
+    gives a document without one, and origin_us is then unused. subject,
+    session, and source are copied in that order and only when they hold
+    something. Raises ValueError if meta.start has no UTC offset.
     """
-    if meta.start.utcoffset() is None:
-        raise ValueError("meta.start must carry a UTC offset")
-    origin = (_EPOCH + timedelta(microseconds=origin_us)).astimezone(
-        meta.start.tzinfo
-    )
-    document: dict[str, object] = {
-        "start": origin.isoformat(timespec="microseconds")
-    }
+    document: dict[str, object] = {}
+    if meta.start is not None:
+        if meta.start.utcoffset() is None:
+            raise ValueError("meta.start must carry a UTC offset")
+        origin = (_EPOCH + timedelta(microseconds=origin_us)).astimezone(
+            meta.start.tzinfo
+        )
+        document["start"] = origin.isoformat(timespec="microseconds")
     for key, value in (
         ("subject", meta.subject),
         ("session", meta.session),
