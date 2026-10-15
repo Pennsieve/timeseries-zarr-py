@@ -3,6 +3,8 @@ import pytest
 import timeseries_zarr
 
 PUBLIC_NAMES = {
+    "MAX_LABELS",
+    "MAX_LEVELS",
     "UNIT_TO_UV",
     "ContinuousChannelSource",
     "EventChannelSource",
@@ -11,6 +13,7 @@ PUBLIC_NAMES = {
     "VoltagePolicy",
     "WriteOpts",
     "__version__",
+    "text_width",
     "write_bundle",
 }
 
