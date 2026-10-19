@@ -110,7 +110,6 @@ def _event_members():
         "id": "evt-0",
         "name": "Events",
         "unit": None,
-        "start_us": lambda self: 0,
         "num_events": lambda self: 3,
         "columns": lambda self: frozenset(),
         "label_names": lambda self: None,
@@ -141,6 +140,11 @@ def test_conforming_event_instance_is_recognized():
 def test_event_source_missing_any_member_is_not_recognized(missing):
     members = {k: v for k, v in _event_members().items() if k != missing}
     assert not isinstance(type("Partial", (), members)(), EventChannelSource)
+
+
+def test_event_source_with_an_extra_start_us_member_is_recognized():
+    members = {**_event_members(), "start_us": lambda self: 0}
+    assert isinstance(type("Fake", (), members)(), EventChannelSource)
 
 
 def test_continuous_source_is_not_an_event_source():

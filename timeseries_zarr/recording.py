@@ -12,59 +12,63 @@ RECORDING_FILE = "recording.json"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
-def _require_offset(start: datetime) -> None:
-    """Raise ValueError if start has no UTC offset."""
-    if start.utcoffset() is None:
-        raise ValueError("session_start_time must carry a UTC offset")
+def _require_offset(instant: datetime, name: str) -> None:
+    """Raise ValueError if instant, called name, has no UTC offset."""
+    if instant.utcoffset() is None:
+        raise ValueError(f"{name} must carry a UTC offset")
 
 
-def session_start_us(meta: RecordingMeta) -> int | None:
-    """Return the session start in microseconds since the Unix epoch.
+def epoch_us(instant: datetime) -> int:
+    """Return instant in microseconds since the Unix epoch.
 
-    The arithmetic is exact in integers. A meta without a session start returns
-    None. Raises ValueError if meta.session_start_time has no UTC offset.
+    The arithmetic is exact in integers. Raises ValueError if instant has no
+    UTC offset.
     """
-    start = meta.session_start_time
-    if start is None:
-        return None
-    _require_offset(start)
-    return (start - _EPOCH) // timedelta(microseconds=1)
+    _require_offset(instant, "instant")
+    return (instant - _EPOCH) // timedelta(microseconds=1)
 
 
 def recording_document(
-    meta: RecordingMeta, origin_us: int
+    meta: RecordingMeta, recording_start_us: int | None
 ) -> dict[str, object]:
-    """Return the recording.json content for a bundle with the given origin.
+    """Return the recording.json content of a bundle.
 
-    session_start_time is meta.session_start_time as given.
-    timestamps_reference_time is origin_us, the instant every time in the
-    bundle counts from, in the UTC offset of the session start. Both are RFC
-    3339 strings with microsecond precision. origin_us is wall-clock
-    microseconds since the Unix epoch. A meta without a session start gives a
-    document with neither time, and origin_us is then unused.
-    subject, session, and source follow in that order, each only when it holds
-    something. Raises ValueError if meta.session_start_time has no UTC offset.
+    start_time is recording_start_us, the recording start in wall-clock
+    microseconds since the Unix epoch, as an RFC 3339 string with microsecond
+    precision. It takes the UTC offset of meta.session_start_time, or UTC
+    without one. start_time is left out when recording_start_us is None, a
+    bundle with no sample and no event, or when meta.wall_clock is False.
+    session is meta.session with meta.session_start_time first, as given,
+    under start_time. subject, session, and source follow start_time in that
+    order, each only when it holds something. Raises ValueError if
+    meta.session_start_time has no UTC offset or meta.session already holds a
+    start_time key.
     """
+    session_start = meta.session_start_time
+    if session_start is not None:
+        _require_offset(session_start, "session_start_time")
+    if "start_time" in meta.session:
+        raise ValueError(
+            "session holds a start_time key; set session_start_time instead"
+        )
     document: dict[str, object] = {}
-    start = meta.session_start_time
-    if start is not None:
-        _require_offset(start)
-        origin = (_EPOCH + timedelta(microseconds=origin_us)).astimezone(
-            start.tzinfo
-        )
-        document["session_start_time"] = start.isoformat(
-            timespec="microseconds"
-        )
-        document["timestamps_reference_time"] = origin.isoformat(
-            timespec="microseconds"
-        )
+    if recording_start_us is not None and meta.wall_clock:
+        zone = UTC if session_start is None else session_start.tzinfo
+        start = (
+            _EPOCH + timedelta(microseconds=recording_start_us)
+        ).astimezone(zone)
+        document["start_time"] = start.isoformat(timespec="microseconds")
+    session: dict[str, object] = {}
+    if session_start is not None:
+        session["start_time"] = session_start.isoformat(timespec="microseconds")
+    session.update(meta.session)
     for key, value in (
-        ("subject", meta.subject),
-        ("session", meta.session),
-        ("source", meta.source),
+        ("subject", dict(meta.subject)),
+        ("session", session),
+        ("source", dict(meta.source)),
     ):
         if value:
-            document[key] = dict(value)
+            document[key] = value
     return document
 
 

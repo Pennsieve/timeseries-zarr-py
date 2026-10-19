@@ -64,21 +64,17 @@ write_bundle(
 )
 ```
 
-Passing a `RecordingMeta` as `recording` adds a `recording.json` with the session
-start time and subject, session, and source details. Every field is optional. A
-`start` must be a timezone-aware `datetime`. Without one, `recording.json` holds no
-date. The
+Sources must provide times in microseconds since the Unix epoch. The writer stores
+each time as an offset from the recording start, the earliest sample or event.
+
+Passing a `RecordingMeta` as `recording` adds a `recording.json`. It holds
+`start_time`, the recording start as a wall-clock time, and the subject, session, and
+source details you give. `session_start_time` must be a timezone-aware `datetime`. It
+is written as `session.start_time` and places no data. Set `wall_clock=False` when
+your times do not count from the Unix epoch, and `recording.json` then holds no
+`start_time`. The
 [recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#recording-metadata)
 section of the specification lists what the file can hold.
-
-Sources must provide times in microseconds since the Unix epoch.
-The writer stores them as offsets from the earliest start time in the recording.
-
-`session_start_time` must be a timezone-aware `datetime`. When you set it,
-`recording.json` holds it and also holds `timestamps_reference_time`, the wall-clock
-time of the bundle origin. You cannot set `timestamps_reference_time`. The writer
-derives it. It is earlier than the session start when a channel or an event
-begins first. Without a session start, `recording.json` holds neither time.
 
 | Field | Description | Default |
 |---|---|---|
