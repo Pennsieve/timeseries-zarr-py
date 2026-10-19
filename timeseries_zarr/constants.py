@@ -5,14 +5,75 @@ from typing import Final
 FORMAT_VERSION: Final = "1.0"
 """Version of the TS-Zarr specification the writer produces, the root tsz.version."""
 
+MAJOR_VERSION: Final = 1
+"""Major version a bundle's tsz.version must carry for the reader to open it."""
+
 TSZ_KEY: Final = "tsz"
 """Attribute key that holds the TS-Zarr fields of every node."""
+
+CHANNEL_KINDS: Final = ("continuous", "event")
+"""Values of tsz.kind that mark a channel group."""
 
 ZARR_METADATA_FILE: Final = "zarr.json"
 """Name of the metadata file every Zarr v3 node holds, the root group included."""
 
+RAW_KEY: Final = "raw"
+"""Key of the full-resolution sample array within a channel group."""
+
+MINMAX_KEY: Final = "minmax"
+"""Key of the (bins, 2) minimum and maximum member of a level group."""
+
+MEAN_KEY: Final = "mean"
+"""Key of the per-bin mean member of a level group."""
+
+VAR_KEY: Final = "var"
+"""Key of the optional per-bin variance member of a level group."""
+
+COUNT_KEY: Final = "count"
+"""Key of the per-bin count array of a level group or a count level group.
+
+A continuous level counts the finite samples of each bin. A count level counts
+the events of each bin per label.
+"""
+
+EVENTS_KEY: Final = "events"
+"""Key of the event time array within an event channel group."""
+
+DURATIONS_KEY: Final = "durations"
+"""Key of the per-event duration array within an event channel group."""
+
+LABELS_KEY: Final = "labels"
+"""Key of the per-event label array within an event channel group."""
+
+VALUES_KEY: Final = "values"
+"""Key of the per-event measurement array within an event channel group."""
+
+TEXT_KEY: Final = "text"
+"""Key of the per-event text array within an event channel group."""
+
+CHANNELS_KEY: Final = "channels"
+"""Key of the per-event channel bitmask array within an event channel group."""
+
+WAVEFORMS_KEY: Final = "waveforms"
+"""Key of the per-event snippet array within an event channel group."""
+
+WAVEFORM_MEAN_KEY: Final = "waveform_mean"
+"""Key of the per-label mean snippet array within an event channel group."""
+
+TIME_DIMENSION: Final = "time"
+"""Dimension name of a sample axis or a bin axis."""
+
+EVENT_DIMENSION: Final = "event"
+"""Dimension name of the per-event axis."""
+
+LABEL_DIMENSION: Final = "label"
+"""Dimension name of the label axis of a per-label array."""
+
 DECIMATION_FACTOR: Final = 4
 """Samples folded into one bin per pyramid level (4x coarser each level)."""
+
+LEVEL_PERIOD_TOLERANCE: Final = 1e-9
+"""Relative tolerance of a level's tsz.period_us against the spec value."""
 
 MAX_LEVELS: Final = 15
 """Most folded levels a channel can hold; raw is not a level.
@@ -83,6 +144,9 @@ INNER_CHUNK_SAMPLES: Final = 2**13
 
 TARGET_SHARD_BYTES: Final = 16 * 2**20
 """Target outer shard size in bytes (~16 MiB) for sharded pyramid arrays."""
+
+EVENTS_SEARCH_LIMIT_BYTES: Final = 2**20
+"""Largest events array in bytes (1 MiB) that an event window search reads whole."""
 
 UNIT_TO_UV: Final = {
     "volts": 1e6,

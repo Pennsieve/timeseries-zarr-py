@@ -1,20 +1,33 @@
-"""Zarr v3 calls for the writer."""
+"""Zarr v3 calls for the writer and the reader."""
 
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, cast
+from urllib.parse import urlsplit
+from urllib.request import url2pathname
 
 import numpy as np
 import numpy.typing as npt
 import zarr
 from zarr import Array, Group
+from zarr.abc.store import Store
+from zarr.buffer import default_buffer_prototype
 from zarr.codecs.zstd import ZstdCodec
 from zarr.core.common import JSON
-from zarr.storage import LocalStore
+from zarr.core.sync import sync
+from zarr.storage import FsspecStore, LocalStore, StorePath, WrapperStore
+
+from timeseries_zarr.extras import missing_extra_message
 
 # Handle types the other modules use to name what they pass and get.
 type ZarrGroup = Group
 type ZarrArray = Array[Any]
+type BundleLocation = str | Path | Store | StorePath
+
+_LOCAL_HOSTS = ("", "localhost")
+_LOCAL_PROTOCOLS = frozenset({"file", "local"})
+_FSSPEC = "fsspec"
+_REMOTE_EXTRA = "remote"
 
 
 def open_group(path: Path, attrs: dict[str, object] | None = None) -> Group:
@@ -110,3 +123,224 @@ def consolidate(root: Group) -> None:
     own zarr.json, not a v2 .zmetadata sidecar.
     """
     zarr.consolidate_metadata(root.store)
+
+
+def open_root(
+    location: BundleLocation, storage_options: dict[str, Any] | None = None
+) -> Group:
+    """Open the root group of a bundle for reading.
+
+    location is a local path, a file URL, an fsspec URL, a zarr Store, or a
+    StorePath. A string with the file scheme is a file URL and resolves to
+    the local path it names. Any other string is a URL when it holds :// or
+    an fsspec :: chain, and a local path otherwise. A relative path resolves
+    against the working directory at the open. storage_options goes to
+    fsspec with a remote URL. The open reads only the root zarr.json.
+
+    Raises ValueError when the root zarr.json carries no consolidated
+    metadata. Also raises ValueError when a file URL names a host other than
+    localhost or holds a query or fragment. Raises FileNotFoundError when
+    location has no root zarr.json and ValueError when its root is an array.
+    Raises TypeError when storage_options comes with a memory URL or a
+    location that is not a remote URL. Raises ImportError, with name set to
+    fsspec, when a remote URL needs fsspec and fsspec is not installed.
+    """
+    try:
+        root = zarr.open_group(
+            _local_location(_read_only_store_path(location)),
+            mode="r",
+            zarr_format=3,
+            storage_options=storage_options,
+        )
+    except ModuleNotFoundError as error:
+        # The module reported missing can be a submodule of fsspec.
+        if (error.name or "").partition(".")[0] != _FSSPEC:
+            raise
+        raise ImportError(
+            missing_extra_message(_FSSPEC, _REMOTE_EXTRA), name=_FSSPEC
+        ) from error
+    if root.metadata.consolidated_metadata is None:
+        # zarr's own string for a store or a StorePath can be its repr.
+        shown = (
+            location
+            if isinstance(location, str | Path)
+            else store_location(root)
+        )
+        raise ValueError(
+            f"{shown} has no consolidated metadata; a complete bundle "
+            "carries it in its root zarr.json"
+        )
+    return root
+
+
+def _read_only_store_path(location: BundleLocation) -> BundleLocation:
+    """Return a StorePath over a read-only copy of its store.
+
+    Returns location unchanged when it is not a StorePath, when its store is
+    read-only, or when its store makes no read-only copy.
+    """
+    # zarr opens a StorePath as given and ignores mode="r".
+    if not isinstance(location, StorePath) or location.store.read_only:
+        return location
+    try:
+        store = location.store.with_read_only(True)
+    except NotImplementedError:
+        return location
+    return StorePath(store, location.path)
+
+
+def _local_location(location: BundleLocation) -> BundleLocation:
+    """Return the absolute local path location names, or location unchanged.
+
+    A Path and a file URL name a local path. Any other string is a URL when
+    it holds :// or an fsspec :: chain, and a local path otherwise. A URL, a
+    Store, and a StorePath return unchanged. A relative path resolves
+    against the working directory of the call.
+    """
+    if isinstance(location, Path):
+        return location.absolute()
+    if not isinstance(location, str):
+        return location
+    parts = urlsplit(location)
+    if parts.scheme == "file":
+        if parts.netloc.lower() not in _LOCAL_HOSTS:
+            raise ValueError(
+                "file URL must name localhost or no host, got "
+                f"{parts.netloc!r} in {location}"
+            )
+        if "#" in location or "?" in location:
+            raise ValueError(
+                "file URL must not hold a query or fragment; percent-encode "
+                f"# as %23 and ? as %3F, got {location}"
+            )
+        return Path(url2pathname(parts.path)).absolute()
+    if "://" in location or "::" in location:
+        return location
+    # zarr would read a colon in the first segment as a URL scheme, and a #
+    # or ? in the path as a URL fragment or query.
+    return Path(location).absolute()
+
+
+def descendants(
+    group: Group,
+) -> tuple[dict[str, Group], dict[str, Array[Any]]]:
+    """Return the groups and the arrays below group.
+
+    Each dict maps the path relative to group, such as 0/1/minmax, to its
+    node. Under consolidated metadata the walk makes no store reads.
+    """
+    groups: dict[str, Group] = {}
+    arrays: dict[str, Array[Any]] = {}
+    for path, node in group.members(max_depth=None):
+        if isinstance(node, Group):
+            groups[path] = node
+        else:
+            arrays[path] = node
+    return groups, arrays
+
+
+def read_rows(array: Array[Any], start: int, stop: int) -> npt.NDArray[Any]:
+    """Return rows start through stop - 1 of array.
+
+    A stop past the last row returns the rows that exist, which may be none.
+    Raises ValueError when start is negative or stop is less than start.
+    """
+    if start < 0 or stop < start:
+        raise ValueError(
+            f"row range must have 0 <= start <= stop, got [{start}, {stop})"
+        )
+    return np.asarray(array[start:stop])
+
+
+def read_int(array: Array[Any], index: int) -> int:
+    """Return the element at index of a rank-1 integer array.
+
+    Raises ValueError when index is negative and IndexError when it is past
+    the last element.
+    """
+    if index < 0:
+        raise ValueError(f"index must be at least 0, got {index}")
+    return int(np.asarray(array[index]))
+
+
+def read_store_text(group: Group, name: str) -> str | None:
+    """Return the text stored at name beside the zarr.json of group.
+
+    Returns None when the object is absent. Raises UnicodeDecodeError when
+    its bytes are not UTF-8.
+    """
+    # FsspecStore has no get_sync, and every store has the async get.
+    key = group.store_path / name
+    buffer = sync(key.get(prototype=default_buffer_prototype()))
+    if buffer is None:
+        return None
+    return buffer.to_bytes().decode("utf-8")
+
+
+def store_location(group: Group) -> str:
+    """Return the URL of the store and path that hold group.
+
+    A group in a local store, or in an FsspecStore over the local
+    filesystem, gives a percent-encoded absolute file URL. A group in
+    another FsspecStore gives the URL of its path in the filesystem of the
+    store, with the protocol of that filesystem. A group in an FsspecStore
+    over a caching filesystem gives an fsspec :: chain of the caching
+    protocols. The chain ends in the URL of the group in the target
+    filesystem. No part of that chain is percent-encoded. A group in an
+    FsspecStore over an archive or a prefixed directory filesystem gives the
+    URL of the group in the outer filesystem. That URL does not always
+    reopen the group. A group in a wrapper store over a local store or an
+    FsspecStore gives the URL of the store that the wrapper holds. A group
+    in any other store, such as a zarr MemoryStore, gives zarr's own string
+    for its store path. That string need not reopen the group, and a
+    MemoryStore string never does.
+    """
+    store = group.store
+    while isinstance(store, WrapperStore):
+        store = store._store
+    path = group.store_path.path
+    if isinstance(store, LocalStore):
+        # zarr's own string leaves # and ? unescaped in a file URL.
+        return Path(store.root, path).absolute().as_uri()
+    if isinstance(store, FsspecStore):
+        return _fsspec_location(store, path)
+    return str(group.store_path)
+
+
+def _fsspec_location(store: FsspecStore, path: str) -> str:
+    """Return the URL of path in store, as store_location describes it."""
+    # zarr's own string for an FsspecStore is the repr of the store. The
+    # join matches the one zarr makes for each key.
+    prefix = store.path.rstrip("/")
+    joined = (f"{prefix}/{path}" if prefix else path).rstrip("/")
+    # zarr wraps a synchronous filesystem, and the wrapper holds it as
+    # sync_fs.
+    filesystem = getattr(store.fs, "sync_fs", store.fs)
+    chain: list[str] = []
+    # A caching filesystem keeps both its target filesystem and the protocol
+    # of that target. A directory filesystem keeps no target_protocol.
+    while hasattr(filesystem, "target_protocol") and hasattr(filesystem, "fs"):
+        # fsspec before 2025.9.0 gives the protocol of the target for the
+        # protocol of a caching filesystem instance.
+        chain.append(_protocols(type(filesystem).protocol)[0])
+        filesystem = getattr(filesystem.fs, "sync_fs", filesystem.fs)
+    if chain:
+        # fsspec does not percent-decode a URL inside a chain.
+        return "::".join([*chain, str(filesystem.unstrip_protocol(joined))])
+    if set(_protocols(filesystem.protocol)) & _LOCAL_PROTOCOLS:
+        # fsspec leaves # and ? unescaped in a file URL.
+        return Path(joined).absolute().as_uri()
+    return str(filesystem.unstrip_protocol(joined))
+
+
+def _protocols(protocol: str | Sequence[str]) -> tuple[str, ...]:
+    """Return the protocol of an fsspec filesystem as a tuple.
+
+    The main protocol comes first.
+    """
+    return (protocol,) if isinstance(protocol, str) else tuple(protocol)
+
+
+def close_store(group: Group) -> None:
+    """Close the store that holds group. A second call has no effect."""
+    group.store.close()

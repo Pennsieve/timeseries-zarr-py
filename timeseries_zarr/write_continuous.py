@@ -7,16 +7,22 @@ input creates the arrays and writes nothing.
 """
 
 from collections.abc import Callable, Iterable, Iterator
-from typing import Final, cast
+from typing import cast
 
 import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.attrs import continuous_channel_attrs, level_group_attrs
 from timeseries_zarr.constants import (
+    COUNT_KEY,
     DECIMATION_FACTOR,
     ENVELOPE_PAIR_SIZE,
     FLOAT32_BYTES,
+    MEAN_KEY,
+    MINMAX_KEY,
+    RAW_KEY,
+    TIME_DIMENSION,
+    VAR_KEY,
 )
 from timeseries_zarr.fold import (
     fold_raw_block,
@@ -53,24 +59,6 @@ from timeseries_zarr.zarr_io import (
     create_group_with_attrs,
     write_region,
 )
-
-RAW_KEY: Final = "raw"
-"""Key of the full-resolution sample array within a channel group."""
-
-MINMAX_KEY: Final = "minmax"
-"""Key of the (bins, 2) minimum and maximum member of a level group."""
-
-MEAN_KEY: Final = "mean"
-"""Key of the per-bin mean member of a level group."""
-
-VAR_KEY: Final = "var"
-"""Key of the optional per-bin variance member of a level group."""
-
-COUNT_KEY: Final = "count"
-"""Key of the per-bin count of finite samples member of a level group."""
-
-TIME_DIMENSION: Final = "time"
-"""Dimension name of a sample axis or a bin axis."""
 
 
 def _write_blocks(

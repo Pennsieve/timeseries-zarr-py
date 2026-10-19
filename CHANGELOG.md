@@ -7,3 +7,6 @@ Notable changes to this project. The format follows
 ## Unreleased
 
 Writes TS-Zarr 1.0 bundles from continuous and event channel sources.
+
+Reads TS-Zarr 1.0 bundles, with extras for pandas, xarray, and remote stores. Requires
+zarr 3.2.1 or later.
