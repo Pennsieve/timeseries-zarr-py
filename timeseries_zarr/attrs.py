@@ -50,7 +50,7 @@ def continuous_channel_attrs(
 ) -> dict[str, object]:
     """Return the channel-group attributes for one continuous channel.
 
-    offset_us is the time of sample 0 in microseconds from the bundle origin.
+    offset_us is the time of sample 0 in microseconds from the recording start.
     provenance is written only when it is not None. Raises ValueError if
     rate_hz is not positive, offset_us is negative, or provenance is not a
     JSON object of finite values.

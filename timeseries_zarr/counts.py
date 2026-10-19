@@ -20,7 +20,7 @@ COUNT_BLOCK_RANK: Final = 2
 """Rank of a block of counts: one axis of bins, one of label columns."""
 
 type EventBlock = tuple[npt.NDArray[np.int64], npt.NDArray[np.uint16] | None]
-"""One window of event times in microseconds from the origin, with the labels.
+"""One window of event times in microseconds from the recording start, with labels.
 
 The labels are None for a channel that has none."""
 
@@ -36,7 +36,7 @@ def level1_period_us(n_events: int, last_event_us: int) -> int:
     bundle shares one set of bin grids. It is never finer than
     COUNT_LADDER_BASE_US, and a width exactly on a rung of the ladder keeps
     that rung. The arithmetic is exact in integers. last_event_us is the time
-    of the last event from the bundle origin, and an event at the origin alone
+    of the last event from the recording start, and an event at the start alone
     gives the finest period. Raises ValueError if n_events is below 1 or
     last_event_us is negative.
     """
@@ -56,11 +56,11 @@ def level1_period_us(n_events: int, last_event_us: int) -> int:
 def count_bins(last_event_us: int, period_us: int) -> int:
     """Return the number of bins that cover an event channel's last event.
 
-    The bin axis starts at the bundle origin, and bin i spans the times from
+    The bin axis starts at the recording start, and bin i spans the times from
     i * period_us up to but not including (i + 1) * period_us. The result is
     the bin holding the last event plus one, so an event that sits exactly on
     a bin boundary is counted in the bin it opens and is never dropped. A
-    channel whose only event is at the origin has 1 bin. Raises ValueError if
+    channel whose only event is at the start has 1 bin. Raises ValueError if
     period_us is below 1 or last_event_us is negative.
     """
     if period_us < 1:

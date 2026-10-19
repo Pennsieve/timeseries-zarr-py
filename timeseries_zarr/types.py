@@ -73,17 +73,22 @@ class ResolvedUnit:
 
 @dataclass(frozen=True, slots=True)
 class RecordingMeta:
-    """Identity and wall-clock start of a recording, for recording.json.
+    """Identity and session start of a recording, for recording.json.
 
-    session_start_time is the instant the recording session began and must
-    carry a UTC offset. When it is None, recording.json holds no date. The
-    three objects are producer-defined and default to empty.
+    session_start_time is the wall-clock instant the session began. It must
+    carry a UTC offset, it is written as the start_time of the session
+    object, and it places no data. The three objects are producer-defined
+    and default to empty. wall_clock states whether the source times are
+    wall-clock times, microseconds since the Unix epoch. The writer then
+    records the recording start as start_time. When it is False, the times
+    count from an unknown instant and recording.json holds no start_time.
     """
 
     session_start_time: datetime | None = None
     subject: dict[str, object] = field(default_factory=dict)
     session: dict[str, object] = field(default_factory=dict)
     source: dict[str, object] = field(default_factory=dict)
+    wall_clock: bool = True
 
 
 @dataclass(frozen=True, slots=True)

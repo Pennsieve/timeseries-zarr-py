@@ -350,9 +350,11 @@ def _close(got, want):
     return bool(np.allclose(got[finite], want[finite], rtol=1e-5, atol=atol))
 
 
-def _write(tmp_path, source, opts, origin_us=0, name="bundle"):
+def _write(tmp_path, source, opts, recording_start_us=0, name="bundle"):
     parent = open_group(tmp_path / name)
-    write_continuous_channel(parent, 0, source, origin_us=origin_us, opts=opts)
+    write_continuous_channel(
+        parent, 0, source, recording_start_us=recording_start_us, opts=opts
+    )
     return open_group(tmp_path / name)["0"]
 
 
@@ -367,7 +369,7 @@ def test_write_continuous_channel_attributes_sit_under_tsz_with_the_offset(
         name="ch name",
         unit="uV",
     )
-    group = _write(tmp_path, src, _OPTS, origin_us=5)
+    group = _write(tmp_path, src, _OPTS, recording_start_us=5)
     assert dict(group.attrs) == {
         "tsz": {
             "kind": "continuous",
@@ -380,11 +382,11 @@ def test_write_continuous_channel_attributes_sit_under_tsz_with_the_offset(
     }
 
 
-def test_write_continuous_channel_offset_is_zero_at_the_origin(
+def test_write_continuous_channel_offset_is_zero_at_the_recording_start(
     tmp_path, continuous_source
 ):
     src = continuous_source(np.arange(64, dtype=np.float32), start_us=9)
-    group = _write(tmp_path, src, _OPTS, origin_us=9)
+    group = _write(tmp_path, src, _OPTS, recording_start_us=9)
     assert dict(group.attrs)["tsz"]["offset_us"] == 0
 
 
@@ -416,7 +418,7 @@ def test_write_continuous_channel_writes_every_other_attribute_beside_provenance
         unit="uV",
         provenance=_PROVENANCE,
     )
-    group = _write(tmp_path, src, _OPTS, origin_us=5)
+    group = _write(tmp_path, src, _OPTS, recording_start_us=5)
     assert dict(group.attrs) == {
         "tsz": {
             "kind": "continuous",
@@ -474,12 +476,12 @@ def test_write_continuous_channel_rejects_a_non_finite_provenance_number(
         _write(tmp_path, src, _OPTS)
 
 
-def test_write_continuous_channel_rejects_a_channel_that_starts_before_the_origin(
+def test_write_continuous_channel_rejects_a_channel_that_starts_before_the_recording_start(
     tmp_path, continuous_source
 ):
     src = continuous_source(np.arange(64, dtype=np.float32), start_us=7)
     with pytest.raises(ValueError, match="offset_us"):
-        _write(tmp_path, src, _OPTS, origin_us=8)
+        _write(tmp_path, src, _OPTS, recording_start_us=8)
 
 
 def test_write_continuous_channel_holds_raw_and_level_groups_from_one(
@@ -640,7 +642,7 @@ def test_write_continuous_channel_returns_none(tmp_path, continuous_source):
         parent,
         0,
         continuous_source(np.arange(64, dtype=np.float32)),
-        origin_us=0,
+        recording_start_us=0,
         opts=_OPTS,
     )
     assert result is None

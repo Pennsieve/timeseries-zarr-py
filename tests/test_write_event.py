@@ -31,22 +31,24 @@ def _sizing():
     return ChunkShard(chunk_shape=(4,), shard_shape=(8,))
 
 
-def _write(tmp_path, source, origin_us=0, sizing=None):
+def _write(tmp_path, source, recording_start_us=0, sizing=None):
     group = open_group(tmp_path / "bundle")
-    write_events_array(group, source, origin_us, sizing or _sizing(), 5)
+    write_events_array(
+        group, source, recording_start_us, sizing or _sizing(), 5
+    )
     return open_group(tmp_path / "bundle")
 
 
-def test_write_events_array_stores_times_from_the_origin(
+def test_write_events_array_stores_times_from_the_recording_start(
     tmp_path, event_source
 ):
     source = event_source([1000, 1500, 1500, 9000])
-    stored = _write(tmp_path, source, origin_us=1000)[EVENTS_KEY][:]
+    stored = _write(tmp_path, source, recording_start_us=1000)[EVENTS_KEY][:]
     assert stored.tolist() == [0, 500, 500, 8000]
     assert stored.dtype == np.int64
 
 
-def test_write_events_array_with_the_origin_at_zero_stores_the_times(
+def test_write_events_array_with_the_recording_start_at_zero_stores_the_times(
     tmp_path, event_source
 ):
     stored = _write(tmp_path, event_source([5, 6, 700]))[EVENTS_KEY][:]
@@ -56,9 +58,9 @@ def test_write_events_array_with_the_origin_at_zero_stores_the_times(
 def test_write_events_array_is_exact_for_epoch_scale_microseconds(
     tmp_path, event_source
 ):
-    origin = 1_700_000_000_123_456
-    source = event_source([origin, origin + 1, origin + 999_999_999_999])
-    stored = _write(tmp_path, source, origin_us=origin)[EVENTS_KEY][:]
+    start = 1_700_000_000_123_456
+    source = event_source([start, start + 1, start + 999_999_999_999])
+    stored = _write(tmp_path, source, recording_start_us=start)[EVENTS_KEY][:]
     assert stored.tolist() == [0, 1, 999_999_999_999]
 
 
@@ -76,7 +78,7 @@ def test_write_events_array_leaves_the_sources_times_unchanged(
     tmp_path, event_source
 ):
     times = np.array([1000, 2000, 3000], dtype=np.int64)
-    _write(tmp_path, event_source(times), origin_us=1000)
+    _write(tmp_path, event_source(times), recording_start_us=1000)
     assert times.tolist() == [1000, 2000, 3000]
 
 
@@ -112,11 +114,11 @@ def test_write_events_array_writes_one_whole_shard_per_write(
     assert np.array_equal(stored, times)
 
 
-def test_write_events_array_rejects_a_time_before_the_origin(
+def test_write_events_array_rejects_a_time_before_the_recording_start(
     tmp_path, event_source
 ):
-    with pytest.raises(ValueError, match="precedes the bundle origin by 1 "):
-        _write(tmp_path, event_source([999, 1500]), origin_us=1000)
+    with pytest.raises(ValueError, match="precedes the recording start by 1 "):
+        _write(tmp_path, event_source([999, 1500]), recording_start_us=1000)
 
 
 def test_write_events_array_rejects_times_that_decrease_within_a_block(
@@ -134,12 +136,12 @@ def test_write_events_array_rejects_times_that_decrease_across_a_block_boundary(
         _write(tmp_path, event_source(times))
 
 
-def test_write_events_array_rejects_a_time_before_the_origin_in_a_later_block(
+def test_write_events_array_rejects_a_time_before_the_recording_start_in_a_later_block(
     tmp_path, event_source
 ):
     times = [1000] * 8 + [999]
-    with pytest.raises(ValueError, match="origin"):
-        _write(tmp_path, event_source(times), origin_us=1000)
+    with pytest.raises(ValueError, match="recording start"):
+        _write(tmp_path, event_source(times), recording_start_us=1000)
 
 
 def _write_durations(tmp_path, source, sizing=None):
@@ -719,9 +721,9 @@ def _direct_counts(times, labels, columns, period_us, bins):
     return counts
 
 
-def _write_counts(tmp_path, source, origin_us=0, opts=_COUNT_OPTS):
+def _write_counts(tmp_path, source, recording_start_us=0, opts=_COUNT_OPTS):
     group = open_group(tmp_path / "bundle")
-    write_count_levels(group, source, origin_us, opts)
+    write_count_levels(group, source, recording_start_us, opts)
     return open_group(tmp_path / "bundle")
 
 
@@ -786,9 +788,11 @@ def test_write_count_levels_every_level_keeps_the_event_totals(
         )
 
 
-def test_write_count_levels_counts_from_the_origin(tmp_path, event_source):
+def test_write_count_levels_counts_from_the_recording_start(
+    tmp_path, event_source
+):
     times, labels, source = _dense(event_source, start_us=5_000_000)
-    group = _write_counts(tmp_path, source, origin_us=5_000_000)
+    group = _write_counts(tmp_path, source, recording_start_us=5_000_000)
     plan = plan_count_levels(len(times), _SPAN_US, 8, 256)[0]
     want = _direct_counts(times, labels, 3, int(plan.period_us), plan.bins)
     assert np.array_equal(group["1"][COUNT_KEY][:], want)
@@ -857,12 +861,12 @@ def test_write_count_levels_rejects_times_that_decrease(tmp_path, event_source):
         _write_counts(tmp_path, source)
 
 
-def test_write_count_levels_rejects_an_event_before_the_origin(
+def test_write_count_levels_rejects_an_event_before_the_recording_start(
     tmp_path, event_source
 ):
     times, _, source = _dense(event_source)
     with pytest.raises(ValueError, match="at least 0"):
-        _write_counts(tmp_path, source, origin_us=int(times[0]) + 1)
+        _write_counts(tmp_path, source, recording_start_us=int(times[0]) + 1)
 
 
 def test_write_count_levels_rejects_a_label_outside_the_categories(
@@ -895,11 +899,11 @@ def test_row_sizing_applies_to_one_byte_text_rows():
 _CHANNEL_OPTS = WriteOpts(
     min_bins=2, max_levels=8, inner_len=4, target_shard_bytes=256
 )
-_ORIGIN_US = 1_000_000
+_START_US = 1_000_000
 
 
 def _full(event_source, n=12, **overrides):
-    times = _ORIGIN_US + np.arange(n) * 1000
+    times = _START_US + np.arange(n) * 1000
     fields = {
         "durations": np.arange(n) * 10,
         "labels": np.arange(n) % 3,
@@ -921,7 +925,7 @@ def _write_channel(tmp_path, source, key=7, opts=_CHANNEL_OPTS):
         parent,
         key,
         source,
-        origin_us=_ORIGIN_US,
+        recording_start_us=_START_US,
         channel_keys=_KEYS,
         max_key=9,
         opts=opts,
@@ -971,7 +975,7 @@ def test_write_event_channel_writes_provenance_on_a_minimal_source(
     tmp_path, event_source
 ):
     source = event_source(
-        [_ORIGIN_US, _ORIGIN_US + 5],
+        [_START_US, _START_US + 5],
         id="e",
         name="plain",
         provenance=_PROVENANCE,
@@ -1010,10 +1014,10 @@ def test_write_event_channel_keeps_provenance_off_the_count_levels(
     tmp_path, event_source
 ):
     n = 70_000
-    times = _ORIGIN_US + np.sort(
+    times = _START_US + np.sort(
         np.random.default_rng(0).integers(0, _SPAN_US, n)
     ).astype(np.int64)
-    times[-1] = _ORIGIN_US + _SPAN_US
+    times[-1] = _START_US + _SPAN_US
     source = event_source(
         times,
         labels=np.arange(n) % 3,
@@ -1078,7 +1082,7 @@ def test_write_event_channel_stores_each_column_as_the_source_gives_it(
 def test_write_event_channel_minimal_source_has_only_events(
     tmp_path, event_source
 ):
-    source = event_source([_ORIGIN_US, _ORIGIN_US + 5], id="e", name="plain")
+    source = event_source([_START_US, _START_US + 5], id="e", name="plain")
     group = _write_channel(tmp_path, source)["7"]
     assert dict(group.attrs) == {
         "tsz": {"kind": "event", "name": "plain", "id": "e"}
@@ -1093,7 +1097,7 @@ def test_write_event_channel_omits_label_names_without_a_labels_column(
         def label_names(self):
             return ["ignored"]
 
-    source = Named([_ORIGIN_US], id="e", name="plain")
+    source = Named([_START_US], id="e", name="plain")
     group = _write_channel(tmp_path, source)["7"]
     assert "label_names" not in dict(group.attrs)["tsz"]
 
@@ -1102,7 +1106,7 @@ def test_write_event_channel_requires_labels_for_waveform_mean(
     tmp_path, event_source
 ):
     source = event_source(
-        [_ORIGIN_US], waveform_mean=np.zeros((1, 4)), id="e", name="x"
+        [_START_US], waveform_mean=np.zeros((1, 4)), id="e", name="x"
     )
     with pytest.raises(ValueError, match="requires a labels column"):
         _write_channel(tmp_path, source)
@@ -1122,10 +1126,10 @@ def test_write_event_channel_writes_count_levels_for_a_dense_channel(
     tmp_path, event_source
 ):
     n = 70_000
-    times = _ORIGIN_US + np.sort(
+    times = _START_US + np.sort(
         np.random.default_rng(0).integers(0, _SPAN_US, n)
     ).astype(np.int64)
-    times[-1] = _ORIGIN_US + _SPAN_US
+    times[-1] = _START_US + _SPAN_US
     source = event_source(
         times,
         labels=np.arange(n) % 3,
@@ -1155,7 +1159,7 @@ def test_write_event_channel_returns_none(tmp_path, event_source):
         parent,
         1,
         _full(event_source),
-        origin_us=_ORIGIN_US,
+        recording_start_us=_START_US,
         channel_keys=_KEYS,
         max_key=9,
         opts=_CHANNEL_OPTS,

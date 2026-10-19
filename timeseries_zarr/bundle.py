@@ -12,11 +12,7 @@ from timeseries_zarr.protocols import (
     EventChannelSource,
     source_provenance,
 )
-from timeseries_zarr.recording import (
-    recording_document,
-    session_start_us,
-    write_recording_json,
-)
+from timeseries_zarr.recording import recording_document, write_recording_json
 from timeseries_zarr.types import RecordingMeta, WriteOpts
 from timeseries_zarr.units import resolve_unit
 from timeseries_zarr.write_continuous import write_continuous_channel
@@ -39,23 +35,23 @@ def assign_indices(
     return list(enumerate([*continuous, *events]))
 
 
-def origin_us(
-    sources: Sequence[AnySource],
-    session_start_us: int | None = None,
-) -> int:
-    """Return the bundle origin: the earliest wall-clock instant it holds.
+def recording_start_us(sources: Sequence[AnySource]) -> int | None:
+    """Return the recording start in wall-clock microseconds since the epoch.
 
-    Every channel and event is placed in microseconds from this instant, so it
-    is the minimum of the session start, when given, and the start of every
-    source. No offset or event time is then negative. The origin is the one
-    wall-clock value the writer maps to the time zero of the bundle. A bundle
-    with neither a session start nor a channel has no instant to count from and
-    reports 0.
+    The recording start is the earliest sample or event the sources hold: the
+    minimum of every continuous source's start and of the first event of
+    every event source that has one. Every offset and event time counts from
+    it, so the smallest is 0 and none is negative. Sources with no sample and
+    no event give None.
     """
-    starts = [source.start_us() for source in sources]
-    if session_start_us is not None:
-        starts.append(session_start_us)
-    return min(starts, default=0)
+    starts: list[int] = []
+    for source in sources:
+        if isinstance(source, EventChannelSource):
+            if source.num_events():
+                starts.append(int(source.read_events(0, 1)[0]))
+        else:
+            starts.append(source.start_us())
+    return min(starts, default=None)
 
 
 def channel_keys(indexed: Sequence[tuple[int, AnySource]]) -> dict[str, int]:
@@ -137,14 +133,14 @@ def _is_bundle_root(path: Path) -> bool:
 def write_all_channels(
     root: ZarrGroup,
     indexed: Sequence[tuple[int, AnySource]],
-    origin_us: int,
+    recording_start_us: int,
     channel_keys: Mapping[str, int],
     opts: WriteOpts,
 ) -> None:
     """Write every indexed channel under root, dispatching by source type.
 
     Each (index, source) pair becomes its own channel group beneath root,
-    governed by opts and placed relative to origin_us. channel_keys maps
+    governed by opts and placed relative to recording_start_us. channel_keys maps
     channel ids to keys, which the event channels use to resolve the channels
     they apply to.
     """
@@ -155,14 +151,18 @@ def write_all_channels(
                 root,
                 index,
                 source,
-                origin_us=origin_us,
+                recording_start_us=recording_start_us,
                 channel_keys=channel_keys,
                 max_key=largest_key,
                 opts=opts,
             )
         else:
             write_continuous_channel(
-                root, index, source, origin_us=origin_us, opts=opts
+                root,
+                index,
+                source,
+                recording_start_us=recording_start_us,
+                opts=opts,
             )
 
 
@@ -181,19 +181,22 @@ def write_bundle(
     consolidated into the root, and then recording.json is written when
     recording is given, so identity and the wall-clock times never enter the
     root object. A bundle an earlier run left at output_path is replaced.
-    Every time counts from the origin, the earliest of the session start in
-    recording and every channel start. When recording has a session start,
-    recording.json holds it as session_start_time and the origin as
-    timestamps_reference_time. Sizing and compression follow opts. Raises
-    ValueError if two channels share an id, recording.session_start_time has
-    no UTC offset, a voltage unit is not "uV" under voltage_policy require_uv, a
-    channel's provenance is not a JSON object of finite values, or output_path
-    is not absent, empty, or a bundle, before anything is written. A failed
-    write leaves a partial bundle with no consolidated metadata.
+    Every time counts from the recording start, the earliest sample or event
+    the channels hold. recording.json holds it as start_time and the session
+    start of recording as session.start_time. Sizing and compression follow
+    opts. Raises ValueError if two channels share an id, recording has a
+    session start without a UTC offset or a session object with a start_time
+    key, a voltage unit is not "uV" under voltage_policy require_uv, a
+    channel's provenance is not a JSON object of finite values, or
+    output_path is not absent, empty, or a bundle, before anything is
+    written. A failed write leaves a partial bundle with no consolidated
+    metadata.
     """
     indexed = assign_indices(continuous, events)
-    session_start = None if recording is None else session_start_us(recording)
-    origin = origin_us([source for _, source in indexed], session_start)
+    start = recording_start_us([source for _, source in indexed])
+    document = (
+        None if recording is None else recording_document(recording, start)
+    )
     keys = channel_keys(indexed)
     for index, source in indexed:
         try:
@@ -206,7 +209,7 @@ def write_bundle(
             ) from error
     clear_output_path(output_path)
     root = open_group(output_path, root_attrs())
-    write_all_channels(root, indexed, origin, keys, opts)
+    write_all_channels(root, indexed, 0 if start is None else start, keys, opts)
     consolidate(root)
-    if recording is not None:
-        write_recording_json(output_path, recording_document(recording, origin))
+    if document is not None:
+        write_recording_json(output_path, document)

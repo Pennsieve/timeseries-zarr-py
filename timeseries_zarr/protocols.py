@@ -73,7 +73,7 @@ class EventChannelSource(Protocol):
     Every channel has event times. Each other column is optional, and columns
     names the ones this source provides: the writer calls a column's reader
     only for a column named there. Times are wall-clock microseconds, and the
-    writer places them relative to the bundle origin.
+    writer places them relative to the recording start.
     """
 
     @property
@@ -89,14 +89,6 @@ class EventChannelSource(Protocol):
     @property
     def unit(self) -> str | None:
         """Unit of the channel's measurements, or None when it has none."""
-        ...
-
-    def start_us(self) -> int:
-        """Return the earliest wall-clock microseconds the channel holds.
-
-        No event precedes it. It is the first event, or the recording start
-        when that is earlier or the channel has no events.
-        """
         ...
 
     def num_events(self) -> int:

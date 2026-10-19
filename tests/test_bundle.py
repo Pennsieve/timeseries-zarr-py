@@ -13,21 +13,21 @@ from timeseries_zarr.bundle import (
     channel_keys,
     clear_output_path,
     max_key,
-    origin_us,
+    recording_start_us,
     write_all_channels,
     write_bundle,
 )
-from timeseries_zarr.recording import RECORDING_FILE, session_start_us
+from timeseries_zarr.recording import RECORDING_FILE, epoch_us
 from timeseries_zarr.types import RecordingMeta, WriteOpts
 from timeseries_zarr.zarr_io import open_group
 
 
 def _write_all(root, indexed, opts=None):
-    sources = [source for _, source in indexed]
+    start = recording_start_us([source for _, source in indexed])
     write_all_channels(
         root,
         indexed,
-        origin_us(sources),
+        0 if start is None else start,
         channel_keys(indexed),
         opts or _OPTS,
     )
@@ -328,7 +328,7 @@ def test_write_all_channels_places_continuous_channels_relative_to_the_earliest_
     assert dict(g["1"].attrs)["tsz"]["offset_us"] == 4_000
 
 
-def test_origin_us_is_the_earliest_start_of_any_source(
+def test_recording_start_us_is_the_earliest_sample_or_event(
     continuous_source, event_source
 ):
     sources = [
@@ -336,38 +336,35 @@ def test_origin_us_is_the_earliest_start_of_any_source(
         event_source([2_000, 9_000]),
         continuous_source(np.zeros(4, np.float32), start_us=7_000),
     ]
-    assert origin_us(sources) == 2_000
+    assert recording_start_us(sources) == 2_000
 
 
-def test_origin_us_is_the_session_start_when_it_is_earliest(continuous_source):
-    sources = [continuous_source(np.zeros(4, np.float32), start_us=5_000)]
-    assert origin_us(sources, session_start_us=1_000) == 1_000
-
-
-def test_origin_us_is_a_source_start_when_the_session_starts_later(
-    continuous_source,
+def test_recording_start_us_reads_the_first_event_and_not_a_declared_start(
+    event_source,
 ):
-    sources = [continuous_source(np.zeros(4, np.float32), start_us=5_000)]
-    assert origin_us(sources, session_start_us=9_000) == 5_000
+    assert recording_start_us([event_source([40, 50], start_us=7)]) == 40
 
 
-def test_origin_us_with_only_a_session_start_is_that_start():
-    assert origin_us([], session_start_us=42) == 42
+def test_recording_start_us_ignores_an_event_channel_with_no_events(
+    continuous_source, event_source
+):
+    sources = [
+        event_source([], start_us=77),
+        continuous_source(np.zeros(4, np.float32), start_us=5_000),
+    ]
+    assert recording_start_us(sources) == 5_000
+    assert recording_start_us([event_source([], start_us=77)]) is None
 
 
-def test_origin_us_of_nothing_is_zero():
-    assert origin_us([]) == 0
+def test_recording_start_us_of_nothing_is_none():
+    assert recording_start_us([]) is None
 
 
-def test_origin_us_counts_an_empty_event_channel_by_its_start(event_source):
-    assert origin_us([event_source([], start_us=77)]) == 77
-
-
-def test_origin_us_may_be_negative_for_a_start_before_the_epoch(
+def test_recording_start_us_may_be_negative_for_a_start_before_the_epoch(
     continuous_source,
 ):
     sources = [continuous_source(np.zeros(4, np.float32), start_us=-5)]
-    assert origin_us(sources) == -5
+    assert recording_start_us(sources) == -5
 
 
 def test_channel_keys_maps_every_id_to_its_index(
@@ -433,11 +430,7 @@ _SPEC_OPTS = WriteOpts(
 _SESSION = dt.datetime(
     2024, 3, 14, 9, 15, tzinfo=dt.timezone(dt.timedelta(hours=-5))
 )
-_SESSION_US = session_start_us(
-    RecordingMeta(
-        session_start_time=_SESSION, subject={}, session={}, source={}
-    )
-)
+_SESSION_US = epoch_us(_SESSION)
 _RECORDING = RecordingMeta(
     session_start_time=_SESSION,
     subject={"id": "sub-0931", "species": "Homo sapiens"},
@@ -722,11 +715,11 @@ def _check_event(path, nodes, key, attrs, group_keys):
 
 
 def _check_recording(path, nodes):
-    """Return the session start time and the reference time of the bundle."""
+    """Return the recording start and the session start of the bundle."""
     document = json.loads((path / RECORDING_FILE).read_text("utf-8"))
     times = [
-        dt.datetime.fromisoformat(document[key])
-        for key in ("session_start_time", "timestamps_reference_time")
+        dt.datetime.fromisoformat(document["start_time"]),
+        dt.datetime.fromisoformat(document["session"]["start_time"]),
     ]
     assert all(time.utcoffset() is not None for time in times)
     assert all(
@@ -815,7 +808,7 @@ def test_write_bundle_without_a_recording_has_no_recording_json_and_conforms(
     assert not (output / RECORDING_FILE).exists()
 
 
-def test_write_bundle_recording_without_a_session_start_writes_no_time_and_conforms(
+def test_write_bundle_recording_without_a_session_start_dates_the_recording_start(
     tmp_path, continuous_source, event_source
 ):
     output = _write_mixed(
@@ -826,20 +819,86 @@ def test_write_bundle_recording_without_a_session_start_writes_no_time_and_confo
     )
     nodes = _validate_bundle(output)
     document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
-    assert document == {"subject": {"id": "sub-0931"}}
+    assert document == {
+        "start_time": "2024-03-14T14:15:00.000000+00:00",
+        "subject": {"id": "sub-0931"},
+    }
     assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
 
 
-def test_write_bundle_reference_time_precedes_the_session_start_of_an_earlier_channel(
+def test_write_bundle_start_time_precedes_the_session_start_of_an_earlier_channel(
     tmp_path, continuous_source, event_source
 ):
     output = _write_mixed(
         tmp_path, continuous_source, event_source, base=_SESSION_US - 2_000_000
     )
     nodes = _validate_bundle(output)
-    session_start, reference = _check_recording(output, nodes)
+    start, session_start = _check_recording(output, nodes)
+    assert start == _SESSION - dt.timedelta(seconds=2)
     assert session_start == _SESSION
-    assert reference == _SESSION - dt.timedelta(seconds=2)
+    assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
+
+
+def test_write_bundle_start_time_follows_a_session_start_before_every_channel(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(
+        tmp_path, continuous_source, event_source, base=_SESSION_US + 5_000_000
+    )
+    nodes = _validate_bundle(output)
+    start, session_start = _check_recording(output, nodes)
+    assert start == _SESSION + dt.timedelta(seconds=5)
+    assert session_start == _SESSION
+    assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
+
+
+def test_write_bundle_places_an_epoch_before_the_session_at_the_recording_start(
+    tmp_path, continuous_source, event_source
+):
+    eeg = continuous_source(
+        np.zeros(64, np.float32), id="eeg", start_us=_SESSION_US
+    )
+    epochs = event_source([_SESSION_US - 32_000], id="hypnogram")
+    output = tmp_path / "bundle"
+    write_bundle(
+        [eeg], [epochs], output_path=output, opts=_OPTS, recording=_RECORDING
+    )
+    nodes = _validate_bundle(output)
+    start, session_start = _check_recording(output, nodes)
+    assert start == _SESSION - dt.timedelta(microseconds=32_000)
+    assert session_start == _SESSION
+    assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 32_000
+    assert open_group(output)["1"]["events"][:].tolist() == [0]
+
+
+def test_write_bundle_without_a_sample_or_an_event_writes_no_start_time(
+    tmp_path,
+):
+    output = tmp_path / "bundle"
+    write_bundle([], [], output_path=output, opts=_OPTS, recording=_RECORDING)
+    document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
+    assert "start_time" not in document
+    assert document["session"]["start_time"] == _SESSION.isoformat(
+        timespec="microseconds"
+    )
+
+
+def test_write_bundle_without_wall_clock_times_writes_no_start_time(
+    tmp_path, continuous_source, event_source
+):
+    undated = RecordingMeta(
+        session_start_time=_SESSION,
+        subject={},
+        session={},
+        source={},
+        wall_clock=False,
+    )
+    output = _write_mixed(
+        tmp_path, continuous_source, event_source, recording=undated
+    )
+    nodes = _validate_bundle(output)
+    document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
+    assert list(document) == ["session"]
     assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
 
 
@@ -850,10 +909,7 @@ def test_write_bundle_keeps_identity_and_the_date_out_of_every_zarr_node(
     document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
     assert document["subject"] == {"id": "sub-0931", "species": "Homo sapiens"}
     assert "sub-0931" not in (output / "zarr.json").read_text()
-    assert (
-        document["session_start_time"][:10]
-        not in (output / "zarr.json").read_text()
-    )
+    assert document["start_time"][:10] not in (output / "zarr.json").read_text()
 
 
 def test_write_bundle_rejects_a_session_start_without_an_offset_before_writing(

@@ -36,7 +36,9 @@ def test_level1_period_us_is_never_finer_than_the_ladder_base():
 
 
 @pytest.mark.parametrize("n_events", [1, 1000, 10**9])
-def test_level1_period_us_events_all_at_the_origin_give_the_base(n_events):
+def test_level1_period_us_events_all_at_the_recording_start_give_the_base(
+    n_events,
+):
     assert level1_period_us(n_events, 0) == COUNT_LADDER_BASE_US
 
 
@@ -121,7 +123,7 @@ def test_count_bins_keeps_an_event_on_a_period_boundary():
     assert count_bins(3000, 1000) == 4
 
 
-def test_count_bins_lone_event_at_the_origin_has_one_bin():
+def test_count_bins_lone_event_at_the_recording_start_has_one_bin():
     assert count_bins(0, 256_000) == 1
 
 
