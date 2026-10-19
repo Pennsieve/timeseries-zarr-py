@@ -31,10 +31,10 @@ only, and comments MUST NOT be included in JSON objects.
 
 Dtypes are written with their Zarr v3 names: `float32`, `float64`, `int64`,
 `uint16`, `uint32`, `uint8`. Every time value in a Zarr node is a count of
-microseconds, and every key that holds one ends in `_us`. `start` in
-`recording.json` is the one wall-clock time and is an RFC 3339 string. A *channel
-key* is the name of a channel group: a decimal integer without leading zeros. Keys
-are opaque, their order carries no meaning, and they need not be contiguous.
+microseconds, and every key that holds one ends in `_us`. The wall-clock times in
+`recording.json` are RFC 3339 strings. A *channel key* is the name of a channel
+group: a decimal integer without leading zeros. Keys are opaque, their order carries
+no meaning, and they need not be contiguous.
 
 ## Storage format
 
@@ -46,7 +46,7 @@ GCS.
 Zarr arrays hold every value a reader renders: samples, per-bin statistics, event
 times, and per-event columns, including annotation text. Zarr attributes hold the
 metadata that describes them. The one plain file, `recording.json`, holds the
-recording's identity and wall-clock start, which no reader needs in order to render.
+recording's identity and wall-clock times, which no reader needs in order to render.
 
 ### Bundles
 
@@ -55,7 +55,7 @@ recording's identity and wall-clock start, which no reader needs in order to ren
 |-- zarr.json                # Root group metadata: the "tsz" attributes (see below)
 |                            # and Zarr consolidated metadata for every descendant.
 |-- recording.json           # Optional. Plain JSON, not a Zarr node: identity and
-|                            # wall-clock start. Delete it to de-identify.
+|                            # wall-clock times. Delete it to de-identify.
 |-- 0                        # One group per channel, named by its channel key.
 |   `-- ...                  # A continuous channel; see the next section.
 |-- 1
@@ -225,9 +225,9 @@ keys to `attributes` beside `tsz`.
 
 Every time value in a bundle is relative to one origin, the bundle's time zero.
 Sample and event times are `int64` microseconds. Periods are `float64` microseconds.
-The wall-clock time of the origin, when known, is the `start` field of
-`recording.json` and appears nowhere else. No array carries a time axis; a reader
-computes times from `offset_us`, `rate_hz`, and `period_us`.
+The wall-clock time of the origin, when known, is the `timestamps_reference_time`
+field of `recording.json` and appears nowhere else. No array carries a time axis; a
+reader computes times from `offset_us`, `rate_hz`, and `period_us`.
 
 ### Root metadata
 
@@ -369,10 +369,16 @@ keys.
 
 | key | requirement | type | description |
 |---|---|---|---|
-| `start` | MAY | string | Wall-clock time of the origin, RFC 3339 with a UTC offset. |
+| `session_start_time` | MAY | string | Wall-clock time the recording session began, RFC 3339 with a UTC offset. |
+| `timestamps_reference_time` | MAY | string | Wall-clock time of the origin, RFC 3339 with a UTC offset. |
 | `subject` | MAY | object | Who was recorded. Content is producer-defined. |
 | `session` | MAY | object | The recording session. Content is producer-defined. |
 | `source` | MAY | object | Acquisition system and converting software. Content is producer-defined. |
+
+`session_start_time` records when acquisition began and places no data. It differs
+from `timestamps_reference_time` when the producer places the origin at another
+instant, for example at a channel or an event that begins before the session. Both
+keys take their meaning from the NWB fields of the same names.
 
 Producers MUST keep identity and wall-clock time out of every other object: channel
 `name`, `id`, and `provenance` MUST NOT identify a person, and no other key holds a
@@ -381,12 +387,14 @@ and the `text` columns of event channels, which the root `zarr.json` enumerates.
 Deleting `recording.json` removes structured identity and the date and changes no
 other object. Free text is redacted in place: a `text` column stored as the next
 section recommends is readable text on disk, and overwriting bytes within a row
-changes no other object. Editing `start` shifts the date of the whole recording,
-because every other time in the bundle is relative to it.
+changes no other object. A date shift adds the same amount to `session_start_time`
+and `timestamps_reference_time`. Every other time in the bundle is relative to
+`timestamps_reference_time`, so the shift changes no other object.
 
 ```json
 {
-  "start": "2024-03-14T09:15:00.000000-05:00",
+  "session_start_time": "2024-03-14T09:15:00.000000-05:00",
+  "timestamps_reference_time": "2024-03-14T09:14:59.968000-05:00",
   "subject": {"id": "sub-0931", "species": "Homo sapiens", "sex": "F", "age": "P34Y"},
   "session": {"id": "ses-01", "description": "EMU admission, day 3"},
   "source": {"system": "Natus Quantum", "converter": "timeseries-zarr-py 2.0.0"}
@@ -475,7 +483,8 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - Every row of `text` is valid UTF-8 followed by zero bytes. `M` equals
   `ceil((max_key + 1) / 8)`, and every set bit in `channels` names a channel group
   in the bundle.
-- `recording.json`, when present, parses as JSON, and `start` parses as RFC 3339.
+- `recording.json`, when present, parses as JSON, and `session_start_time` and
+  `timestamps_reference_time` parse as RFC 3339.
 - `name`, `id`, and `provenance` values match no identity-like pattern (warning).
 
 ## Versioning and compatibility

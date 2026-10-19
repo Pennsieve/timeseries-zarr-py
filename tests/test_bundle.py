@@ -434,10 +434,12 @@ _SESSION = dt.datetime(
     2024, 3, 14, 9, 15, tzinfo=dt.timezone(dt.timedelta(hours=-5))
 )
 _SESSION_US = session_start_us(
-    RecordingMeta(start=_SESSION, subject={}, session={}, source={})
+    RecordingMeta(
+        session_start_time=_SESSION, subject={}, session={}, source={}
+    )
 )
 _RECORDING = RecordingMeta(
-    start=_SESSION,
+    session_start_time=_SESSION,
     subject={"id": "sub-0931", "species": "Homo sapiens"},
     session={"id": "ses-01"},
     source={"converter": "timeseries-zarr-py"},
@@ -720,15 +722,19 @@ def _check_event(path, nodes, key, attrs, group_keys):
 
 
 def _check_recording(path, nodes):
+    """Return the session start time and the reference time of the bundle."""
     document = json.loads((path / RECORDING_FILE).read_text("utf-8"))
-    start = dt.datetime.fromisoformat(document["start"])
-    assert start.utcoffset() is not None
+    times = [
+        dt.datetime.fromisoformat(document[key])
+        for key in ("session_start_time", "timestamps_reference_time")
+    ]
+    assert all(time.utcoffset() is not None for time in times)
     assert all(
         isinstance(document.get(k, {}), dict)
         for k in ("subject", "session", "source")
     )
     assert RECORDING_FILE not in nodes[""]["consolidated_metadata"]["metadata"]
-    return start
+    return times
 
 
 def _check_provenance(nodes):
@@ -796,8 +802,7 @@ def test_write_bundle_conforms_to_the_specification_validation_list(
         "3",
         "4",
     ]
-    start = _check_recording(output, nodes)
-    assert start == _SESSION
+    assert _check_recording(output, nodes) == [_SESSION, _SESSION]
 
 
 def test_write_bundle_without_a_recording_has_no_recording_json_and_conforms(
@@ -810,7 +815,7 @@ def test_write_bundle_without_a_recording_has_no_recording_json_and_conforms(
     assert not (output / RECORDING_FILE).exists()
 
 
-def test_write_bundle_recording_without_a_start_writes_no_start_and_conforms(
+def test_write_bundle_recording_without_a_session_start_writes_no_time_and_conforms(
     tmp_path, continuous_source, event_source
 ):
     output = _write_mixed(
@@ -825,15 +830,16 @@ def test_write_bundle_recording_without_a_start_writes_no_start_and_conforms(
     assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
 
 
-def test_write_bundle_recording_start_is_the_origin_when_a_channel_starts_earlier(
+def test_write_bundle_reference_time_precedes_the_session_start_of_an_earlier_channel(
     tmp_path, continuous_source, event_source
 ):
     output = _write_mixed(
         tmp_path, continuous_source, event_source, base=_SESSION_US - 2_000_000
     )
     nodes = _validate_bundle(output)
-    start = _check_recording(output, nodes)
-    assert start == _SESSION - dt.timedelta(seconds=2)
+    session_start, reference = _check_recording(output, nodes)
+    assert session_start == _SESSION
+    assert reference == _SESSION - dt.timedelta(seconds=2)
     assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
 
 
@@ -844,14 +850,20 @@ def test_write_bundle_keeps_identity_and_the_date_out_of_every_zarr_node(
     document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
     assert document["subject"] == {"id": "sub-0931", "species": "Homo sapiens"}
     assert "sub-0931" not in (output / "zarr.json").read_text()
-    assert document["start"][:10] not in (output / "zarr.json").read_text()
+    assert (
+        document["session_start_time"][:10]
+        not in (output / "zarr.json").read_text()
+    )
 
 
-def test_write_bundle_rejects_a_recording_start_without_an_offset_before_writing(
+def test_write_bundle_rejects_a_session_start_without_an_offset_before_writing(
     tmp_path, continuous_source
 ):
     naive = RecordingMeta(
-        start=dt.datetime(2024, 3, 14, 9, 15), subject={}, session={}, source={}
+        session_start_time=dt.datetime(2024, 3, 14, 9, 15),
+        subject={},
+        session={},
+        source={},
     )
     cont = continuous_source(np.zeros(8, np.float32), id="c0")
     with pytest.raises(ValueError, match="UTC offset"):
