@@ -95,8 +95,9 @@ def test_mixed_bundle_recording_json_holds_both_times_and_the_identity(
     mixed_bundle,
 ):
     document = json.loads((mixed_bundle / RECORDING_FILE).read_text("utf-8"))
-    for key in ("session_start_time", "timestamps_reference_time"):
-        assert dt.datetime.fromisoformat(document[key]) == _SESSION
+    assert dt.datetime.fromisoformat(document["start_time"]) == _SESSION
+    session_start = document["session"]["start_time"]
+    assert dt.datetime.fromisoformat(session_start) == _SESSION
     assert "start" not in document
     assert document["subject"] == _RECORDING.subject
 
@@ -128,8 +129,8 @@ def test_write_mixed_passes_the_base_and_the_options_to_the_writer(
         opts=dataclasses.replace(_SPEC_OPTS, max_levels=0),
     )
     document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
-    reference = dt.datetime.fromisoformat(document["timestamps_reference_time"])
-    assert reference == _SESSION - dt.timedelta(seconds=2)
+    start = dt.datetime.fromisoformat(document["start_time"])
+    assert start == _SESSION - dt.timedelta(seconds=2)
     assert list(_open(output)["0"].group_keys()) == []
 
 

@@ -361,7 +361,7 @@ def test_time_axis_at_512_hz_is_exact_after_a_1_day_offset():
     assert times.tolist() == exact
 
 
-def test_time_axis_at_30_khz_stays_near_exact_far_from_the_origin():
+def test_time_axis_at_30_khz_stays_near_exact_far_from_the_recording_start():
     first = 10**8
     times = time_axis(first, 1000, 0, 10**6 / 30000.0)
     exact = np.array(

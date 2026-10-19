@@ -45,9 +45,8 @@ _MIXED_KINDS = {
     3: "event",
     4: "event",
 }
-_NO_REFERENCE = (
-    "recording.json holds no timestamps_reference_time; wall-clock times "
-    "are unavailable"
+_NO_START = (
+    "recording.json holds no start_time; wall-clock times are unavailable"
 )
 _EACH_LOCATION_KIND = pytest.mark.parametrize(
     "make_location",
@@ -135,7 +134,10 @@ def test_open_bundle_opens_each_location_kind(
         _MIXED_KINDS
     )
     assert bundle.recording.subject == _RECORDING.subject
-    assert bundle.recording.session == _RECORDING.session
+    assert dict(bundle.recording.session) == {
+        "start_time": _SESSION.isoformat(timespec="microseconds"),
+        **_RECORDING.session,
+    }
     assert bundle.recording.source == _RECORDING.source
 
 
@@ -218,8 +220,8 @@ def test_bundle_has_no_instance_dict(mixed):
 
 
 def test_mixed_recording_holds_the_session_start_as_both_times(mixed):
+    assert mixed.recording.start_time == _SESSION
     assert mixed.recording.session_start_time == _SESSION
-    assert mixed.recording.timestamps_reference_time == _SESSION
 
 
 def test_the_recording_of_a_bundle_is_hashable(mixed, mixed_bundle):
@@ -401,7 +403,7 @@ def test_open_bundle_resolves_a_relative_path_at_the_open(
 
 
 @_WARNINGS_AS_ERRORS
-def test_datetimes_counts_from_the_timestamps_reference_time_in_utc(mixed):
+def test_datetimes_counts_from_the_start_time_in_utc(mixed):
     times = mixed.datetimes([0, 1_000_000])
     assert times.dtype == np.dtype("datetime64[us]")
     assert times.tolist() == [
@@ -436,9 +438,9 @@ def test_datetimes_rounds_a_fraction_to_the_nearest_microsecond(mixed):
     ids=["2^53 + 1", "2^62 - 1", "-(2^62) + 1", "uint64", "Python int"],
 )
 def test_datetimes_keeps_every_microsecond_of_an_integer_time(mixed, time_us):
-    origin = np.datetime64("2024-03-14T14:15:00", "us")
+    start = np.datetime64("2024-03-14T14:15:00", "us")
     offset = int(np.asarray(time_us)[0])
-    assert mixed.datetimes(time_us)[0] == origin + np.timedelta64(offset, "us")
+    assert mixed.datetimes(time_us)[0] == start + np.timedelta64(offset, "us")
 
 
 @_WARNINGS_AS_ERRORS
@@ -505,12 +507,12 @@ def test_datetimes_accepts_the_largest_time_below_2_to_the_62(mixed):
 
 
 @pytest.mark.parametrize(
-    "reference", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
+    "start", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
 )
-def test_datetimes_rejects_a_reference_time_outside_the_datetime_range(
-    mixed_bundle, reference
+def test_datetimes_rejects_a_start_time_outside_the_datetime_range(
+    mixed_bundle, start
 ):
-    document = {"timestamps_reference_time": reference}
+    document = {"start_time": start}
     store = _copy(
         mixed_bundle, files={RECORDING_FILE: json.dumps(document).encode()}
     )
@@ -518,21 +520,18 @@ def test_datetimes_rejects_a_reference_time_outside_the_datetime_range(
     with pytest.raises(
         ValueError,
         match=(
-            r"^recording\.json: timestamps_reference_time must fall within "
-            rf"years 1 through 9999 in UTC, got '{re.escape(reference)}'$"
+            r"^recording\.json: start_time must fall within "
+            rf"years 1 through 9999 in UTC, got '{re.escape(start)}'$"
         ),
     ):
         bundle.datetimes([0])
 
 
-def test_datetimes_counts_from_the_reference_time_when_it_precedes_the_session_start(
+def test_datetimes_counts_from_the_start_time_when_it_precedes_the_session_start(
     write_mixed,
 ):
     bundle = open_bundle(write_mixed(base=_SESSION_US - 2_000_000))
-    assert (
-        bundle.recording.session_start_time
-        != bundle.recording.timestamps_reference_time
-    )
+    assert bundle.recording.session_start_time != bundle.recording.start_time
     assert bundle.datetimes([0])[0] == np.datetime64("2024-03-14T14:14:58")
 
 
@@ -545,31 +544,31 @@ def test_datetimes_places_the_event_times_on_the_wall_clock(mixed):
 
 
 @pytest.mark.parametrize("fixture", ["odd_bundle", "synthetic_bundle"])
-def test_datetimes_rejects_a_bundle_without_a_reference_time(request, fixture):
+def test_datetimes_rejects_a_bundle_without_a_start_time(request, fixture):
     bundle = open_bundle(request.getfixturevalue(fixture))
-    with pytest.raises(ValueError, match=f"^{_NO_REFERENCE}$"):
+    with pytest.raises(ValueError, match=f"^{_NO_START}$"):
         bundle.datetimes([0])
 
 
-def test_datetimes_rejects_a_recording_without_a_reference_time(write_mixed):
-    path = write_mixed(recording=RecordingMeta(subject={"id": "sub-0931"}))
-    bundle = open_bundle(path)
+def test_datetimes_rejects_a_recording_without_wall_clock_times(write_mixed):
+    undated = RecordingMeta(subject={"id": "sub-0931"}, wall_clock=False)
+    bundle = open_bundle(write_mixed(recording=undated))
     assert bundle.recording.subject == {"id": "sub-0931"}
-    assert bundle.recording.timestamps_reference_time is None
-    with pytest.raises(ValueError, match=f"^{_NO_REFERENCE}$"):
+    assert bundle.recording.start_time is None
+    with pytest.raises(ValueError, match=f"^{_NO_START}$"):
         bundle.datetimes([0])
 
 
-def test_datetimes_rejects_a_recording_with_only_a_session_start_time(
+def test_datetimes_rejects_a_recording_with_only_a_session_start(
     mixed_bundle,
 ):
-    document = {"session_start_time": "2024-03-14T09:15:00-05:00"}
+    document = {"session": {"start_time": "2024-03-14T09:15:00-05:00"}}
     store = _copy(
         mixed_bundle, files={RECORDING_FILE: json.dumps(document).encode()}
     )
     bundle = open_bundle(store)
     assert bundle.recording.session_start_time == _SESSION
-    with pytest.raises(ValueError, match=f"^{_NO_REFERENCE}$"):
+    with pytest.raises(ValueError, match=f"^{_NO_START}$"):
         bundle.datetimes([0])
 
 

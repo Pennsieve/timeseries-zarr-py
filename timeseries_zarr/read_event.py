@@ -1,7 +1,7 @@
 """Records and window reads for the event channels of a bundle.
 
-Every time argument is an integer count of microseconds from the bundle
-origin, and a window is half-open.
+Every time argument is an integer count of microseconds from the recording
+start, and a window is half-open.
 """
 
 import math
@@ -210,7 +210,7 @@ class CountLevel:
     """One count level of an event channel.
 
     period_us is the bin width in microseconds. Bin i starts i * period_us
-    microseconds after the bundle origin. count is a rank-2 zarr array whose
+    microseconds after the recording start. count is a rank-2 zarr array whose
     entry (i, j) is the number of events of label j that start in bin i.
     """
 
@@ -235,7 +235,7 @@ class Counts:
 
     count[i, j] is the number of events of label j that start in bin
     first + i. That bin starts at (first + i) * period_us microseconds from
-    the bundle origin. label_names names each label column, or is None when
+    the recording start. label_names names each label column, or is None when
     the channel has no label_names.
     """
 
@@ -247,12 +247,12 @@ class Counts:
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
-        """Start time of each bin in microseconds from the bundle origin."""
+        """Start time of each bin in microseconds from the recording start."""
         return time_axis(self.first, len(self), 0, self.period_us)
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
-        """Start time of each bin in seconds from the bundle origin."""
+        """Start time of each bin in seconds from the recording start."""
         return self.time_us / MICROSECONDS_PER_SECOND
 
     def __len__(self) -> int:
@@ -297,8 +297,8 @@ class Counts:
 class EventTable:
     """The events of an event channel in a window, one row per event.
 
-    time_us is the time of each event in microseconds from the bundle
-    origin, in non-decreasing order. duration_us is in microseconds. value
+    time_us is the time of each event in microseconds from the recording
+    start, in non-decreasing order. duration_us is in microseconds. value
     is in the unit of the channel. text holds the decoded text of each
     event. channel_keys lists the channel keys each event applies to, and
     an empty list means the whole recording. waveform holds the snippet of
@@ -333,7 +333,7 @@ class EventTable:
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
-        """Time of each event in seconds from the bundle origin."""
+        """Time of each event in seconds from the recording start."""
         return np.asarray(
             self.time_us / MICROSECONDS_PER_SECOND, dtype=np.float64
         )

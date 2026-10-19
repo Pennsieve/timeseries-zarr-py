@@ -21,14 +21,28 @@ _UTC_MINUS_5 = timezone(timedelta(hours=-5))
 _SESSION = datetime(2024, 3, 14, 9, 15, 0, 7, tzinfo=_UTC_MINUS_5)
 _SESSION_US = (_SESSION - _EPOCH) // timedelta(microseconds=1)
 
-_TIME_KEYS = ["session_start_time", "timestamps_reference_time"]
+_TIME_KEYS = ["start_time", "session.start_time"]
 _OBJECT_KEYS = ["subject", "session", "source"]
+
+
+def _document(key, value):
+    """Return a document that holds value under key, nested for a dotted key."""
+    if key == "session.start_time":
+        return {"session": {"start_time": value}}
+    return {key: value}
+
+
+def _time(recording, key):
+    """Return the time of recording that key names."""
+    if key == "session.start_time":
+        return recording.session_start_time
+    return recording.start_time
 
 
 def test_recording_defaults_to_no_times_and_empty_objects():
     recording = Recording()
+    assert recording.start_time is None
     assert recording.session_start_time is None
-    assert recording.timestamps_reference_time is None
     assert recording.subject == {}
     assert recording.session == {}
     assert recording.source == {}
@@ -42,7 +56,7 @@ def test_recording_rejects_assignment():
 
 def test_equal_recordings_hash_equal():
     document = {
-        "session_start_time": "2024-03-14T14:15:00Z",
+        "start_time": "2024-03-14T14:15:00Z",
         "subject": {"id": "sub-synth01", "age": "P30D"},
         "source": {"generator": "synthetic"},
     }
@@ -59,21 +73,19 @@ def test_parse_recording_document_returns_the_times_recording_document_wrote():
         RecordingMeta(session_start_time=_SESSION), _SESSION_US
     )
     recording = parse_recording_document(document)
+    assert recording.start_time == _SESSION
     assert recording.session_start_time == _SESSION
-    assert recording.timestamps_reference_time == _SESSION
 
 
-def test_parse_recording_document_returns_an_origin_earlier_than_the_session():
-    origin_us = _SESSION_US - 32_000
+def test_parse_recording_document_returns_a_start_time_earlier_than_the_session():
+    start_us = _SESSION_US - 32_000
     document = recording_document(
-        RecordingMeta(session_start_time=_SESSION), origin_us
+        RecordingMeta(session_start_time=_SESSION), start_us
     )
     recording = parse_recording_document(document)
+    assert recording.start_time == _EPOCH + timedelta(microseconds=start_us)
     assert recording.session_start_time == _SESSION
-    assert recording.timestamps_reference_time == _EPOCH + timedelta(
-        microseconds=origin_us
-    )
-    assert recording.timestamps_reference_time < recording.session_start_time
+    assert recording.start_time < recording.session_start_time
 
 
 def test_parse_recording_document_keeps_the_utc_offset_of_each_time():
@@ -81,12 +93,10 @@ def test_parse_recording_document_keeps_the_utc_offset_of_each_time():
         RecordingMeta(session_start_time=_SESSION), _SESSION_US - 32_000
     )
     recording = parse_recording_document(document)
+    assert recording.start_time is not None
     assert recording.session_start_time is not None
-    assert recording.timestamps_reference_time is not None
+    assert recording.start_time.utcoffset() == timedelta(hours=-5)
     assert recording.session_start_time.utcoffset() == timedelta(hours=-5)
-    assert recording.timestamps_reference_time.utcoffset() == timedelta(
-        hours=-5
-    )
 
 
 def test_parse_recording_document_returns_the_objects_recording_document_wrote():
@@ -98,7 +108,10 @@ def test_parse_recording_document_returns_the_objects_recording_document_wrote()
     )
     recording = parse_recording_document(recording_document(meta, _SESSION_US))
     assert recording.subject == {"id": "sub-0931", "age": "P34Y"}
-    assert recording.session == {"id": "ses-01"}
+    assert recording.session == {
+        "start_time": "2024-03-14T09:15:00.000007-05:00",
+        "id": "ses-01",
+    }
     assert recording.source == {"system": "Natus Quantum"}
 
 
@@ -115,15 +128,15 @@ def test_parse_recording_text_reads_the_file_write_recording_json_writes(
     write_recording_json(tmp_path, recording_document(meta, _SESSION_US))
     text = (tmp_path / RECORDING_FILE).read_text(encoding="utf-8")
     recording = parse_recording_text(text)
+    assert recording.start_time == _SESSION
     assert recording.session_start_time == _SESSION
-    assert recording.timestamps_reference_time == _SESSION
     assert recording.subject == meta.subject
 
 
 def test_parse_recording_document_of_only_a_subject_has_no_times():
     recording = parse_recording_document({"subject": {"id": "sub-synth01"}})
+    assert recording.start_time is None
     assert recording.session_start_time is None
-    assert recording.timestamps_reference_time is None
     assert recording.subject == {"id": "sub-synth01"}
     assert recording.session == {}
     assert recording.source == {}
@@ -137,31 +150,29 @@ def test_parse_recording_document_ignores_a_legacy_start_key():
     recording = parse_recording_document(
         {"start": "2024-03-14T09:15:00.000000-05:00", "subject": {"id": "s"}}
     )
+    assert recording.start_time is None
     assert recording.session_start_time is None
-    assert recording.timestamps_reference_time is None
     assert recording.subject == {"id": "s"}
 
 
 def test_parse_recording_document_ignores_unknown_keys():
     recording = parse_recording_document(
-        {"session_start_time": "2024-03-14T14:15:00Z", "notes": [1, 2]}
+        {"start_time": "2024-03-14T14:15:00Z", "notes": [1, 2]}
     )
-    assert recording.session_start_time == datetime(
-        2024, 3, 14, 14, 15, tzinfo=UTC
-    )
+    assert recording.start_time == datetime(2024, 3, 14, 14, 15, tzinfo=UTC)
 
 
 @pytest.mark.parametrize("key", _TIME_KEYS)
 def test_parse_recording_document_accepts_a_lowercase_t_and_z(key):
-    recording = parse_recording_document({key: "2024-03-14t14:15:00z"})
-    assert getattr(recording, key) == datetime(2024, 3, 14, 14, 15, tzinfo=UTC)
+    recording = parse_recording_document(_document(key, "2024-03-14t14:15:00z"))
+    assert _time(recording, key) == datetime(2024, 3, 14, 14, 15, tzinfo=UTC)
 
 
 def test_parse_recording_document_reads_a_z_suffix_as_utc():
     recording = parse_recording_document(
-        {"timestamps_reference_time": "2024-03-14T14:15:00.250000Z"}
+        {"start_time": "2024-03-14T14:15:00.250000Z"}
     )
-    time = recording.timestamps_reference_time
+    time = recording.start_time
     assert time is not None
     assert time.utcoffset() == timedelta(0)
     assert time == datetime(2024, 3, 14, 14, 15, 0, 250_000, tzinfo=UTC)
@@ -169,9 +180,9 @@ def test_parse_recording_document_reads_a_z_suffix_as_utc():
 
 def test_parse_recording_document_truncates_a_nanosecond_fraction():
     recording = parse_recording_document(
-        {"session_start_time": "2024-03-14T14:15:00.123456789+00:00"}
+        {"start_time": "2024-03-14T14:15:00.123456789+00:00"}
     )
-    assert recording.session_start_time == datetime(
+    assert recording.start_time == datetime(
         2024, 3, 14, 14, 15, 0, 123_456, tzinfo=UTC
     )
 
@@ -194,7 +205,7 @@ def test_parse_recording_document_truncates_a_nanosecond_fraction():
 def test_parse_recording_document_reads_a_leap_second_as_the_next_minute(
     key, value, expected
 ):
-    time = getattr(parse_recording_document({key: value}), key)
+    time = _time(parse_recording_document(_document(key, value)), key)
     assert time == expected
     assert time.utcoffset() == expected.utcoffset()
 
@@ -208,11 +219,11 @@ def test_parse_recording_document_rejects_second_61_and_a_bad_leap_second(
     with pytest.raises(
         ValueError,
         match=(
-            "^recording.json: session_start_time must be an RFC 3339 time, "
+            "^recording.json: start_time must be an RFC 3339 time, "
             f"got '{value}'$"
         ),
     ):
-        parse_recording_document({"session_start_time": value})
+        parse_recording_document({"start_time": value})
 
 
 def test_parse_recording_document_rejects_a_leap_second_past_the_year_9999():
@@ -220,11 +231,11 @@ def test_parse_recording_document_rejects_a_leap_second_past_the_year_9999():
     with pytest.raises(
         ValueError,
         match=(
-            "^recording.json: timestamps_reference_time must lie in the year "
+            "^recording.json: start_time must lie in the year "
             f"9999 or earlier, got '{value}'$"
         ),
     ):
-        parse_recording_document({"timestamps_reference_time": value})
+        parse_recording_document({"start_time": value})
 
 
 @pytest.mark.parametrize("key", _TIME_KEYS)
@@ -232,12 +243,12 @@ def test_parse_recording_document_rejects_a_time_without_a_utc_offset(key):
     with pytest.raises(
         ValueError, match=f"^recording.json: {key} must carry a UTC offset$"
     ):
-        parse_recording_document({key: "2024-03-14T14:15:00"})
+        parse_recording_document(_document(key, "2024-03-14T14:15:00"))
 
 
 def test_parse_recording_document_rejects_a_date_without_a_time():
-    with pytest.raises(ValueError, match="session_start_time must carry"):
-        parse_recording_document({"session_start_time": "2024-03-14"})
+    with pytest.raises(ValueError, match="start_time must carry"):
+        parse_recording_document({"start_time": "2024-03-14"})
 
 
 @pytest.mark.parametrize("key", _TIME_KEYS)
@@ -248,7 +259,7 @@ def test_parse_recording_document_rejects_a_time_that_is_not_a_string(
     with pytest.raises(
         ValueError, match=f"^recording.json: {key} must be a string, got "
     ):
-        parse_recording_document({key: value})
+        parse_recording_document(_document(key, value))
 
 
 @pytest.mark.parametrize("key", _TIME_KEYS)
@@ -257,7 +268,7 @@ def test_parse_recording_document_rejects_a_string_that_is_not_a_time(key):
         ValueError,
         match=f"^recording.json: {key} must be an RFC 3339 time, got 'noon'$",
     ):
-        parse_recording_document({key: "noon"})
+        parse_recording_document(_document(key, "noon"))
 
 
 @pytest.mark.parametrize("key", _OBJECT_KEYS)
@@ -288,19 +299,24 @@ def test_parse_recording_document_returns_read_only_objects(key):
 def test_parse_recording_text_parses_a_json_object():
     text = json.dumps(
         {
-            "session_start_time": "2024-03-14T09:15:00.000000-05:00",
-            "timestamps_reference_time": "2024-03-14T09:14:59.968000-05:00",
-            "session": {"id": "ses-01"},
+            "start_time": "2024-03-14T09:14:59.968000-05:00",
+            "session": {
+                "id": "ses-01",
+                "start_time": "2024-03-14T09:15:00.000000-05:00",
+            },
         }
     )
     recording = parse_recording_text(text)
+    assert recording.start_time == datetime(
+        2024, 3, 14, 9, 14, 59, 968_000, tzinfo=_UTC_MINUS_5
+    )
     assert recording.session_start_time == datetime(
         2024, 3, 14, 9, 15, tzinfo=_UTC_MINUS_5
     )
-    assert recording.timestamps_reference_time == datetime(
-        2024, 3, 14, 9, 14, 59, 968_000, tzinfo=_UTC_MINUS_5
-    )
-    assert recording.session == {"id": "ses-01"}
+    assert recording.session == {
+        "id": "ses-01",
+        "start_time": "2024-03-14T09:15:00.000000-05:00",
+    }
 
 
 @pytest.mark.parametrize("text", ["{", "", "{'subject': {}}", "NaN-"])
