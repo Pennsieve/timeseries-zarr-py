@@ -1,7 +1,7 @@
 """Windows of several continuous channels stacked on one shared grid.
 
-Every time argument is an integer count of microseconds from the bundle
-origin. Channels stack when they share rate_hz and offset_us. Entry i of
+Every time argument is an integer count of microseconds from the recording
+start. Channels stack when they share rate_hz and offset_us. Entry i of
 every row then starts at the same time.
 """
 
@@ -41,7 +41,7 @@ class Stack:
 
     values has one row per channel in the order of keys. Entry j of a row
     is sample or bin first + j, which starts at offset_us + (first + j) *
-    period_us microseconds from the bundle origin. names and units hold the
+    period_us microseconds from the recording start. names and units hold the
     name and unit of each channel in the order of keys. Level 0 holds raw
     samples, and member is then None. A row holds NaN past the end of its
     channel, or 0 when member is count.
@@ -59,12 +59,12 @@ class Stack:
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
-        """Start time of each entry in microseconds from the bundle origin."""
+        """Start time of each entry in microseconds from the recording start."""
         return time_axis(self.first, len(self), self.offset_us, self.period_us)
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
-        """Start time of each entry in seconds from the bundle origin."""
+        """Start time of each entry in seconds from the recording start."""
         return self.time_us / MICROSECONDS_PER_SECOND
 
     def __len__(self) -> int:

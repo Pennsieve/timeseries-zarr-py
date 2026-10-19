@@ -39,7 +39,7 @@ class ContinuousAttrs:
     """Parsed tsz fields of a continuous channel group.
 
     rate_hz is the sample rate in hertz. offset_us is the time of sample 0
-    in microseconds from the bundle origin. id and provenance are None when
+    in microseconds from the recording start. id and provenance are None when
     the group omits them.
     """
 

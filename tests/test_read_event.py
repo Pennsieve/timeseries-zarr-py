@@ -383,7 +383,7 @@ def test_read_counts_past_the_last_bin_is_empty(odd):
     assert counts.time_us.shape == (0,)
 
 
-def test_count_bins_start_at_the_bundle_origin():
+def test_count_bins_start_at_the_recording_start():
     channel = _built(
         {"events": [5000, 6000, 7500], "1/count": _counts(8, 1)},
         groups=_levels(1000.0),

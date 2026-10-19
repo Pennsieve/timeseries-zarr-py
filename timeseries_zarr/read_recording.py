@@ -30,32 +30,36 @@ _JSON_TYPE_NAMES: Mapping[type, str] = {
 class Recording:
     """Identity and wall-clock times read from recording.json.
 
-    session_start_time is the instant the recording session began.
-    timestamps_reference_time is the wall-clock instant of the bundle origin,
-    time zero of every time in the bundle. Each time carries the UTC offset
-    the file gives it and is None when the file omits it. subject, session,
-    and source are producer-defined objects, read-only after parsing and empty
-    when the file omits them.
+    start_time is the recording start, the wall-clock instant every time in
+    the bundle counts from. session_start_time is the start_time of the
+    session object, the instant the session began. Each carries the UTC
+    offset the file gives it and is None when the file omits it. subject,
+    session, and source are producer-defined objects, read-only after parsing
+    and empty when the file omits them. session keeps its start_time entry.
     """
 
+    start_time: datetime | None = None
     session_start_time: datetime | None = None
-    timestamps_reference_time: datetime | None = None
     subject: Mapping[str, object] = field(default=_EMPTY, hash=False)
     session: Mapping[str, object] = field(default=_EMPTY, hash=False)
     source: Mapping[str, object] = field(default=_EMPTY, hash=False)
 
 
-def _optional_time(document: Mapping[str, object], key: str) -> datetime | None:
+def _optional_time(
+    document: Mapping[str, object], key: str, name: str | None = None
+) -> datetime | None:
     """Return the RFC 3339 time under key, or None when key is absent.
 
-    The letters T and Z may be lowercase. A leap second, second 60, reads as
-    the first instant of the next minute. The result drops any fraction
-    finer than a microsecond. Raises ValueError if the value is not a string,
-    does not parse, lies past the year 9999, or has no UTC offset.
+    name is how an error names the key, and defaults to key. The letters T
+    and Z may be lowercase. A leap second, second 60, reads as the first
+    instant of the next minute. The result drops any fraction finer than a
+    microsecond. Raises ValueError if the value is not a string, does not
+    parse, lies past the year 9999, or has no UTC offset.
     """
     if key not in document:
         return None
     value = document[key]
+    key = key if name is None else name
     if not isinstance(value, str):
         raise ValueError(
             f"recording.json: {key} must be a string, got {value!r}"
@@ -113,18 +117,19 @@ def _optional_object(
 def parse_recording_document(document: Mapping[str, object]) -> Recording:
     """Return the Recording that a parsed recording.json document describes.
 
-    parse_recording_document reads only session_start_time,
-    timestamps_reference_time, subject, session, and source. Raises
-    ValueError if a time is not an RFC 3339 string with a UTC offset, if a
-    time lies past the year 9999, or if an object key holds a non-object.
+    parse_recording_document reads only start_time, subject, session, source,
+    and the start_time of session. Raises ValueError if a time is not an RFC
+    3339 string with a UTC offset, if a time lies past the year 9999, or if an
+    object key holds a non-object.
     """
+    session = _optional_object(document, "session")
     return Recording(
-        session_start_time=_optional_time(document, "session_start_time"),
-        timestamps_reference_time=_optional_time(
-            document, "timestamps_reference_time"
+        start_time=_optional_time(document, "start_time"),
+        session_start_time=_optional_time(
+            session, "start_time", "session.start_time"
         ),
         subject=_optional_object(document, "subject"),
-        session=_optional_object(document, "session"),
+        session=session,
         source=_optional_object(document, "source"),
     )
 
