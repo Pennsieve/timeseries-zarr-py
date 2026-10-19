@@ -9,6 +9,7 @@ import zarr
 
 from timeseries_zarr.attrs import (
     ContinuousAttrs,
+    CountLevelAttrs,
     EventAttrs,
     WaveformAttrs,
     continuous_channel_attrs,
@@ -16,6 +17,7 @@ from timeseries_zarr.attrs import (
     level_group_attrs,
     parse_channel_kind,
     parse_continuous_attrs,
+    parse_count_level_attrs,
     parse_event_attrs,
     parse_level_attrs,
     parse_version,
@@ -285,6 +287,7 @@ _EVENT = {"kind": "event", "name": "marks"}
 _HUGE = 10**400
 _INT64_MAX = 2**63 - 1
 _INTEGER = "an integer from 0 to 2^63 - 1"
+_ANY_INTEGER = "an integer from -2^63 to 2^63 - 1"
 
 
 def test_tsz_fields_returns_the_tsz_object():
@@ -509,18 +512,17 @@ def test_parse_continuous_attrs_rejects_a_missing_required_key(
         ("rate_hz", "512", "a finite number above 0"),
         ("rate_hz", True, "a finite number above 0"),
         ("rate_hz", None, "a finite number above 0"),
-        ("offset_us", -1, _INTEGER),
-        ("offset_us", -1.0, _INTEGER),
-        ("offset_us", 1.5, _INTEGER),
-        ("offset_us", float("nan"), _INTEGER),
-        ("offset_us", float("inf"), _INTEGER),
-        ("offset_us", "0", _INTEGER),
-        ("offset_us", True, _INTEGER),
-        ("offset_us", False, _INTEGER),
-        ("offset_us", None, _INTEGER),
-        ("offset_us", _INT64_MAX + 1, _INTEGER),
-        ("offset_us", float(_INT64_MAX + 1), _INTEGER),
-        ("offset_us", _HUGE, _INTEGER),
+        ("offset_us", 1.5, _ANY_INTEGER),
+        ("offset_us", float("nan"), _ANY_INTEGER),
+        ("offset_us", float("inf"), _ANY_INTEGER),
+        ("offset_us", "0", _ANY_INTEGER),
+        ("offset_us", True, _ANY_INTEGER),
+        ("offset_us", False, _ANY_INTEGER),
+        ("offset_us", None, _ANY_INTEGER),
+        ("offset_us", _INT64_MAX + 1, _ANY_INTEGER),
+        ("offset_us", -_INT64_MAX - 2, _ANY_INTEGER),
+        ("offset_us", float(_INT64_MAX + 1), _ANY_INTEGER),
+        ("offset_us", _HUGE, _ANY_INTEGER),
         ("provenance", [1, 2], "an object"),
         ("provenance", "acquire 4.1", "an object"),
         ("provenance", True, "an object"),
@@ -546,6 +548,64 @@ def test_parse_continuous_attrs_accepts_the_largest_int64_offset():
         {"tsz": {**_CONTINUOUS, "offset_us": _INT64_MAX}}, "channel 0"
     )
     assert parsed.offset_us == _INT64_MAX
+
+
+def test_parse_continuous_attrs_accepts_a_negative_offset():
+    parsed = parse_continuous_attrs(
+        {"tsz": {**_CONTINUOUS, "offset_us": -32_000}}, "channel 0"
+    )
+    assert parsed.offset_us == -32_000
+    lowest = parse_continuous_attrs(
+        {"tsz": {**_CONTINUOUS, "offset_us": -_INT64_MAX - 1}}, "channel 0"
+    )
+    assert lowest.offset_us == -_INT64_MAX - 1
+
+
+def test_parse_continuous_attrs_rejects_an_offset_below_int64():
+    with pytest.raises(
+        ValueError,
+        match=r"channel 0: tsz.offset_us must be an integer from -2\^63 to",
+    ):
+        parse_continuous_attrs(
+            {"tsz": {**_CONTINUOUS, "offset_us": -_INT64_MAX - 2}}, "channel 0"
+        )
+
+
+@pytest.mark.parametrize("offset_us", [0, 16_000, -32_000])
+def test_parse_count_level_attrs_reads_back_what_the_builder_writes(offset_us):
+    attributes = _stored(level_group_attrs(16_000.0, offset_us))
+    parsed = parse_count_level_attrs(attributes, "channel 4 count level 1")
+    assert parsed == CountLevelAttrs(period_us=16_000.0, offset_us=offset_us)
+
+
+def test_parse_count_level_attrs_defaults_the_offset_to_0():
+    parsed = parse_count_level_attrs(
+        {"tsz": {"period_us": 1000}}, "channel 4 count level 1"
+    )
+    assert parsed == CountLevelAttrs(period_us=1000.0, offset_us=0)
+    assert type(parsed.period_us) is float
+
+
+def test_parse_count_level_attrs_rejects_an_offset_off_the_grid():
+    with pytest.raises(
+        ValueError,
+        match=(
+            "^channel 4 count level 1: tsz.offset_us must be a multiple of "
+            "period_us 1000.0, got 500$"
+        ),
+    ):
+        parse_count_level_attrs(
+            {"tsz": {"period_us": 1000, "offset_us": 500}},
+            "channel 4 count level 1",
+        )
+
+
+def test_parse_count_level_attrs_rejects_an_offset_that_is_not_an_integer():
+    with pytest.raises(ValueError, match="offset_us must be an integer"):
+        parse_count_level_attrs(
+            {"tsz": {"period_us": 1000, "offset_us": "0"}},
+            "channel 4 count level 1",
+        )
 
 
 def test_parse_event_attrs_reads_back_a_minimal_group():

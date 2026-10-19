@@ -81,11 +81,11 @@ def test_recording_reads_the_identity_and_no_time_from_a_legacy_start_key(
     assert recording.subject["id"] == "sub-synth01"
     assert recording.session["id"] == "ses-01"
     assert recording.source["seed"] == 2026
-    assert recording.start_time is None
+    assert recording.reference_time is None
     assert recording.session_start_time is None
 
 
-def test_first_mark_is_37_54_seconds_after_the_recording_start(bundle):
+def test_first_mark_is_37_54_seconds_after_the_reference_time(bundle):
     assert bundle.events[4].read().time_us[0] == 37_540_283
 
 

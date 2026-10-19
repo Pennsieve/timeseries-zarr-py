@@ -1,7 +1,7 @@
 """Records and window reads for the continuous channels of a bundle.
 
-Every time argument is an integer count of microseconds from the recording
-start. A window is half-open, and a read widens it outward to whole samples
+Every time argument is an integer count of microseconds from the reference
+time. A window is half-open, and a read widens it outward to whole samples
 or whole bins.
 """
 
@@ -69,7 +69,7 @@ class Samples:
     """Raw samples of a continuous channel in a window.
 
     values[i] is sample first + i, at offset_us + (first + i) * period_us
-    microseconds from the recording start. A NaN value is a gap.
+    microseconds from the reference time. A NaN value is a gap.
     """
 
     offset_us: int
@@ -79,12 +79,12 @@ class Samples:
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
-        """Time of each sample in microseconds from the recording start."""
+        """Time of each sample in microseconds from the reference time."""
         return time_axis(self.first, len(self), self.offset_us, self.period_us)
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
-        """Time of each sample in seconds from the recording start."""
+        """Time of each sample in seconds from the reference time."""
         return self.time_us / MICROSECONDS_PER_SECOND
 
     def __len__(self) -> int:
@@ -111,7 +111,7 @@ class Bins:
     """Statistics of the bins of one level in a window.
 
     Entry i describes bin first + i, which starts at offset_us + (first + i)
-    * period_us microseconds from the recording start. min and max are the two
+    * period_us microseconds from the reference time. min and max are the two
     columns of minmax. mean, var, and count are None when the level does not
     hold them. A bin with a non-finite sample has NaN statistics, and count
     holds the number of its finite samples.
@@ -129,12 +129,12 @@ class Bins:
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
-        """Start time of each bin in microseconds from the recording start."""
+        """Start time of each bin in microseconds from the reference time."""
         return time_axis(self.first, len(self), self.offset_us, self.period_us)
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
-        """Start time of each bin in seconds from the recording start."""
+        """Start time of each bin in seconds from the reference time."""
         return self.time_us / MICROSECONDS_PER_SECOND
 
     def __len__(self) -> int:
@@ -232,12 +232,12 @@ class ContinuousChannel:
 
     @property
     def start_us(self) -> int:
-        """Time of sample 0 in microseconds from the recording start."""
+        """Time of sample 0 in microseconds from the reference time."""
         return self.offset_us
 
     @property
     def end_us(self) -> int:
-        """End of the last sample in microseconds from the recording start.
+        """End of the last sample in microseconds from the reference time.
 
         The end rounds up to a whole microsecond. A window from start_us to
         end_us holds every sample. A channel with no samples has end_us equal

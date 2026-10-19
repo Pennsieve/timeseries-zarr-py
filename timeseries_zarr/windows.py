@@ -2,7 +2,7 @@
 
 A grid holds equal-width entries. The raw samples of a channel form one grid,
 and so do the bins of each level and of each count level. Entry i of a grid
-starts at offset_us + i * period microseconds from the recording start. Index
+starts at offset_us + i * period microseconds from the reference time. Index
 arithmetic is exact in Fraction, and a computed time axis is float64. The
 module also checks the integer arguments of a read and parses the decimal
 names of channel groups and level groups. It checks a label range and a
@@ -104,7 +104,7 @@ def index_range(
 ) -> tuple[int, int]:
     """Return the half-open index range of the grid entries in a time window.
 
-    The window is [start_us, end_us) in microseconds from the recording start,
+    The window is [start_us, end_us) in microseconds from the reference time,
     and a None bound leaves that side open. The grid holds length entries of
     period microseconds from offset_us. Every entry that overlaps the window
     is in the range, and an entry that starts at end_us is not. Equal bounds

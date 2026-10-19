@@ -383,15 +383,41 @@ def test_read_counts_past_the_last_bin_is_empty(odd):
     assert counts.time_us.shape == (0,)
 
 
-def test_count_bins_start_at_the_recording_start():
+def test_count_bins_start_at_the_reference_time_without_an_offset():
     channel = _built(
         {"events": [5000, 6000, 7500], "1/count": _counts(8, 1)},
         groups=_levels(1000.0),
     )
+    assert channel.count_levels[1].offset_us == 0
     counts = channel.read_counts(5000, 6000, level=1)
-    assert (counts.first, len(counts)) == (5, 1)
+    assert (counts.first, len(counts), counts.offset_us) == (5, 1, 0)
     assert counts.time_us.tolist() == [5000.0]
     assert channel.level_for(8000, 13_000, bins=1) == 0
+
+
+def test_count_bins_start_at_the_level_offset():
+    channel = _built(
+        {"events": [-4000, -2500, 1000], "1/count": _counts(6, 1)},
+        groups={"1": {"tsz": {"period_us": 1000.0, "offset_us": -4000}}},
+    )
+    assert channel.count_levels[1].offset_us == -4000
+    counts = channel.read_counts(-3000, -1000, level=1)
+    assert (counts.first, len(counts), counts.offset_us) == (1, 2, -4000)
+    assert counts.time_us.tolist() == [-3000.0, -2000.0]
+    assert channel.read_counts(level=1).time_us[0] == -4000.0
+    assert len(channel.read_counts(2000, 9000, level=1)) == 0
+    assert channel.level_for(-4000, 2000, bins=6) == 1
+    assert channel.level_for(bins=6) == 1
+
+
+def test_count_level_rejects_an_offset_off_the_grid():
+    with pytest.raises(
+        ValueError, match="count level 1: tsz.offset_us must be a multiple of"
+    ):
+        _built(
+            {"events": [5000], "1/count": _counts(8, 1)},
+            groups={"1": {"tsz": {"period_us": 1000.0, "offset_us": 500}}},
+        )
 
 
 def test_count_windows_use_the_exact_period():
@@ -1481,6 +1507,7 @@ def test_records_built_by_hand_derive_their_time_axes_and_names():
         level=2,
         first=3,
         period_us=4000.0,
+        offset_us=0,
         count=np.zeros((2, 1), np.uint32),
         label_names=None,
     )
@@ -1650,6 +1677,7 @@ def test_counts_columns_reject_label_names_that_cannot_name_columns(
         level=1,
         first=0,
         period_us=1000.0,
+        offset_us=0,
         count=np.zeros((2, 2), np.uint32),
         label_names=label_names,
     )

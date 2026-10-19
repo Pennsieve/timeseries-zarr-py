@@ -1,7 +1,7 @@
 """Records and window reads for the event channels of a bundle.
 
-Every time argument is an integer count of microseconds from the recording
-start, and a window is half-open.
+Every time argument is an integer count of microseconds from the reference
+time, and a window is half-open.
 """
 
 import math
@@ -15,8 +15,8 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.attrs import (
+    parse_count_level_attrs,
     parse_event_attrs,
-    parse_level_attrs,
     parse_waveform_attrs,
 )
 from timeseries_zarr.columns import decode_channels_rows, decode_event_text
@@ -209,13 +209,16 @@ class Snippets:
 class CountLevel:
     """One count level of an event channel.
 
-    period_us is the bin width in microseconds. Bin i starts i * period_us
-    microseconds after the recording start. count is a rank-2 zarr array whose
-    entry (i, j) is the number of events of label j that start in bin i.
+    period_us is the bin width in microseconds. offset_us is the time of bin
+    0 in microseconds from the reference time, a multiple of period_us, and
+    may be negative. Bin i starts at offset_us + i * period_us. count is a
+    rank-2 zarr array whose entry (i, j) is the number of events of label j
+    that start in bin i.
     """
 
     number: int
     period_us: float
+    offset_us: int
     count: ZarrArray
 
     @property
@@ -234,25 +237,26 @@ class Counts:
     """Event counts of one count level in a window.
 
     count[i, j] is the number of events of label j that start in bin
-    first + i. That bin starts at (first + i) * period_us microseconds from
-    the recording start. label_names names each label column, or is None when
-    the channel has no label_names.
+    first + i. That bin starts at offset_us + (first + i) * period_us
+    microseconds from the reference time. label_names names each label
+    column, or is None when the channel has no label_names.
     """
 
     level: int
     first: int
     period_us: float
+    offset_us: int
     count: npt.NDArray[np.integer[Any]]
     label_names: tuple[str, ...] | None
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
-        """Start time of each bin in microseconds from the recording start."""
-        return time_axis(self.first, len(self), 0, self.period_us)
+        """Start time of each bin in microseconds from the reference time."""
+        return time_axis(self.first, len(self), self.offset_us, self.period_us)
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
-        """Start time of each bin in seconds from the recording start."""
+        """Start time of each bin in seconds from the reference time."""
         return self.time_us / MICROSECONDS_PER_SECOND
 
     def __len__(self) -> int:
@@ -297,8 +301,8 @@ class Counts:
 class EventTable:
     """The events of an event channel in a window, one row per event.
 
-    time_us is the time of each event in microseconds from the recording
-    start, in non-decreasing order. duration_us is in microseconds. value
+    time_us is the time of each event in microseconds from the reference
+    time, in non-decreasing order. duration_us is in microseconds. value
     is in the unit of the channel. text holds the decoded text of each
     event. channel_keys lists the channel keys each event applies to, and
     an empty list means the whole recording. waveform holds the snippet of
@@ -333,7 +337,7 @@ class EventTable:
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
-        """Time of each event in seconds from the recording start."""
+        """Time of each event in seconds from the reference time."""
         return np.asarray(
             self.time_us / MICROSECONDS_PER_SECOND, dtype=np.float64
         )
@@ -598,12 +602,17 @@ class EventChannel:
             raise ValueError(self._count_level_choices(number))
         start, end = window_bounds(start_us, end_us)
         first, stop = index_range(
-            start, end, 0, Fraction(chosen.period_us), chosen.bins
+            start,
+            end,
+            chosen.offset_us,
+            Fraction(chosen.period_us),
+            chosen.bins,
         )
         return Counts(
             level=chosen.number,
             first=first,
             period_us=chosen.period_us,
+            offset_us=chosen.offset_us,
             count=read_rows(chosen.count, first, stop),
             label_names=self.label_names,
         )
@@ -639,7 +648,11 @@ class EventChannel:
         counts: dict[int, int] = {}
         for number, chosen in self.count_levels.items():
             first, stop = index_range(
-                start, end, 0, Fraction(chosen.period_us), chosen.bins
+                start,
+                end,
+                chosen.offset_us,
+                Fraction(chosen.period_us),
+                chosen.bins,
             )
             counts[number] = stop - first
         return select_level(counts, wanted)
@@ -847,16 +860,16 @@ def _parse_count_levels(
 
     Raises ValueError if a count level is an array, the level numbers have a
     gap, or a level lacks period_us or count. It also raises ValueError if
-    count is not a rank-2 integer array or the levels disagree on the number
-    of labels. So does a period_us that is not DECIMATION_FACTOR times the
-    one before it.
+    offset_us is not a multiple of period_us, if count is not a rank-2
+    integer array, or if the levels disagree on the number of labels. So does
+    a period_us that is not DECIMATION_FACTOR times the one before it.
     """
     check_level_arrays(where, "count level", COUNT_KEY, arrays)
     numbers = check_level_numbers(where, "count levels", groups)
     levels: dict[int, CountLevel] = {}
     for number in numbers:
         level_where = f"{where} count level {number}"
-        period_us = parse_level_attrs(groups[str(number)].attrs, level_where)
+        attrs = parse_count_level_attrs(groups[str(number)].attrs, level_where)
         count = _required(
             arrays.get(f"{number}/{COUNT_KEY}"),
             level_where,
@@ -866,9 +879,14 @@ def _parse_count_levels(
         )
         previous = levels.get(number - 1)
         if previous is not None:
-            _check_period(level_where, period_us, previous)
+            _check_period(level_where, attrs.period_us, previous)
         _check_label_columns(level_where, count, levels.get(1), label_names)
-        levels[number] = CountLevel(number, period_us, count)
+        levels[number] = CountLevel(
+            number=number,
+            period_us=attrs.period_us,
+            offset_us=attrs.offset_us,
+            count=count,
+        )
     return MappingProxyType(levels)
 
 

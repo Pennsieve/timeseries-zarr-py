@@ -104,8 +104,8 @@ order. `bundle.channel` finds a channel by
 name, or by id when no name matches. It raises `KeyError` when neither matches and
 `ValueError` when several channels share the name or the id. `bundle.recording` holds
 the parsed `recording.json` as a `Recording`, or `None` when the bundle has none. Its
-`start_time` and `session_start_time` are timezone-aware datetimes or `None`, and the
-second reads the `start_time` of the `session` object. A leap second, second 60, reads as the first instant of the next minute. Its
+`reference_time` and `session_start_time` are timezone-aware datetimes or `None`, and
+the second reads the `start_time` of the `session` object. A leap second, second 60, reads as the first instant of the next minute. Its
 `subject`, `session`, and `source` are read-only mappings, empty when the
 file omits them. A `Bundle` is a context manager, and `close` closes its store.
 
@@ -120,9 +120,9 @@ raises `FileNotFoundError`, and a location whose root is an array raises `ValueE
 
 ## Times
 
-Every window bound is an integer count of microseconds from the recording start. The
-[timeline](./spec.md#timeline) section of the specification defines the recording
-start. A window
+Every window bound is an integer count of microseconds from the reference time, and a
+time before it is negative. The [timeline](./spec.md#timeline) section of the
+specification defines the reference time. A window
 bound, `level`, `bins`, and `gap_us` each take an `int` or a numpy integer. A `float`
 raises `TypeError`. If you hold a time in seconds, convert it with
 `round(seconds * 1e6)`.
@@ -147,15 +147,15 @@ with open_bundle("synthetic.tszarr") as bundle:
 
 `bundle.datetimes(time_us)` returns the UTC wall-clock time of each time as
 `datetime64[us]`. It rounds each time to the nearest microsecond, with a tie going to
-the even one, and adds it to the `start_time` of `recording.json`. A NaN gives NaT. A
-bundle whose `recording.json` holds no `start_time` raises `ValueError`, and
+the even one, and adds it to the `reference_time` of `recording.json`. A NaN gives NaT.
+A bundle whose `recording.json` holds no `reference_time` raises `ValueError`, and
 `synthetic.tszarr` is such a bundle.
 
 ```python
 from timeseries_zarr import open_bundle
 
 with open_bundle("tones.zarr") as bundle:
-    print(bundle.recording.start_time)
+    print(bundle.recording.reference_time)
     samples = bundle.continuous[0].read(1_500_000, 1_503_000)
     print(bundle.datetimes(samples.time_us))
 ```
@@ -208,7 +208,7 @@ with open_bundle("synthetic.tszarr") as bundle:
         print(level, type(result).__name__, len(result), result.first)
 ```
 
-Channel 1 of `synthetic.tszarr` starts 500000 microseconds after the recording start. In this
+Channel 1 of `synthetic.tszarr` starts 500000 microseconds after the reference time. In this
 example, the read of a window that starts before the channel begins with bin 0. A window
 that ends at the channel start is empty, and a window that runs past the channel end
 reads the 128 samples that exist.
@@ -313,7 +313,8 @@ gives the number of samples in each snippet. `channel.waveforms` and
 every row as a `Waveform`. The rows of `waveform_mean` are labels, and `rows` names what
 a row stands for, `event` or `label`.
 
-`count_levels` maps each count level number, from 1, to a `CountLevel`. The
+`count_levels` maps each count level number, from 1, to a `CountLevel`, which carries
+`period_us` and `offset_us`, the time of its bin 0. The
 [event channels](./spec.md#event-channels) section of the specification defines the
 bins of a count level. `read_counts(start_us=None, end_us=None, *, level)` returns the
 bins that overlap the window as `Counts`. The bins widen the window, so their counts can
@@ -417,15 +418,16 @@ keeps every channel. `recording_meta(bundle)` returns the `RecordingMeta` that r
 `recording.json`, or `None` when the bundle has no `recording.json`.
 
 A writer source gives wall-clock times, and `bundle_sources` adds `epoch_us` to every
-stored time. `epoch_us` defaults to `start_time` in microseconds since the Unix epoch,
-or to 0 when the bundle has no `start_time`. The writer places the recording start of
-the copy at the earliest kept sample or event. A rewrite of every channel keeps every
-offset and event time. A rewrite that leaves out the channel at offset 0 shifts every
-stored time by the same amount, and every wall-clock time stays the same.
+stored time. `epoch_us` defaults to `reference_time` in microseconds since the Unix
+epoch, or to 0 when the bundle has no `reference_time`. `recording_meta` carries
+`reference_time`, and the writer uses it as it is, so a rewrite keeps every offset and
+event time, and a channel the copy keeps or adds that begins before it has a negative
+offset. A rewrite without a `RecordingMeta` places the reference time of the copy at
+the first kept sample, and every stored time shifts by the same amount.
 
-`recording_meta` carries `session.start_time` as `session_start_time`, and the writer
-puts it back. A bundle without `start_time` gives a `RecordingMeta` whose `wall_clock`
-is false, so its copy has no `start_time` either.
+`recording_meta` also carries `session.start_time` as `session_start_time`, and the
+writer puts it back. A bundle without `reference_time` gives a `RecordingMeta` whose
+`wall_clock` is false, so its copy has no `reference_time` either.
 
 The writer numbers the kept channels from 0, continuous channels first. A channel
 without an id takes its key, as a decimal string, as its id. `bundle_sources` raises

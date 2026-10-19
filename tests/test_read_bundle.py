@@ -45,8 +45,8 @@ _MIXED_KINDS = {
     3: "event",
     4: "event",
 }
-_NO_START = (
-    "recording.json holds no start_time; wall-clock times are unavailable"
+_NO_REFERENCE = (
+    "recording.json holds no reference_time; wall-clock times are unavailable"
 )
 _EACH_LOCATION_KIND = pytest.mark.parametrize(
     "make_location",
@@ -220,7 +220,7 @@ def test_bundle_has_no_instance_dict(mixed):
 
 
 def test_mixed_recording_holds_the_session_start_as_both_times(mixed):
-    assert mixed.recording.start_time == _SESSION
+    assert mixed.recording.reference_time == _SESSION
     assert mixed.recording.session_start_time == _SESSION
 
 
@@ -403,7 +403,7 @@ def test_open_bundle_resolves_a_relative_path_at_the_open(
 
 
 @_WARNINGS_AS_ERRORS
-def test_datetimes_counts_from_the_start_time_in_utc(mixed):
+def test_datetimes_counts_from_the_reference_time_in_utc(mixed):
     times = mixed.datetimes([0, 1_000_000])
     assert times.dtype == np.dtype("datetime64[us]")
     assert times.tolist() == [
@@ -509,10 +509,10 @@ def test_datetimes_accepts_the_largest_time_below_2_to_the_62(mixed):
 @pytest.mark.parametrize(
     "start", ["0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"]
 )
-def test_datetimes_rejects_a_start_time_outside_the_datetime_range(
+def test_datetimes_rejects_a_reference_time_outside_the_datetime_range(
     mixed_bundle, start
 ):
-    document = {"start_time": start}
+    document = {"reference_time": start}
     store = _copy(
         mixed_bundle, files={RECORDING_FILE: json.dumps(document).encode()}
     )
@@ -520,18 +520,20 @@ def test_datetimes_rejects_a_start_time_outside_the_datetime_range(
     with pytest.raises(
         ValueError,
         match=(
-            r"^recording\.json: start_time must fall within "
+            r"^recording\.json: reference_time must fall within "
             rf"years 1 through 9999 in UTC, got '{re.escape(start)}'$"
         ),
     ):
         bundle.datetimes([0])
 
 
-def test_datetimes_counts_from_the_start_time_when_it_precedes_the_session_start(
+def test_datetimes_counts_from_the_reference_time_when_it_precedes_the_session_start(
     write_mixed,
 ):
     bundle = open_bundle(write_mixed(base=_SESSION_US - 2_000_000))
-    assert bundle.recording.session_start_time != bundle.recording.start_time
+    assert (
+        bundle.recording.session_start_time != bundle.recording.reference_time
+    )
     assert bundle.datetimes([0])[0] == np.datetime64("2024-03-14T14:14:58")
 
 
@@ -544,9 +546,9 @@ def test_datetimes_places_the_event_times_on_the_wall_clock(mixed):
 
 
 @pytest.mark.parametrize("fixture", ["odd_bundle", "synthetic_bundle"])
-def test_datetimes_rejects_a_bundle_without_a_start_time(request, fixture):
+def test_datetimes_rejects_a_bundle_without_a_reference_time(request, fixture):
     bundle = open_bundle(request.getfixturevalue(fixture))
-    with pytest.raises(ValueError, match=f"^{_NO_START}$"):
+    with pytest.raises(ValueError, match=f"^{_NO_REFERENCE}$"):
         bundle.datetimes([0])
 
 
@@ -554,8 +556,8 @@ def test_datetimes_rejects_a_recording_without_wall_clock_times(write_mixed):
     undated = RecordingMeta(subject={"id": "sub-0931"}, wall_clock=False)
     bundle = open_bundle(write_mixed(recording=undated))
     assert bundle.recording.subject == {"id": "sub-0931"}
-    assert bundle.recording.start_time is None
-    with pytest.raises(ValueError, match=f"^{_NO_START}$"):
+    assert bundle.recording.reference_time is None
+    with pytest.raises(ValueError, match=f"^{_NO_REFERENCE}$"):
         bundle.datetimes([0])
 
 
@@ -568,7 +570,7 @@ def test_datetimes_rejects_a_recording_with_only_a_session_start(
     )
     bundle = open_bundle(store)
     assert bundle.recording.session_start_time == _SESSION
-    with pytest.raises(ValueError, match=f"^{_NO_START}$"):
+    with pytest.raises(ValueError, match=f"^{_NO_REFERENCE}$"):
         bundle.datetimes([0])
 
 
