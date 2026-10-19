@@ -1,9 +1,13 @@
+import re
+
 import numpy as np
 import pytest
 
 from timeseries_zarr.columns import (
     channels_rows,
     channels_width,
+    decode_channels_rows,
+    decode_text_rows,
     text_rows,
     text_width,
 )
@@ -23,7 +27,7 @@ _MIXED = [
     "",
     "caf\N{LATIN SMALL LETTER E WITH ACUTE}",
     "\N{CJK UNIFIED IDEOGRAPH-65E5}\N{CJK UNIFIED IDEOGRAPH-672C}\N{CJK UNIFIED IDEOGRAPH-8A9E}",
-    "\U0001f9e0",
+    "\N{BRAIN}",
     "x",
 ]
 
@@ -39,7 +43,7 @@ _MIXED = [
             ],
             9,
         ),
-        (["\U0001f9e0"], 4),
+        (["\N{BRAIN}"], 4),
         (["ab", "\N{LATIN SMALL LETTER E WITH ACUTE}"], 2),
         ([], 0),
         (["", ""], 0),
@@ -231,3 +235,180 @@ def test_channels_rows_rejects_a_key_outside_zero_to_max_key(keys):
 def test_channels_rows_rejects_a_negative_max_key():
     with pytest.raises(ValueError, match="max_key"):
         channels_rows([[0]], -1)
+
+
+def _byte_rows(*rows):
+    return np.array(rows, dtype=np.uint8).reshape(len(rows), -1)
+
+
+def test_decode_text_rows_inverts_text_rows_on_mixed_text():
+    rows = text_rows(_MIXED, text_width(_MIXED))
+    assert decode_text_rows(rows) == _MIXED
+
+
+def test_decode_text_rows_inverts_text_rows_on_many_random_strings():
+    rng = np.random.default_rng(2)
+    alphabet = list(
+        "abc {}:\N{LATIN SMALL LETTER E WITH ACUTE}"
+        "\N{GREEK SMALL LETTER MU}\N{CJK UNIFIED IDEOGRAPH-65E5}\N{BRAIN}"
+    )
+    strings = [
+        "".join(rng.choice(alphabet, int(rng.integers(0, 16))))
+        for _ in range(3000)
+    ]
+    rows = text_rows(strings, text_width(strings) + 3)
+    assert decode_text_rows(rows) == strings
+
+
+def test_decode_text_rows_reads_a_row_with_no_zero_byte_as_the_whole_row():
+    text = "spike-wave discharge, left temporal"
+    rows = text_rows([text, "x"], len(text))
+    assert np.all(rows[0] != 0)
+    assert decode_text_rows(rows) == [text, "x"]
+
+
+def test_decode_text_rows_reads_a_full_width_row_of_multibyte_characters():
+    text = "caf\N{LATIN SMALL LETTER E WITH ACUTE}"
+    assert decode_text_rows(text_rows([text], 5)) == [text]
+
+
+def test_decode_text_rows_stops_at_the_first_zero_byte_inside_a_row():
+    rows = _byte_rows([97, 98, 0, 99, 100], [0, 101, 0, 0, 0])
+    assert decode_text_rows(rows) == ["ab", ""]
+
+
+def test_decode_text_rows_ignores_invalid_utf8_after_the_first_zero_byte():
+    rows = _byte_rows([97, 0, 0xFF, 0xFE])
+    assert decode_text_rows(rows) == ["a"]
+
+
+def test_decode_text_rows_reads_a_row_of_zeros_as_the_empty_string():
+    rows = np.zeros((3, 4), dtype=np.uint8)
+    assert decode_text_rows(rows) == ["", "", ""]
+
+
+def test_decode_text_rows_gives_one_empty_string_per_row_at_width_zero():
+    rows = np.zeros((4, 0), dtype=np.uint8)
+    assert decode_text_rows(rows) == ["", "", "", ""]
+
+
+@pytest.mark.parametrize("width", [0, 6])
+def test_decode_text_rows_gives_an_empty_list_for_zero_rows(width):
+    assert decode_text_rows(np.zeros((0, width), dtype=np.uint8)) == []
+
+
+def test_decode_text_rows_reads_rows_of_a_strided_view():
+    rows = text_rows(["ab", "cd", "ef"], 2)
+    assert decode_text_rows(rows[::2]) == ["ab", "ef"]
+    assert decode_text_rows(rows.T) == ["ace", "bdf"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        [0xFF, 0, 0],
+        [97, 0xC3, 0],
+        [0xE6, 0x97],
+        [0xED, 0xA0, 0x80],
+    ],
+)
+def test_decode_text_rows_rejects_invalid_utf8_naming_the_row(bad):
+    rows = np.zeros((3, len(bad)), dtype=np.uint8)
+    rows[0, 0] = 97
+    rows[2] = bad
+    with pytest.raises(ValueError, match="text row 2 is not valid UTF-8"):
+        decode_text_rows(rows)
+
+
+def test_decode_text_rows_names_the_byte_where_the_utf8_breaks():
+    rows = _byte_rows([97, 98, 0xFF, 0])
+    with pytest.raises(ValueError, match="row 0 is not valid UTF-8 at byte 2"):
+        decode_text_rows(rows)
+
+
+@pytest.mark.parametrize("shape", [(4,), (2, 3, 4), ()])
+def test_decode_text_rows_rejects_an_array_that_is_not_rank_2(shape):
+    rows = np.zeros(shape, dtype=np.uint8)
+    with pytest.raises(
+        ValueError, match=re.escape(f"rank 2, got shape {shape}")
+    ):
+        decode_text_rows(rows)
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.uint16, np.int8])
+def test_decode_text_rows_rejects_a_dtype_other_than_uint8(dtype):
+    rows = np.zeros((2, 3), dtype=dtype)
+    with pytest.raises(ValueError, match="dtype uint8"):
+        decode_text_rows(rows)
+
+
+def test_decode_channels_rows_inverts_channels_rows_on_many_random_key_sets():
+    rng = np.random.default_rng(3)
+    key_sets = [
+        sorted(set(rng.integers(0, 40, int(rng.integers(0, 8))).tolist()))
+        for _ in range(3000)
+    ]
+    assert decode_channels_rows(channels_rows(key_sets, 39)) == key_sets
+
+
+@pytest.mark.parametrize(
+    ("row", "expected"),
+    [
+        ([1, 0], [0]),
+        ([128, 0], [7]),
+        ([0, 1], [8]),
+        ([0b10000001, 0b00000010], [0, 7, 9]),
+        ([0, 128], [15]),
+        ([255, 255], list(range(16))),
+    ],
+)
+def test_decode_channels_rows_reads_key_k_from_bit_k_mod_8_of_byte_k_div_8(
+    row, expected
+):
+    assert decode_channels_rows(_byte_rows(row)) == [expected]
+
+
+def test_decode_channels_rows_reads_keys_above_7_across_3_bytes():
+    rows = channels_rows([[3, 8, 23], [16, 2]], 23)
+    assert rows.shape == (2, 3)
+    assert decode_channels_rows(rows) == [[3, 8, 23], [2, 16]]
+
+
+def test_decode_channels_rows_gives_each_repeated_key_once_in_ascending_order():
+    rows = channels_rows([[9, 5, 1, 9, 5, 1]], 15)
+    assert decode_channels_rows(rows) == [[1, 5, 9]]
+
+
+def test_decode_channels_rows_reads_a_row_of_zeros_as_the_whole_recording():
+    rows = channels_rows([[], [2], []], 7)
+    assert decode_channels_rows(rows) == [[], [2], []]
+
+
+def test_decode_channels_rows_gives_an_empty_list_for_zero_rows():
+    assert decode_channels_rows(np.zeros((0, 2), dtype=np.uint8)) == []
+
+
+def test_decode_channels_rows_gives_empty_key_lists_at_width_zero():
+    rows = np.zeros((2, 0), dtype=np.uint8)
+    assert decode_channels_rows(rows) == [[], []]
+
+
+def test_decode_channels_rows_returns_python_integers():
+    keys = decode_channels_rows(channels_rows([[0, 9]], 9))[0]
+    assert all(type(key) is int for key in keys)
+
+
+@pytest.mark.parametrize("shape", [(4,), (2, 3, 4), ()])
+def test_decode_channels_rows_rejects_an_array_that_is_not_rank_2(shape):
+    rows = np.zeros(shape, dtype=np.uint8)
+    with pytest.raises(
+        ValueError, match=re.escape(f"rank 2, got shape {shape}")
+    ):
+        decode_channels_rows(rows)
+
+
+@pytest.mark.parametrize("dtype", [np.int64, np.bool_])
+def test_decode_channels_rows_rejects_a_dtype_other_than_uint8(dtype):
+    rows = np.zeros((2, 1), dtype=dtype)
+    with pytest.raises(ValueError, match="dtype uint8"):
+        decode_channels_rows(rows)

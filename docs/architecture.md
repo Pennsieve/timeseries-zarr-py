@@ -62,12 +62,12 @@ Both writers read shard-sized blocks. Every write then covers a whole shard. A n
 write makes the sharding codec read the shard back, re-encode every inner chunk, and
 rewrite it. That costs about 10x the store traffic on a 16-chunk shard.
 
-`zarr_io.py` is the only module that imports `zarr`. Everything else is Zarr-agnostic. The
-Zarr v3 API surface this package depends on sits in one file.
+`zarr_io.py` is the only module that imports `zarr`. Other modules handle zarr groups
+and arrays through the `ZarrGroup` and `ZarrArray` aliases.
 
 `attrs.py` builds the attribute dicts. The format keeps them all under one `tsz` key.
 `recording.py` writes `recording.json`, the one plain file that holds identity and the
-wall-clock start.
+wall-clock times.
 
 ## Orchestration
 
@@ -79,3 +79,24 @@ the metadata, and writes `recording.json`.
 
 A converter calls `write_bundle` with its sources, a `WriteOpts`, and an optional
 `RecordingMeta`.
+
+## Read path
+
+`read_bundle.py` opens a bundle. `open_bundle` opens the root group through
+`zarr_io.py`, and `parse_bundle` builds every channel record from the consolidated
+metadata in the root `zarr.json`. `read_recording.py` parses `recording.json` into a
+`Recording`.
+
+`read_continuous.py` and `read_event.py` each parse one kind of channel group and hold
+the window reads of that kind. `windows.py` maps a time window to a range of samples
+or bins in exact fractions and computes the float64 time axis of a result. The parsers
+also read channel and level numbers from group names through it. `attrs.py` parses the
+`tsz` attributes beside its builders, and `columns.py` decodes the `text` and
+`channels` rows.
+
+`convert.py` turns read results into pandas and xarray objects. `extras.py` imports
+each package when a conversion runs and raises `ImportError` naming the extra when the
+package is missing. `stack.py` reads one window of several continuous
+channels that share a grid into one array. `sources.py` wraps the channels of an open
+bundle as writer sources for `write_bundle`, which then rewrites the bundle or a subset
+of it.

@@ -19,13 +19,23 @@ from timeseries_zarr.attrs import (
 )
 from timeseries_zarr.columns import channels_rows, channels_width, text_rows
 from timeseries_zarr.constants import (
+    CHANNELS_KEY,
+    COUNT_KEY,
     DECIMATION_FACTOR,
+    DURATIONS_KEY,
+    EVENT_DIMENSION,
+    EVENTS_KEY,
     FLOAT32_BYTES,
     INT64_BYTES,
+    LABEL_DIMENSION,
+    LABELS_KEY,
     MAX_LABELS,
+    TEXT_KEY,
+    TIME_DIMENSION,
     UINT8_BYTES,
     UINT16_BYTES,
     UINT32_BYTES,
+    WAVEFORM_MEAN_KEY,
 )
 from timeseries_zarr.counts import (
     EventBlock,
@@ -52,36 +62,6 @@ from timeseries_zarr.zarr_io import (
 
 WAVEFORM_MEAN_RANK: Final = 2
 """Rank of the waveform_mean array: one axis of labels, one of samples."""
-
-EVENTS_KEY: Final = "events"
-"""Key of the event time array within an event channel group."""
-
-DURATIONS_KEY: Final = "durations"
-"""Key of the per-event duration array within an event channel group."""
-
-LABELS_KEY: Final = "labels"
-"""Key of the per-event label array within an event channel group."""
-
-TEXT_KEY: Final = "text"
-"""Key of the per-event text array within an event channel group."""
-
-CHANNELS_KEY: Final = "channels"
-"""Key of the per-event channel bitmask array within an event channel group."""
-
-WAVEFORM_MEAN_KEY: Final = "waveform_mean"
-"""Key of the per-label mean snippet array within an event channel group."""
-
-COUNT_KEY: Final = "count"
-"""Key of the per-bin event count array within a count level group."""
-
-TIME_DIMENSION: Final = "time"
-"""Dimension name of the bin axis of a count level."""
-
-EVENT_DIMENSION: Final = "event"
-
-LABEL_DIMENSION: Final = "label"
-"""Dimension name of the label axis of a per-label array."""
-"""Dimension name of the per-event axis."""
 
 
 def _write_source_blocks[T: np.generic](

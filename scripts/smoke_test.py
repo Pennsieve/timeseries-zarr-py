@@ -7,12 +7,15 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-import zarr
 
 import timeseries_zarr as tsz
 
 SAMPLE_COUNT = 60_000
 PROVENANCE: dict[str, object] = {"software": "smoke-test 1.0"}
+WINDOW_START_US = 1_000_000
+WINDOW_END_US = 3_000_000
+WINDOW_START_SAMPLE = 1000
+WINDOW_END_SAMPLE = 3000
 
 warnings.filterwarnings(
     "ignore",
@@ -76,17 +79,53 @@ def main() -> None:
         tsz.write_bundle(
             [SineSource()], [], output_path=output_path, opts=tsz.WriteOpts()
         )
-        root = zarr.open_group(str(output_path), mode="r")
-        channel = root.get("0")
-        assert isinstance(channel, zarr.Group), "channel group missing"
-        assert dict(channel.attrs["tsz"]).get("id") == SineSource.id  # type: ignore[arg-type]
-        assert dict(channel.attrs["tsz"]).get("provenance") == PROVENANCE  # type: ignore[arg-type]
-        assert "1" in channel.group_keys(), "level 1 missing"
-        raw_array = channel.get("raw")
-        assert isinstance(raw_array, zarr.Array), "raw array missing"
-        raw = np.asarray(raw_array[:])
+        with tsz.open_bundle(output_path) as bundle:
+            channel = bundle.continuous.get(0)
+            assert channel is not None, "channel 0 missing"
+            assert channel.id == SineSource.id, (
+                f"channel id {channel.id!r}, expected {SineSource.id!r}"
+            )
+            assert channel.provenance == PROVENANCE, (
+                f"channel provenance {channel.provenance!r}, "
+                f"expected {PROVENANCE!r}"
+            )
+            level = channel.levels.get(1)
+            assert level is not None, "level 1 missing"
+            samples = channel.read(WINDOW_START_US, WINDOW_END_US)
+            bins = channel.read(level=1)
+            whole = channel.read()
+            numpy_bins = channel.read(
+                np.int64(WINDOW_START_US),
+                np.int64(WINDOW_END_US),
+                level=np.int64(1),
+            )
     expected = SineSource().read_samples(0, SAMPLE_COUNT)
-    assert np.array_equal(raw, expected), "raw samples differ"
+    assert whole.first == 0, (
+        f"whole read starts at sample {whole.first}, expected 0"
+    )
+    assert np.array_equal(whole.values, expected), "raw samples differ"
+    assert samples.first == WINDOW_START_SAMPLE, (
+        f"window starts at sample {samples.first}, "
+        f"expected {WINDOW_START_SAMPLE}"
+    )
+    window = expected[WINDOW_START_SAMPLE:WINDOW_END_SAMPLE]
+    assert np.array_equal(samples.values, window), "raw window differs"
+    assert isinstance(bins, tsz.Bins), "level 1 read returned samples"
+    assert len(bins) == level.bins, (
+        f"level 1 read {len(bins)} bins, expected {level.bins}"
+    )
+    blocks = expected.reshape(-1, level.samples_per_bin)
+    assert np.array_equal(bins.min, blocks.min(axis=1)), "level 1 min differs"
+    assert np.array_equal(bins.max, blocks.max(axis=1)), "level 1 max differs"
+    first_bin = WINDOW_START_SAMPLE // level.samples_per_bin
+    stop_bin = WINDOW_END_SAMPLE // level.samples_per_bin
+    assert isinstance(numpy_bins, tsz.Bins), "numpy level read returned samples"
+    assert numpy_bins.first == first_bin, (
+        f"numpy window starts at bin {numpy_bins.first}, expected {first_bin}"
+    )
+    assert np.array_equal(numpy_bins.min, bins.min[first_bin:stop_bin]), (
+        "numpy window differs"
+    )
     print(f"timeseries-zarr {tsz.__version__} OK")
 
 

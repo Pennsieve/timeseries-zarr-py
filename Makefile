@@ -20,14 +20,14 @@ help:
 venv:
 	$(PYTHON) -m venv $(VENV_DIR)
 	$(VENV_DIR)/bin/pip install --upgrade pip
-	$(VENV_DIR)/bin/pip install -e ".[test,dev]"
+	$(VENV_DIR)/bin/pip install -e ".[test,dev,pandas,xarray,remote]"
 	@echo ""
 	@echo "Virtual environment created. Activate with:"
 	@echo "  source $(VENV_DIR)/bin/activate"
 
 install:
 	$(VENV_DIR)/bin/pip install --upgrade pip
-	$(VENV_DIR)/bin/pip install -e ".[test,dev]"
+	$(VENV_DIR)/bin/pip install -e ".[test,dev,pandas,xarray,remote]"
 
 test:
 	$(VENV_DIR)/bin/python -m pytest tests/ -v

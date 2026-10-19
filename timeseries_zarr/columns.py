@@ -1,9 +1,11 @@
-"""Per-event column encoders for event channels."""
+"""Per-event column encoders and decoders for event channels."""
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 
 import numpy as np
 import numpy.typing as npt
+
+_ROW_RANK = 2
 
 
 def text_width(strings: Sequence[str]) -> int:
@@ -83,3 +85,76 @@ def channels_rows(
     bits = (1 << (keys & 7)).astype(np.uint8)
     np.bitwise_or.at(rows, (owner, keys >> 3), bits)
     return rows
+
+
+def _check_rows(rows: npt.NDArray[np.uint8]) -> None:
+    """Raise ValueError unless rows is a rank 2 uint8 array."""
+    if rows.ndim != _ROW_RANK:
+        raise ValueError(f"rows must have rank 2, got shape {rows.shape}")
+    if rows.dtype != np.uint8:
+        raise ValueError(f"rows must have dtype uint8, got {rows.dtype}")
+
+
+def decode_text_rows(rows: npt.NDArray[np.uint8]) -> list[str]:
+    """Decode rows of zero-padded UTF-8 bytes into one string per row.
+
+    Row i decodes the bytes before its first zero byte, or the whole row when
+    it holds no zero byte. A row of zeros gives the empty string, and so does
+    every row of width 0. An array with no rows gives an empty list. Raises
+    ValueError if rows is not a rank 2 uint8 array or a row is not valid
+    UTF-8.
+    """
+    _check_rows(rows)
+    return _decoded(
+        rows, range(rows.shape[0]), lambda index: f"text row {index}"
+    )
+
+
+def decode_event_text(
+    rows: npt.NDArray[np.uint8], indices: Iterable[int], where: str
+) -> list[str]:
+    """Decode the text rows of events as decode_text_rows does.
+
+    Row i holds the text of the event whose index is item i of indices, and
+    indices holds one index per row. where names the channel in an error
+    message. Raises ValueError if rows is not a rank 2 uint8 array or a row
+    is not valid UTF-8.
+    """
+    _check_rows(rows)
+    return _decoded(rows, indices, lambda index: f"{where}: event {index} text")
+
+
+def _decoded(
+    rows: npt.NDArray[np.uint8],
+    indices: Iterable[int],
+    subject: Callable[[int], str],
+) -> list[str]:
+    """Decode each row up to its first zero byte as UTF-8.
+
+    indices numbers the rows, and subject names a row by its number in an
+    error message. Raises ValueError if a row is not valid UTF-8.
+    """
+    strings = []
+    for index, row in zip(indices, rows, strict=True):
+        text = row.tobytes().partition(b"\0")[0]
+        try:
+            strings.append(text.decode("utf-8"))
+        except UnicodeDecodeError as error:
+            raise ValueError(
+                f"{subject(index)} is not valid UTF-8 at byte {error.start}"
+            ) from error
+    return strings
+
+
+def decode_channels_rows(rows: npt.NDArray[np.uint8]) -> list[list[int]]:
+    """Decode bitmask rows into the channel keys each row names.
+
+    Bit k mod 8 of byte k // 8, least significant bit first, names channel
+    key k. Row i gives its keys in ascending order. A row of zeros gives an
+    empty list, which means the event applies to the whole recording. An
+    array with no rows gives an empty list. Raises ValueError if rows is not a
+    rank 2 uint8 array.
+    """
+    _check_rows(rows)
+    bits = np.unpackbits(rows, axis=1, bitorder="little")
+    return [np.flatnonzero(row).tolist() for row in bits]

@@ -1,16 +1,37 @@
 import json
+import sys
 
 import numpy as np
 import pytest
-from zarr import Group
+import zarr
+from zarr import Array, Group
+from zarr.buffer.cpu import Buffer
 from zarr.codecs import ShardingCodec, ZstdCodec
+from zarr.errors import GroupNotFoundError
+from zarr.storage import (
+    FsspecStore,
+    LocalStore,
+    LoggingStore,
+    MemoryStore,
+    StorePath,
+    WrapperStore,
+)
 
 from timeseries_zarr.attrs import root_attrs
+from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.zarr_io import (
+    _local_location,
+    close_store,
     consolidate,
     create_array,
     create_group_with_attrs,
+    descendants,
     open_group,
+    open_root,
+    read_int,
+    read_rows,
+    read_store_text,
+    store_location,
     write_region,
 )
 
@@ -350,3 +371,630 @@ def test_root_attrs_survive_consolidation_beside_the_inline_metadata(tmp_path):
     assert node["consolidated_metadata"]["kind"] == "inline"
     assert node["consolidated_metadata"]["must_understand"] is False
     assert list(node["consolidated_metadata"]["metadata"]) == ["0"]
+
+
+_ROOT_TSZ = {"version": "1.0"}
+_RECORDING_TEXT = json.dumps({"subject": {"id": "sub-01"}})
+_PREFIX = "sub/bundle"
+
+
+def _write_reader_tree(path):
+    root = open_group(path, {"tsz": _ROOT_TSZ})
+    channel = create_group_with_attrs(
+        root, "0", {"tsz": {"kind": "continuous"}}
+    )
+    raw = create_array(channel, "raw", (10,), np.float32, (4,), (8,), {}, 5)
+    write_region(raw, 0, np.arange(10, dtype=np.float32))
+    level = create_group_with_attrs(channel, "1", {})
+    minmax = create_array(
+        level, "minmax", (3, 2), np.float32, (4, 2), (8, 2), {}, 5
+    )
+    write_region(minmax, 0, np.arange(6, dtype=np.float32).reshape(3, 2))
+    event = create_group_with_attrs(root, "4", {"tsz": {"kind": "event"}})
+    events = create_array(event, "events", (5,), np.int64, (8,), (8,), {}, 5)
+    write_region(events, 0, np.arange(5, dtype=np.int64) * 10)
+    consolidate(root)
+    (path / "recording.json").write_text(_RECORDING_TEXT)
+    return path
+
+
+@pytest.fixture(scope="module")
+def reader_tree(tmp_path_factory):
+    return _write_reader_tree(tmp_path_factory.mktemp("reader") / "bundle")
+
+
+def _memory_store(path, prefix="", *, read_only=True):
+    lead = f"{prefix}/" if prefix else ""
+    files = {
+        lead + file.relative_to(path).as_posix(): Buffer.from_bytes(
+            file.read_bytes()
+        )
+        for file in path.rglob("*")
+        if file.is_file()
+    }
+    return MemoryStore(files, read_only=read_only)
+
+
+class _RecordingStore(WrapperStore):
+    """Wrap a read-only store and record every key read or listed."""
+
+    def __init__(self, store):
+        super().__init__(store)
+        self.reads = []
+
+    async def get(self, key, prototype, byte_range=None):
+        self.reads.append(key)
+        return await super().get(key, prototype, byte_range)
+
+    def get_sync(self, key, *, prototype=None, byte_range=None):
+        self.reads.append(key)
+        return super().get_sync(key, prototype=prototype, byte_range=byte_range)
+
+    async def get_partial_values(self, prototype, key_ranges):
+        key_ranges = list(key_ranges)
+        self.reads.extend(key for key, _ in key_ranges)
+        return await super().get_partial_values(prototype, key_ranges)
+
+    async def exists(self, key):
+        self.reads.append(key)
+        return await super().exists(key)
+
+    async def list(self):
+        self.reads.append("list")
+        async for key in super().list():
+            yield key
+
+    async def list_prefix(self, prefix):
+        self.reads.append(f"list {prefix}")
+        async for key in super().list_prefix(prefix):
+            yield key
+
+    async def list_dir(self, prefix):
+        self.reads.append(f"list {prefix}")
+        async for key in super().list_dir(prefix):
+            yield key
+
+
+class _AsyncOnlyStore(WrapperStore):
+    """Raise TypeError on a synchronous read, as FsspecStore does."""
+
+    def get_sync(self, key, *, prototype=None, byte_range=None):
+        raise TypeError("no synchronous get")
+
+
+class _NoReadOnlyCopyStore(WrapperStore):
+    """Raise NotImplementedError on a read-only copy, as ZipStore does."""
+
+    def with_read_only(self, read_only=False):
+        raise NotImplementedError("no read-only copy")
+
+
+@pytest.mark.parametrize(
+    "make_location",
+    [
+        str,
+        lambda path: path,
+        LocalStore,
+        lambda path: path.as_uri(),
+        _memory_store,
+        lambda path: StorePath(_memory_store(path, _PREFIX), _PREFIX),
+    ],
+    ids=["str", "Path", "LocalStore", "file URL", "MemoryStore", "StorePath"],
+)
+def test_open_root_opens_each_location_kind(reader_tree, make_location):
+    root = open_root(make_location(reader_tree))
+    assert isinstance(root, Group)
+    assert root.attrs["tsz"] == _ROOT_TSZ
+    assert root.metadata.consolidated_metadata is not None
+
+
+@pytest.mark.parametrize(
+    "make_location",
+    [
+        LocalStore,
+        lambda path: StorePath(LocalStore(path.parent), path.name),
+        lambda path: StorePath(
+            _memory_store(path, _PREFIX, read_only=False), _PREFIX
+        ),
+    ],
+    ids=["LocalStore", "LocalStore StorePath", "MemoryStore StorePath"],
+)
+def test_open_root_opens_a_writable_store_read_only(reader_tree, make_location):
+    root = open_root(make_location(reader_tree))
+    assert root.store.read_only
+    with pytest.raises(ValueError, match="read-only"):
+        root.attrs.update({"marker": "written"})
+
+
+def test_open_root_opens_a_store_path_whose_store_makes_no_read_only_copy(
+    reader_tree,
+):
+    store = _NoReadOnlyCopyStore(
+        _memory_store(reader_tree, _PREFIX, read_only=False)
+    )
+    root = open_root(StorePath(store, _PREFIX))
+    assert root.attrs["tsz"] == _ROOT_TSZ
+    assert root.store is store
+
+
+def test_open_root_rejects_storage_options_with_a_local_path(reader_tree):
+    with pytest.raises(TypeError, match="storage_options"):
+        open_root(str(reader_tree), storage_options={"anon": True})
+
+
+@pytest.mark.parametrize(
+    "make_url",
+    [
+        lambda path: path.as_uri(),
+        lambda path: f"file://localhost{path.as_posix()}",
+        lambda path: path.as_uri().replace("file:", "FILE:", 1),
+        lambda path: f"file://LOCALHOST{path.as_posix()}",
+    ],
+    ids=["escaped", "localhost", "uppercase scheme", "uppercase host"],
+)
+def test_open_root_opens_the_local_path_a_file_url_names(tmp_path, make_url):
+    path = _write_reader_tree(tmp_path / "a b" / "bundle")
+    assert "%20" in path.as_uri()
+    assert open_root(make_url(path)).attrs["tsz"] == _ROOT_TSZ
+
+
+_URL_DELIMITER_NAMES = ["rec#1.tszarr", "rec?x.tszarr"]
+
+
+def _write_marked_root(path, marker):
+    root = open_group(path, {"tsz": _ROOT_TSZ, "marker": marker})
+    consolidate(root)
+    return path
+
+
+@pytest.mark.parametrize("name", _URL_DELIMITER_NAMES)
+def test_open_root_opens_a_str_path_that_holds_a_url_delimiter(tmp_path, name):
+    path = _write_reader_tree(tmp_path / name)
+    root = open_root(str(path))
+    assert root.attrs["tsz"] == _ROOT_TSZ
+    assert set(descendants(root)[1]) == {"0/raw", "0/1/minmax", "4/events"}
+
+
+@pytest.mark.parametrize("name", _URL_DELIMITER_NAMES)
+def test_open_root_opens_the_whole_str_path_beside_its_shorter_prefix(
+    tmp_path, name
+):
+    _write_marked_root(tmp_path / "rec", "rec")
+    path = _write_marked_root(tmp_path / name, name)
+    assert open_root(str(path)).attrs["marker"] == name
+
+
+@pytest.mark.parametrize(
+    "url", ["memory://bundles/rec.tszarr", "s3://bucket/rec#1.tszarr"]
+)
+def test_local_location_returns_a_url_of_another_scheme_unchanged(url):
+    assert _local_location(url) == url
+
+
+@pytest.mark.parametrize("name", [*_URL_DELIMITER_NAMES, "rec#", "rec?"])
+def test_open_root_rejects_a_file_url_with_a_query_or_fragment(tmp_path, name):
+    _write_marked_root(tmp_path / "rec", "rec")
+    with pytest.raises(ValueError, match="query or fragment"):
+        open_root("file://" + (tmp_path / name).as_posix())
+
+
+def test_open_root_rejects_a_file_url_with_a_remote_host():
+    with pytest.raises(ValueError, match="localhost or no host, got 'server'"):
+        open_root("file://server/share/bundle")
+
+
+def test_open_root_rejects_a_tree_without_consolidated_metadata(tmp_path):
+    path = tmp_path / "bundle"
+    create_group_with_attrs(open_group(path, {"tsz": _ROOT_TSZ}), "0", {})
+    with pytest.raises(ValueError) as excinfo:
+        open_root(str(path))
+    assert str(excinfo.value) == (
+        f"{path} has no consolidated metadata; a complete bundle carries it "
+        "in its root zarr.json"
+    )
+
+
+def test_open_root_raises_file_not_found_for_an_absent_path(tmp_path):
+    path = tmp_path / "absent"
+    with pytest.raises(FileNotFoundError):
+        open_root(path)
+    assert not path.exists()
+
+
+def test_open_root_raises_group_not_found_for_a_store_without_zarr_json():
+    with pytest.raises(GroupNotFoundError):
+        open_root(MemoryStore({}, read_only=True))
+
+
+def test_open_root_rejects_a_location_whose_root_is_an_array(tmp_path):
+    path = tmp_path / "array"
+    zarr.create_array(LocalStore(path), shape=(4,), dtype="float32")
+    with pytest.raises(ValueError):
+        open_root(path)
+
+
+def test_open_root_reports_a_corrupt_zarr_json_as_invalid_json(tmp_path):
+    path = tmp_path / "bundle"
+    path.mkdir()
+    (path / "zarr.json").write_text("{not json")
+    with pytest.raises(json.JSONDecodeError) as excinfo:
+        open_root(path)
+    assert "consolidated" not in str(excinfo.value)
+
+
+def test_open_root_reads_only_the_root_zarr_json(reader_tree):
+    store = _RecordingStore(_memory_store(reader_tree))
+    open_root(store)
+    assert store.reads == ["zarr.json"]
+
+
+def test_open_root_reads_only_the_root_zarr_json_under_a_prefix(reader_tree):
+    store = _RecordingStore(_memory_store(reader_tree, _PREFIX))
+    open_root(StorePath(store, _PREFIX))
+    assert store.reads == [f"{_PREFIX}/zarr.json"]
+
+
+def test_descendants_keys_every_node_by_its_path(reader_tree):
+    groups, arrays = descendants(open_root(reader_tree))
+    assert set(groups) == {"0", "0/1", "4"}
+    assert set(arrays) == {"0/raw", "0/1/minmax", "4/events"}
+    assert all(isinstance(group, Group) for group in groups.values())
+    assert all(isinstance(array, Array) for array in arrays.values())
+
+
+def test_descendants_keys_paths_relative_to_the_group(reader_tree):
+    groups, arrays = descendants(open_root(reader_tree)["0"])
+    assert set(groups) == {"1"}
+    assert set(arrays) == {"raw", "1/minmax"}
+
+
+def test_descendants_makes_no_store_reads(reader_tree):
+    store = _RecordingStore(_memory_store(reader_tree))
+    root = open_root(store)
+    store.reads.clear()
+    groups, _ = descendants(root)
+    descendants(groups["0"])
+    assert store.reads == []
+
+
+def test_read_rows_returns_the_half_open_range(reader_tree):
+    raw = open_root(reader_tree)["0/raw"]
+    rows = read_rows(raw, 2, 5)
+    assert isinstance(rows, np.ndarray)
+    assert rows.dtype == np.float32
+    assert rows.tolist() == [2.0, 3.0, 4.0]
+
+
+def test_read_rows_keeps_the_trailing_axis(reader_tree):
+    minmax = open_root(reader_tree)["0/1/minmax"]
+    assert read_rows(minmax, 1, 3).tolist() == [[2.0, 3.0], [4.0, 5.0]]
+
+
+def test_read_rows_past_the_end_returns_the_rows_that_exist(reader_tree):
+    raw = open_root(reader_tree)["0/raw"]
+    assert read_rows(raw, 8, 100).tolist() == [8.0, 9.0]
+
+
+def test_read_rows_wholly_past_the_end_returns_no_rows(reader_tree):
+    minmax = open_root(reader_tree)["0/1/minmax"]
+    assert read_rows(minmax, 20, 30).shape == (0, 2)
+
+
+def test_read_rows_returns_no_rows_for_an_empty_range(reader_tree):
+    raw = open_root(reader_tree)["0/raw"]
+    assert read_rows(raw, 4, 4).shape == (0,)
+
+
+def test_read_rows_rejects_a_negative_start(reader_tree):
+    raw = open_root(reader_tree)["0/raw"]
+    with pytest.raises(ValueError, match=r"0 <= start <= stop, got \[-2, 3\)"):
+        read_rows(raw, -2, 3)
+
+
+def test_read_rows_rejects_a_stop_below_the_start(reader_tree):
+    raw = open_root(reader_tree)["0/raw"]
+    with pytest.raises(ValueError, match=r"got \[5, 4\)"):
+        read_rows(raw, 5, 4)
+
+
+def test_read_int_returns_a_python_int(reader_tree):
+    value = read_int(open_root(reader_tree)["4/events"], 3)
+    assert type(value) is int
+    assert value == 30
+
+
+def test_read_int_rejects_a_negative_index(reader_tree):
+    events = open_root(reader_tree)["4/events"]
+    with pytest.raises(ValueError, match="at least 0, got -1"):
+        read_int(events, -1)
+
+
+def test_read_int_raises_index_error_past_the_last_element(reader_tree):
+    with pytest.raises(IndexError):
+        read_int(open_root(reader_tree)["4/events"], 5)
+
+
+def test_read_store_text_returns_the_object_beside_zarr_json(reader_tree):
+    root = open_root(reader_tree)
+    assert read_store_text(root, "recording.json") == _RECORDING_TEXT
+
+
+def test_read_store_text_returns_none_for_an_absent_object(reader_tree):
+    assert read_store_text(open_root(reader_tree), "absent.json") is None
+
+
+def test_read_store_text_reads_beside_a_prefixed_root(reader_tree):
+    store = _RecordingStore(_memory_store(reader_tree, _PREFIX))
+    root = open_root(StorePath(store, _PREFIX))
+    assert read_store_text(root, "recording.json") == _RECORDING_TEXT
+    assert store.reads[-1] == f"{_PREFIX}/recording.json"
+
+
+def test_read_store_text_reads_from_a_store_without_synchronous_reads(
+    reader_tree,
+):
+    root = open_root(_AsyncOnlyStore(_memory_store(reader_tree)))
+    assert read_store_text(root, "recording.json") == _RECORDING_TEXT
+
+
+def test_read_store_text_decodes_utf8(tmp_path):
+    text = json.dumps({"site": "caf\N{LATIN SMALL LETTER E WITH ACUTE}"})
+    path = _write_reader_tree(tmp_path / "bundle")
+    (path / "recording.json").write_bytes(text.encode("utf-8"))
+    assert read_store_text(open_root(path), "recording.json") == text
+
+
+def test_read_store_text_rejects_bytes_that_are_not_utf8(tmp_path):
+    path = _write_reader_tree(tmp_path / "bundle")
+    (path / "recording.json").write_bytes(b"\xff\xfe")
+    with pytest.raises(UnicodeDecodeError):
+        read_store_text(open_root(path), "recording.json")
+
+
+def test_store_location_names_a_local_root_by_file_url(reader_tree):
+    root = open_root(reader_tree)
+    assert store_location(root) == f"file://{reader_tree.as_posix()}"
+    assert store_location(root["0"]) == f"file://{reader_tree.as_posix()}/0"
+
+
+def test_store_location_reopens_a_bundle_whose_name_holds_a_url_delimiter(
+    tmp_path,
+):
+    _write_marked_root(tmp_path / "rec", "rec")
+    path = _write_marked_root(tmp_path / "rec#1", "rec#1")
+    location = store_location(open_root(path))
+    assert open_root(location).attrs["marker"] == "rec#1"
+
+
+def test_store_location_reopens_a_root_opened_from_a_relative_path(
+    tmp_path, monkeypatch
+):
+    _write_marked_root(tmp_path / "rec", "rec")
+    monkeypatch.chdir(tmp_path)
+    location = store_location(open_root("rec"))
+    monkeypatch.chdir(tmp_path.parent)
+    assert open_root(location).attrs["marker"] == "rec"
+
+
+def test_store_location_ends_with_the_store_path_prefix(reader_tree):
+    root = open_root(StorePath(_memory_store(reader_tree, _PREFIX), _PREFIX))
+    location = store_location(root)
+    assert location.startswith("memory://")
+    assert location.endswith(f"/{_PREFIX}")
+
+
+def test_store_location_names_a_wrapped_local_store_as_the_local_store(
+    reader_tree,
+):
+    store = LoggingStore(LocalStore(reader_tree, read_only=True))
+    assert store_location(open_root(store)) == store_location(
+        open_root(reader_tree)
+    )
+
+
+def test_close_store_closes_the_store_and_a_second_call_succeeds(
+    reader_tree,
+):
+    root = open_root(reader_tree)
+    close_store(root)
+    close_store(root)
+    assert not root.store._is_open
+
+
+_REMOTE_EXTRA_MESSAGE = missing_extra_message("fsspec", "remote")
+
+
+def _block_fsspec(monkeypatch):
+    """Make every import of fsspec and of each fsspec submodule fail."""
+    monkeypatch.setitem(sys.modules, "fsspec", None)
+    # A cached submodule would otherwise import without its parent.
+    for name in list(sys.modules):
+        if name.startswith("fsspec."):
+            monkeypatch.setitem(sys.modules, name, None)
+
+
+def test_open_root_names_the_remote_extra_when_fsspec_is_missing(monkeypatch):
+    _block_fsspec(monkeypatch)
+    with pytest.raises(ImportError) as excinfo:
+        open_root("s3://bucket/bundle")
+    assert str(excinfo.value) == _REMOTE_EXTRA_MESSAGE
+    assert excinfo.value.name == "fsspec"
+    assert isinstance(excinfo.value.__cause__, ModuleNotFoundError)
+
+
+def _raise_module_not_found(name):
+    def open_group(*args, **kwargs):
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    return open_group
+
+
+@pytest.mark.parametrize("name", ["fsspec", "fsspec.implementations.http"])
+def test_open_root_names_the_remote_extra_for_a_missing_fsspec_module(
+    monkeypatch, name
+):
+    monkeypatch.setattr(zarr, "open_group", _raise_module_not_found(name))
+    with pytest.raises(ImportError) as excinfo:
+        open_root("s3://bucket/bundle")
+    assert str(excinfo.value) == _REMOTE_EXTRA_MESSAGE
+    assert excinfo.value.name == "fsspec"
+    assert excinfo.value.__cause__.name == name
+
+
+@pytest.mark.parametrize("name", ["s3fs", "fsspec_xrootd", None])
+def test_open_root_lets_another_missing_module_propagate(monkeypatch, name):
+    monkeypatch.setattr(zarr, "open_group", _raise_module_not_found(name))
+    with pytest.raises(ModuleNotFoundError) as excinfo:
+        open_root("s3://bucket/bundle")
+    assert excinfo.value.name == name
+
+
+@pytest.mark.parametrize("name", ["run:1.tszarr", "sub-01:ses-02"])
+def test_open_root_opens_a_relative_path_with_a_colon_in_a_local_store(
+    tmp_path, monkeypatch, name
+):
+    _block_fsspec(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _write_marked_root(tmp_path / name, name)
+    root = open_root(name)
+    assert isinstance(root.store, LocalStore)
+    assert root.attrs["marker"] == name
+
+
+_FSSPEC_DIRECTORY = "/zarr-io"
+_FSSPEC_URL = "memory://zarr-io/bundle"
+_FSSPEC_LOCATION = "memory:///zarr-io/bundle"
+
+
+@pytest.fixture
+def fsspec_memory_tree(reader_tree):
+    """Copy the reader tree to _FSSPEC_URL in the fsspec memory filesystem.
+
+    Returns _FSSPEC_URL and removes the copy after the test.
+    """
+    fsspec = pytest.importorskip("fsspec")
+    filesystem = fsspec.filesystem("memory")
+    # The trailing slash copies the contents even when the target exists.
+    filesystem.put(
+        f"{reader_tree}/", f"{_FSSPEC_DIRECTORY}/bundle", recursive=True
+    )
+    yield _FSSPEC_URL
+    filesystem.rm(_FSSPEC_DIRECTORY, recursive=True)
+
+
+def test_open_root_opens_a_memory_url_through_an_fsspec_store(
+    fsspec_memory_tree,
+):
+    root = open_root(fsspec_memory_tree)
+    assert isinstance(root.store, FsspecStore)
+    assert root.attrs["tsz"] == _ROOT_TSZ
+
+
+def test_store_location_names_an_fsspec_group_by_its_filesystem_url(
+    fsspec_memory_tree,
+):
+    root = open_root(fsspec_memory_tree)
+    assert store_location(root) == _FSSPEC_LOCATION
+    assert store_location(root["0"]) == f"{_FSSPEC_LOCATION}/0"
+    assert open_root(store_location(root)).attrs["tsz"] == _ROOT_TSZ
+
+
+@pytest.mark.parametrize(
+    ("store_url", "prefix", "location"),
+    [
+        ("memory://zarr-io", "bundle", _FSSPEC_LOCATION),
+        ("memory://", "zarr-io/bundle", _FSSPEC_URL),
+    ],
+    ids=["below a store path", "below the filesystem root"],
+)
+def test_store_location_joins_the_store_path_to_the_fsspec_path(
+    fsspec_memory_tree, store_url, prefix, location
+):
+    store = FsspecStore.from_url(store_url, read_only=True)
+    root = open_root(StorePath(store, prefix))
+    assert store_location(root) == location
+    assert open_root(location).attrs["tsz"] == _ROOT_TSZ
+
+
+def test_store_location_names_a_wrapped_fsspec_store_by_its_url(
+    fsspec_memory_tree,
+):
+    store = LoggingStore(FsspecStore.from_url(_FSSPEC_URL, read_only=True))
+    assert store_location(open_root(store)) == _FSSPEC_LOCATION
+
+
+def test_store_location_names_a_directory_filesystem_group_by_its_outer_url(
+    fsspec_memory_tree,
+):
+    fsspec = pytest.importorskip("fsspec")
+    dirfs = pytest.importorskip("fsspec.implementations.dirfs")
+    wrapper = pytest.importorskip("fsspec.implementations.asyn_wrapper")
+    directory = dirfs.DirFileSystem(
+        path=_FSSPEC_DIRECTORY, fs=fsspec.filesystem("memory")
+    )
+    store = FsspecStore(
+        wrapper.AsyncFileSystemWrapper(directory, asynchronous=True),
+        path="bundle",
+        read_only=True,
+    )
+    assert store_location(open_root(store)) == "dir://bundle"
+
+
+@pytest.mark.parametrize("name", _URL_DELIMITER_NAMES)
+@pytest.mark.parametrize(
+    "make_location",
+    [
+        lambda path: FsspecStore.from_url(f"file://{path}", read_only=True),
+        lambda path: FsspecStore.from_url(f"local://{path}", read_only=True),
+        lambda path: StorePath(
+            FsspecStore.from_url(path.parent.as_uri(), read_only=True),
+            path.name,
+        ),
+    ],
+    ids=["file URL", "local URL", "StorePath"],
+)
+def test_store_location_reopens_an_fsspec_local_store_holding_a_url_delimiter(
+    tmp_path, make_location, name
+):
+    pytest.importorskip("fsspec")
+    _write_marked_root(tmp_path / "rec", "rec")
+    path = _write_marked_root(tmp_path / name, name)
+    root = open_root(make_location(path))
+    assert isinstance(root.store, FsspecStore)
+    location = store_location(root)
+    assert location == path.as_uri()
+    assert open_root(location).attrs["marker"] == name
+
+
+def test_read_store_text_reads_through_an_fsspec_store(fsspec_memory_tree):
+    root = open_root(fsspec_memory_tree)
+    assert read_store_text(root, "recording.json") == _RECORDING_TEXT
+    assert read_store_text(root, "absent.json") is None
+
+
+def test_close_store_closes_an_fsspec_store_and_a_second_call_succeeds(
+    fsspec_memory_tree,
+):
+    root = open_root(fsspec_memory_tree)
+    close_store(root)
+    close_store(root)
+    assert not root.store._is_open
+
+
+def test_open_root_names_an_fsspec_store_without_consolidated_metadata_by_url():
+    fsspec = pytest.importorskip("fsspec")
+    filesystem = fsspec.filesystem("memory")
+    node = {"zarr_format": 3, "node_type": "group", "attributes": {}}
+    filesystem.pipe("/zarr-io-bare/bundle/zarr.json", json.dumps(node).encode())
+    try:
+        store = FsspecStore.from_url(
+            "memory://zarr-io-bare/bundle", read_only=True
+        )
+        with pytest.raises(ValueError) as excinfo:
+            open_root(store)
+        assert str(excinfo.value) == (
+            "memory:///zarr-io-bare/bundle has no consolidated metadata; a "
+            "complete bundle carries it in its root zarr.json"
+        )
+    finally:
+        filesystem.rm("/zarr-io-bare", recursive=True)

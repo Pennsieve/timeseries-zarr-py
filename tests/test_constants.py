@@ -2,30 +2,93 @@ import numpy as np
 
 from timeseries_zarr.constants import (
     CANVAS_PIXELS,
+    CHANNEL_KINDS,
+    CHANNELS_KEY,
     COUNT_COLUMN,
+    COUNT_KEY,
     COUNT_LADDER_BASE_US,
     DECIMATION_FACTOR,
+    DURATIONS_KEY,
+    EVENT_DIMENSION,
     EVENT_LEVEL_THRESHOLD,
+    EVENTS_KEY,
+    EVENTS_SEARCH_LIMIT_BYTES,
     FLOAT32_BYTES,
     FORMAT_VERSION,
     INT64_BYTES,
+    LABEL_DIMENSION,
+    LABELS_KEY,
+    LEVEL_PERIOD_TOLERANCE,
+    MAJOR_VERSION,
     MAX_COLUMN,
     MAX_LABELS,
     MAX_LEVELS,
     MEAN_COLUMN,
+    MEAN_KEY,
     MIN_COLUMN,
+    MINMAX_KEY,
     RASTER_BUDGET,
+    RAW_KEY,
     STATISTIC_COLUMNS,
+    TEXT_KEY,
+    TIME_DIMENSION,
     UINT8_BYTES,
     UINT16_BYTES,
     UINT32_BYTES,
     UNIT_TO_UV,
+    VALUES_KEY,
     VAR_COLUMN,
+    VAR_KEY,
+    WAVEFORM_MEAN_KEY,
+    WAVEFORMS_KEY,
 )
 
 
 def test_format_version_is_the_1_0_draft():
     assert FORMAT_VERSION == "1.0"
+
+
+def test_major_version_is_the_major_part_of_the_format_version():
+    assert MAJOR_VERSION == 1
+    assert int(FORMAT_VERSION.split(".")[0]) == MAJOR_VERSION
+
+
+def test_channel_kinds_are_continuous_and_event():
+    assert CHANNEL_KINDS == ("continuous", "event")
+
+
+def test_continuous_array_keys_follow_the_spec():
+    assert RAW_KEY == "raw"
+    assert MINMAX_KEY == "minmax"
+    assert MEAN_KEY == "mean"
+    assert VAR_KEY == "var"
+    assert COUNT_KEY == "count"
+
+
+def test_event_array_keys_follow_the_spec():
+    assert EVENTS_KEY == "events"
+    assert DURATIONS_KEY == "durations"
+    assert LABELS_KEY == "labels"
+    assert VALUES_KEY == "values"
+    assert TEXT_KEY == "text"
+    assert CHANNELS_KEY == "channels"
+    assert WAVEFORMS_KEY == "waveforms"
+    assert WAVEFORM_MEAN_KEY == "waveform_mean"
+
+
+def test_dimension_names_follow_the_spec():
+    assert TIME_DIMENSION == "time"
+    assert EVENT_DIMENSION == "event"
+    assert LABEL_DIMENSION == "label"
+
+
+def test_events_search_limit_is_one_mebibyte_of_int64_events():
+    assert EVENTS_SEARCH_LIMIT_BYTES == 2**20
+    assert EVENTS_SEARCH_LIMIT_BYTES // INT64_BYTES == 131_072
+
+
+def test_level_period_tolerance_is_one_part_in_a_billion():
+    assert LEVEL_PERIOD_TOLERANCE == 1e-9
 
 
 def test_max_levels_is_the_last_level_whose_bin_count_fits_uint32():

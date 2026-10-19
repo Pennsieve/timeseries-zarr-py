@@ -1,11 +1,13 @@
 # timeseries-zarr-py
 
-Python library and reference implementation for the
+Python library that reads and writes Zarr bundles of neurophysiology time series.
+
+It servers as a reference writer and reader implementation for the
 [TS-Zarr specification](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md).
 
 ## Installation
 
-Requires Python 3.12 or later. The runtime dependencies are `zarr>=3` and `numpy`.
+Requires Python 3.12 or later. The runtime dependencies are `zarr>=3.2.1` and `numpy`.
 
 ```bash
 pip install timeseries-zarr
@@ -13,9 +15,10 @@ pip install timeseries-zarr
 
 ## Usage
 
-`write_bundle` reads channel sources, computes per-bin statistics up
-to the specified maximum number of levels of time resolution, and writes the
-bundle to disk.
+### Writing
+
+`write_bundle` reads channel sources, computes per-bin statistics up to the specified
+maximum number of levels of time resolution, and writes the bundle to disk.
 
 Each source implements `ContinuousChannelSource` or `EventChannelSource`, which
 [`timeseries_zarr.protocols`](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/timeseries_zarr/protocols.py)
@@ -78,25 +81,31 @@ t = 0 when you write it again. Both must be timezone-aware `datetime` values. Se
 [recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#recording-metadata)
 section of the specification lists what the file can hold.
 
-| Field | Description | Default |
-|---|---|---|
-| `zstd_level` | Zstd compression level | 5 |
-| `max_levels` | maximum number of levels; 0 writes raw samples only | 15 |
-| `min_bins` | fewest bins a level may hold | 1024 |
-| `inner_len` | inner Zarr chunk length in samples | 8192 |
-| `target_shard_bytes` | target outer shard size in bytes | 16 MiB |
-| `write_var` | include per-bin variance | `False` |
-| `voltage_policy` | `"convert"` or `"require_uv"` | `"convert"` |
+[Write options](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/writing.md)
+lists the `WriteOpts` fields and their defaults.
 
-`max_levels=0` writes only raw samples, without pyramid levels or statistics.
+### Reading
 
-`write_var=True` uses more memory. The writer holds one shard of statistics per level
-while it writes.
+```python
+from timeseries_zarr import open_bundle
 
-`voltage_policy` specifies whether the writer should convert voltage channels to
-microvolts and label them `uV` or raise `ValueError` for voltage channels not
-already in `uV`. `timeseries_zarr.UNIT_TO_UV` maps each unit name treated as a voltage
-unit to its factor to microvolts. All other units are stored as given.
+with open_bundle("sine.zarr") as bundle:
+    channel = bundle.continuous[0]
+    print(channel.name, channel.unit, channel.rate_hz, channel.num_samples)
+    samples = channel.read(0, 2_000_000)
+    print(samples.time_s[:3], samples.values[:3])
+    level = channel.level_for(0, 60_000_000, bins=2000)
+    bins = channel.read(0, 60_000_000, level=level)
+    print(level, len(bins), bins.min[:3], bins.max[:3])
+```
+
+The `start_us` and `end_us` arguments of `read` and `level_for` are integer
+microseconds from the recording start.
+
+`to_dataframe` and `to_series` requires the `pandas` extra, `to_xarray` requires the `xarray`
+extra, and a remote URL requires the `remote` extra.
+[Reading bundles](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/reading.md)
+covers windows, levels, event channels, stacking, remote stores, and rewriting a bundle.
 
 ## Development
 
@@ -110,6 +119,10 @@ make lint        # ruff check --fix + ruff format (rewrites files)
 make check       # ruff check + format check + mypy + pytest
 make pre-commit  # install the git pre-commit hook
 ```
+
+Some tests read the synthetic reference bundle at
+`../timeseries-zarr-paper/testdata/synthetic.tszarr`. Set `TSZ_SYNTHETIC_BUNDLE` to read
+it from another path. The tests skip when the bundle is absent.
 
 [Releasing](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/releasing.md)
 describes how to publish a release.

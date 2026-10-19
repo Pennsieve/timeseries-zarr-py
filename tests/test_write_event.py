@@ -4,9 +4,7 @@ import numpy as np
 import pytest
 
 from timeseries_zarr.columns import channels_rows
-from timeseries_zarr.counts import plan_count_levels
-from timeseries_zarr.types import ChunkShard, WriteOpts
-from timeseries_zarr.write_event import (
+from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
     DURATIONS_KEY,
@@ -14,6 +12,10 @@ from timeseries_zarr.write_event import (
     LABELS_KEY,
     TEXT_KEY,
     WAVEFORM_MEAN_KEY,
+)
+from timeseries_zarr.counts import plan_count_levels
+from timeseries_zarr.types import ChunkShard, WriteOpts
+from timeseries_zarr.write_event import (
     _row_sizing,
     write_channels_array,
     write_count_levels,
