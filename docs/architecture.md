@@ -56,7 +56,7 @@ exact on a channel with a large DC offset.
 
 `write_event.py` writes one event channel: the `events` array, each optional column the
 source names, and the count levels of a dense channel. Event times are stored from the
-recording start.
+reference time.
 
 Both writers read shard-sized blocks. Every write then covers a whole shard. A narrower
 write makes the sharding codec read the shard back, re-encode every inner chunk, and
@@ -71,8 +71,8 @@ wall-clock start.
 
 ## Orchestration
 
-`bundle.py` runs the whole job. It assigns each channel a key and finds the recording
-start, the earliest sample or event of any channel. It maps channel ids to keys. Event
+`bundle.py` runs the whole job. It assigns each channel a key and finds the reference
+time, the earlier of the session start and the first sample. It maps channel ids to keys. Event
 channels use that map to name the channels they apply to. It checks each channel's unit
 and provenance before it clears `output_path`. It then writes each channel, consolidates
 the metadata, and writes `recording.json`.

@@ -50,15 +50,13 @@ def continuous_channel_attrs(
 ) -> dict[str, object]:
     """Return the channel-group attributes for one continuous channel.
 
-    offset_us is the time of sample 0 in microseconds from the recording start.
-    provenance is written only when it is not None. Raises ValueError if
-    rate_hz is not positive, offset_us is negative, or provenance is not a
-    JSON object of finite values.
+    offset_us is the time of sample 0 in microseconds from the reference
+    time, and may be negative. provenance is written only when it is not None.
+    Raises ValueError if rate_hz is not positive or provenance is not a JSON
+    object of finite values.
     """
     if rate_hz <= 0:
         raise ValueError(f"rate_hz must be positive, got {rate_hz!r}")
-    if offset_us < 0:
-        raise ValueError(f"offset_us must be at least 0, got {offset_us!r}")
     check_provenance(provenance)
     fields: dict[str, object] = {
         "kind": "continuous",
@@ -109,15 +107,28 @@ def event_channel_attrs(
     return _tsz(fields)
 
 
-def level_group_attrs(period_us: float) -> dict[str, object]:
+def level_group_attrs(
+    period_us: float, offset_us: int | None = None
+) -> dict[str, object]:
     """Return the level-group attributes.
 
-    period_us is the microseconds one bin spans at this level. Raises
-    ValueError if it is not positive.
+    period_us is the microseconds one bin spans at this level. offset_us,
+    given for a count level, is the time of bin 0 from the reference time, a
+    multiple of period_us. A level of a continuous channel passes None.
+    Raises ValueError if period_us is not positive or offset_us is not a
+    multiple of it.
     """
     if period_us <= 0:
         raise ValueError(f"period_us must be positive, got {period_us!r}")
-    return _tsz({"period_us": period_us})
+    fields: dict[str, object] = {"period_us": period_us}
+    if offset_us is not None:
+        if offset_us % period_us:
+            raise ValueError(
+                f"offset_us must be a multiple of period_us, got {offset_us!r}"
+                f" and {period_us!r}"
+            )
+        fields["offset_us"] = offset_us
+    return _tsz(fields)
 
 
 def waveform_array_attrs(

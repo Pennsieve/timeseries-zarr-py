@@ -28,36 +28,63 @@ def epoch_us(instant: datetime) -> int:
     return (instant - _EPOCH) // timedelta(microseconds=1)
 
 
+def session_start_us(meta: RecordingMeta) -> int | None:
+    """Return the session start in microseconds since the Unix epoch, or None.
+
+    Raises ValueError if meta.session_start_time has no UTC offset.
+    """
+    if meta.session_start_time is None:
+        return None
+    _require_offset(meta.session_start_time, "session_start_time")
+    return epoch_us(meta.session_start_time)
+
+
+def reference_time_us(meta: RecordingMeta) -> int | None:
+    """Return the reference time in microseconds since the Unix epoch, or None.
+
+    Raises ValueError if meta.reference_time has no UTC offset.
+    """
+    if meta.reference_time is None:
+        return None
+    _require_offset(meta.reference_time, "reference_time")
+    return epoch_us(meta.reference_time)
+
+
 def recording_document(
-    meta: RecordingMeta, recording_start_us: int | None
+    meta: RecordingMeta, reference_us: int | None
 ) -> dict[str, object]:
     """Return the recording.json content of a bundle.
 
-    start_time is recording_start_us, the recording start in wall-clock
+    reference_time is reference_us, the reference time in wall-clock
     microseconds since the Unix epoch, as an RFC 3339 string with microsecond
-    precision. It takes the UTC offset of meta.session_start_time, or UTC
-    without one. start_time is left out when recording_start_us is None, a
-    bundle with no sample and no event, or when meta.wall_clock is False.
-    session is meta.session with meta.session_start_time first, as given,
-    under start_time. subject, session, and source follow start_time in that
-    order, each only when it holds something. Raises ValueError if
-    meta.session_start_time has no UTC offset or meta.session already holds a
-    start_time key.
+    precision. It takes the UTC offset of meta.reference_time, else of
+    meta.session_start_time, else UTC. reference_time is left out when
+    reference_us is None, a bundle with no sample and no event, or when
+    meta.wall_clock is False. session is meta.session with
+    meta.session_start_time first, as given, under start_time. subject,
+    session, and source follow reference_time in that order, each only when
+    it holds something. Raises ValueError if a time of meta has no UTC
+    offset or meta.session already holds a start_time key.
     """
     session_start = meta.session_start_time
     if session_start is not None:
         _require_offset(session_start, "session_start_time")
+    if meta.reference_time is not None:
+        _require_offset(meta.reference_time, "reference_time")
     if "start_time" in meta.session:
         raise ValueError(
             "session holds a start_time key; set session_start_time instead"
         )
     document: dict[str, object] = {}
-    if recording_start_us is not None and meta.wall_clock:
-        zone = UTC if session_start is None else session_start.tzinfo
-        start = (
-            _EPOCH + timedelta(microseconds=recording_start_us)
-        ).astimezone(zone)
-        document["start_time"] = start.isoformat(timespec="microseconds")
+    if reference_us is not None and meta.wall_clock:
+        zoned = meta.reference_time or session_start
+        zone = UTC if zoned is None else zoned.tzinfo
+        reference = (_EPOCH + timedelta(microseconds=reference_us)).astimezone(
+            zone
+        )
+        document["reference_time"] = reference.isoformat(
+            timespec="microseconds"
+        )
     session: dict[str, object] = {}
     if session_start is not None:
         session["start_time"] = session_start.isoformat(timespec="microseconds")

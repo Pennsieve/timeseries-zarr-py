@@ -86,6 +86,7 @@ def test_recordingmeta_frozen_rejects_mutation():
 def test_recordingmeta_defaults_to_no_session_start_and_empty_objects():
     meta = RecordingMeta()
     assert meta.session_start_time is None
+    assert meta.reference_time is None
     assert meta.wall_clock is True
     assert meta.subject == {}
     assert meta.session == {}

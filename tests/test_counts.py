@@ -7,6 +7,7 @@ from timeseries_zarr.constants import (
     MAX_LEVELS,
 )
 from timeseries_zarr.counts import (
+    bin_offset_us,
     count_bins,
     fold_count_block,
     iter_count_blocks,
@@ -36,7 +37,7 @@ def test_level1_period_us_is_never_finer_than_the_ladder_base():
 
 
 @pytest.mark.parametrize("n_events", [1, 1000, 10**9])
-def test_level1_period_us_events_all_at_the_recording_start_give_the_base(
+def test_level1_period_us_events_all_at_one_time_give_the_base(
     n_events,
 ):
     assert level1_period_us(n_events, 0) == COUNT_LADDER_BASE_US
@@ -93,9 +94,31 @@ def test_level1_period_us_rejects_fewer_than_one_event(n_events):
         level1_period_us(n_events, 1000)
 
 
-def test_level1_period_us_rejects_a_negative_last_event_time():
-    with pytest.raises(ValueError, match="last_event_us"):
+def test_level1_period_us_rejects_a_negative_span():
+    with pytest.raises(ValueError, match="span_us"):
         level1_period_us(10, -1)
+
+
+@pytest.mark.parametrize(
+    ("first_us", "period_us", "expected"),
+    [
+        (0, 1000, 0),
+        (999, 1000, 0),
+        (1000, 1000, 1000),
+        (-1, 1000, -1000),
+        (-32_000, 16_000, -32_000),
+        (-32_001, 16_000, -48_000),
+    ],
+)
+def test_bin_offset_us_rounds_the_first_event_down_to_the_grid(
+    first_us, period_us, expected
+):
+    assert bin_offset_us(first_us, period_us) == expected
+
+
+def test_bin_offset_us_rejects_a_period_below_one():
+    with pytest.raises(ValueError, match="period_us"):
+        bin_offset_us(0, 0)
 
 
 @pytest.mark.parametrize(
@@ -115,20 +138,37 @@ def test_level1_period_us_rejects_a_negative_last_event_time():
 def test_count_bins_holds_the_bin_of_the_last_event_plus_one(
     last_us, period_us, expected
 ):
-    assert count_bins(last_us, period_us) == expected
+    assert count_bins(0, last_us, period_us) == expected
 
 
 def test_count_bins_keeps_an_event_on_a_period_boundary():
     # A ceiling of span over period would give 3 and drop the event at 3000.
-    assert count_bins(3000, 1000) == 4
+    assert count_bins(0, 3000, 1000) == 4
 
 
-def test_count_bins_lone_event_at_the_recording_start_has_one_bin():
-    assert count_bins(0, 256_000) == 1
+def test_count_bins_lone_event_has_one_bin():
+    assert count_bins(0, 0, 256_000) == 1
+    assert count_bins(-7, -7, 256_000) == 1
+
+
+@pytest.mark.parametrize(
+    ("first_us", "last_us", "period_us", "expected"),
+    [
+        (-32_000, 0, 16_000, 3),
+        (-1, 0, 1000, 2),
+        (-2500, -1500, 1000, 2),
+        (2500, 2999, 1000, 1),
+        (-1000, 999, 1000, 2),
+    ],
+)
+def test_count_bins_counts_from_the_first_events_bin_through_the_last(
+    first_us, last_us, period_us, expected
+):
+    assert count_bins(first_us, last_us, period_us) == expected
 
 
 def test_count_bins_is_exact_for_spans_beyond_float_precision():
-    assert count_bins(2**62, 1000) == 2**62 // 1000 + 1
+    assert count_bins(0, 2**62, 1000) == 2**62 // 1000 + 1
 
 
 @pytest.mark.parametrize("period_us", [1, 1000, 4000, 256_000, 1_024_000])
@@ -136,19 +176,19 @@ def test_count_bins_is_exact_for_spans_beyond_float_precision():
     "last_us", [0, 1, 999, 1000, 3_999_999, 86_400 * 10**6]
 )
 def test_count_bins_last_event_falls_inside_the_last_bin(last_us, period_us):
-    bins = count_bins(last_us, period_us)
+    bins = count_bins(0, last_us, period_us)
     assert (bins - 1) * period_us <= last_us < bins * period_us
 
 
 @pytest.mark.parametrize("period_us", [0, -1])
 def test_count_bins_rejects_a_period_below_one(period_us):
     with pytest.raises(ValueError, match="period_us"):
-        count_bins(1000, period_us)
+        count_bins(0, 1000, period_us)
 
 
-def test_count_bins_rejects_a_negative_last_event_time():
-    with pytest.raises(ValueError, match="last_event_us"):
-        count_bins(-1, 1000)
+def test_count_bins_rejects_a_last_event_before_the_first():
+    with pytest.raises(ValueError, match="precedes"):
+        count_bins(5, 4, 1000)
 
 
 _DAY_US = 86_400 * 1_000_000
@@ -159,7 +199,7 @@ def _summary(plans):
 
 
 def test_plan_count_levels_million_spikes_over_a_day_has_five_levels():
-    plans = plan_count_levels(10**6, _DAY_US)
+    plans = plan_count_levels(10**6, 0, _DAY_US)
     assert _summary(plans) == [
         (1, 337_501, 256_000.0),
         (2, 84_376, 1_024_000.0),
@@ -170,8 +210,8 @@ def test_plan_count_levels_million_spikes_over_a_day_has_five_levels():
 
 
 def test_plan_count_levels_threshold_channel_gets_none_and_one_more_gets_three():
-    assert plan_count_levels(EVENT_LEVEL_THRESHOLD, 600 * 10**6) == []
-    plans = plan_count_levels(EVENT_LEVEL_THRESHOLD + 1, 600 * 10**6)
+    assert plan_count_levels(EVENT_LEVEL_THRESHOLD, 0, 600 * 10**6) == []
+    plans = plan_count_levels(EVENT_LEVEL_THRESHOLD + 1, 0, 600 * 10**6)
     assert _summary(plans) == [
         (1, 37_501, 16_000.0),
         (2, 9_376, 64_000.0),
@@ -181,15 +221,15 @@ def test_plan_count_levels_threshold_channel_gets_none_and_one_more_gets_three()
 
 @pytest.mark.parametrize("n_events", [0, 1, 1000, EVENT_LEVEL_THRESHOLD])
 def test_plan_count_levels_small_channel_gets_no_levels(n_events):
-    assert plan_count_levels(n_events, _DAY_US) == []
+    assert plan_count_levels(n_events, 0, _DAY_US) == []
 
 
 def test_plan_count_levels_level_one_under_min_bins_gets_none():
-    assert plan_count_levels(100_000, 500_000) == []
+    assert plan_count_levels(100_000, 0, 500_000) == []
 
 
 def test_plan_count_levels_honors_min_bins():
-    plans = plan_count_levels(100_000, 500_000, min_bins=256)
+    plans = plan_count_levels(100_000, 0, 500_000, min_bins=256)
     assert _summary(plans) == [(1, 501, 1000.0)]
 
 
@@ -197,7 +237,7 @@ def test_plan_count_levels_honors_min_bins():
     ("max_levels", "expected"), [(0, 0), (1, 1), (2, 2), (MAX_LEVELS, 5)]
 )
 def test_plan_count_levels_honors_max_levels(max_levels, expected):
-    plans = plan_count_levels(10**6, _DAY_US, max_levels=max_levels)
+    plans = plan_count_levels(10**6, 0, _DAY_US, max_levels=max_levels)
     assert len(plans) == expected
 
 
@@ -207,7 +247,7 @@ def test_plan_count_levels_honors_max_levels(max_levels, expected):
 def test_plan_count_levels_follows_the_ladder_rules(
     n_events, last_us, min_bins
 ):
-    plans = plan_count_levels(n_events, last_us, min_bins=min_bins)
+    plans = plan_count_levels(n_events, 0, last_us, min_bins=min_bins)
     for plan in plans:
         assert plan.bins >= min_bins
     for below, above in zip(plans, plans[1:], strict=False):
@@ -216,38 +256,63 @@ def test_plan_count_levels_follows_the_ladder_rules(
         assert above.bins == -(-below.bins // 4)
     if plans:
         assert plans[0].bins == count_bins(
-            last_us, level1_period_us(n_events, last_us)
+            0, last_us, level1_period_us(n_events, last_us)
         )
         assert -(-plans[-1].bins // 4) < min_bins or len(plans) == MAX_LEVELS
 
 
 def test_plan_count_levels_accepts_the_largest_uint32_event_count():
-    plans = plan_count_levels(2**32 - 1, _DAY_US)
+    plans = plan_count_levels(2**32 - 1, 0, _DAY_US)
     assert plans
     assert plans[0].period_us == COUNT_LADDER_BASE_US
 
 
 def test_plan_count_levels_rejects_more_events_than_a_uint32_count_holds():
     with pytest.raises(ValueError, match="uint32"):
-        plan_count_levels(2**32, _DAY_US)
+        plan_count_levels(2**32, 0, _DAY_US)
 
 
 def test_plan_count_levels_rejects_a_negative_event_count():
     with pytest.raises(ValueError, match="n_events"):
-        plan_count_levels(-1, _DAY_US)
+        plan_count_levels(-1, 0, _DAY_US)
 
 
 @pytest.mark.parametrize("n_events", [0, 10, 10**6])
-def test_plan_count_levels_rejects_a_negative_last_event_time(n_events):
-    with pytest.raises(ValueError, match="last_event_us"):
-        plan_count_levels(n_events, -1)
+def test_plan_count_levels_rejects_a_last_event_before_the_first(n_events):
+    with pytest.raises(ValueError, match="precedes"):
+        plan_count_levels(n_events, 0, -1)
 
 
-def _direct(times, labels, n_labels, period_us, bins):
+def test_plan_count_levels_anchors_every_level_at_or_before_a_negative_first():
+    plans = plan_count_levels(10**6, -32_000, _DAY_US - 32_000)
+    assert [plan.level for plan in plans] == [1, 2, 3, 4, 5]
+    for plan in plans:
+        period = int(plan.period_us)
+        assert plan.offset_us % period == 0
+        assert plan.offset_us <= -32_000 < plan.offset_us + period
+        assert plan.bins == count_bins(-32_000, _DAY_US - 32_000, period)
+        assert plan.offset_us + plan.bins * period > _DAY_US - 32_000
+
+
+def test_plan_count_levels_offsets_are_zero_for_events_from_the_reference():
+    assert all(
+        plan.offset_us == 0 for plan in plan_count_levels(10**6, 0, _DAY_US)
+    )
+
+
+def test_plan_count_levels_bins_above_level_one_cover_the_level_below():
+    plans = plan_count_levels(10**6, 12_345, _DAY_US)
+    for below, above in zip(plans, plans[1:], strict=False):
+        shift = (below.offset_us - above.offset_us) // int(below.period_us)
+        assert 0 <= shift < 4
+        assert above.bins == -(-(below.bins + shift) // 4)
+
+
+def _direct(times, labels, n_labels, period_us, bins, offset_us=0):
     """Counts straight from the definition with an unbuffered scatter add."""
     counts = np.zeros((bins, max(1, n_labels)), dtype=np.uint32)
     column = np.zeros(len(times), dtype=np.int64) if labels is None else labels
-    np.add.at(counts, (times // period_us, column), 1)
+    np.add.at(counts, (times // period_us - offset_us // period_us, column), 1)
     return counts
 
 
@@ -263,9 +328,11 @@ def _blocks(times, labels, sizes):
     return out
 
 
-def _collect(event_blocks, n_labels, period_us, bins, block_bins):
+def _collect(event_blocks, n_labels, period_us, bins, block_bins, offset_us=0):
     return list(
-        iter_count_blocks(event_blocks, n_labels, period_us, bins, block_bins)
+        iter_count_blocks(
+            event_blocks, n_labels, period_us, offset_us, bins, block_bins
+        )
     )
 
 
@@ -380,7 +447,7 @@ def test_iter_count_blocks_yielded_blocks_do_not_share_memory():
     ("times", "match"),
     [
         ([3_000, 2_000], "non-decreasing"),
-        ([-1, 0], "non-decreasing"),
+        ([-1, 0], "precedes bin 0"),
         ([0, 4_000], "past the 4 bins"),
     ],
 )
@@ -425,6 +492,50 @@ def test_iter_count_blocks_rejects_bad_geometry(
 ):
     with pytest.raises(ValueError, match=name):
         _collect([], n_labels, period_us, bins, block_bins)
+
+
+def test_iter_count_blocks_rejects_an_offset_off_the_grid():
+    with pytest.raises(ValueError, match="offset_us"):
+        _collect([], 1, 1000, 4, 2, offset_us=500)
+
+
+@pytest.mark.parametrize("block_bins", [1, 3, 7, 1000])
+def test_iter_count_blocks_counts_events_before_the_reference_time(block_bins):
+    times, labels = _events(9)
+    times = times - 40_000
+    offset = -40_000
+    got = _collect(
+        _blocks(times, labels, [100, 0, 200]), 5, 1000, 137, block_bins, offset
+    )
+    assert np.array_equal(
+        np.concatenate(got), _direct(times, labels, 5, 1000, 137, offset)
+    )
+
+
+def test_iter_count_blocks_rejects_an_event_before_bin_zero():
+    block = (np.array([-1001, 0], dtype=np.int64), None)
+    with pytest.raises(ValueError, match="precedes bin 0 at -1000"):
+        _collect([block], 0, 1000, 4, 2, offset_us=-1000)
+
+
+@pytest.mark.parametrize("offset_below", [-3000, -2000, -1000])
+def test_a_zero_row_prefix_folds_a_level_onto_an_earlier_grid(offset_below):
+    times, labels = _events(5, bins=1000, n_labels=4)
+    times[0] = 0
+    times = times + offset_below
+    below = _direct(times, labels, 4, 1000, 1000, offset_below)
+    offset_above = bin_offset_us(int(times[0]), 4000)
+    assert offset_above == -4000
+    shift = (offset_below - offset_above) // 1000
+    assert shift == (offset_below + 4000) // 1000
+    prefix = np.zeros((shift, 4), dtype=np.uint32)
+    folded = np.concatenate(
+        list(_rebuffer_and_fold([prefix, below], fold_count_block))
+    )
+    bins_above = count_bins(int(times[0]), int(times[-1]), 4000)
+    assert np.array_equal(
+        folded, _direct(times, labels, 4, 4000, bins_above, offset_above)
+    )
 
 
 def _level1(seed=0, bins=1000, n_labels=4):

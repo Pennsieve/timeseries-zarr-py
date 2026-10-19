@@ -20,12 +20,12 @@ COUNT_BLOCK_RANK: Final = 2
 """Rank of a block of counts: one axis of bins, one of label columns."""
 
 type EventBlock = tuple[npt.NDArray[np.int64], npt.NDArray[np.uint16] | None]
-"""One window of event times in microseconds from the recording start, with labels.
+"""One window of event times in microseconds from the reference time, with labels.
 
 The labels are None for a channel that has none."""
 
 
-def level1_period_us(n_events: int, last_event_us: int) -> int:
+def level1_period_us(n_events: int, span_us: int) -> int:
     """Return the period in microseconds of an event channel's count level 1.
 
     The finest count level a reader needs is one canvas pixel wide at the
@@ -35,45 +35,55 @@ def level1_period_us(n_events: int, last_event_us: int) -> int:
     COUNT_LADDER_BASE_US times a power of 4, so every event channel in a
     bundle shares one set of bin grids. It is never finer than
     COUNT_LADDER_BASE_US, and a width exactly on a rung of the ladder keeps
-    that rung. The arithmetic is exact in integers. last_event_us is the time
-    of the last event from the recording start, and an event at the start alone
-    gives the finest period. Raises ValueError if n_events is below 1 or
-    last_event_us is negative.
+    that rung. The arithmetic is exact in integers. span_us is the time from
+    the first event to the last, and events all at one time give the finest
+    period. Raises ValueError if n_events is below 1 or span_us is negative.
     """
     if n_events < 1:
         raise ValueError(f"n_events must be at least 1, got {n_events}")
-    if last_event_us < 0:
-        raise ValueError(
-            f"last_event_us must be at least 0, got {last_event_us}"
-        )
-    width_us = RASTER_BUDGET * last_event_us // (n_events * CANVAS_PIXELS)
+    if span_us < 0:
+        raise ValueError(f"span_us must be at least 0, got {span_us}")
+    width_us = RASTER_BUDGET * span_us // (n_events * CANVAS_PIXELS)
     period = COUNT_LADDER_BASE_US
     while period * DECIMATION_FACTOR <= width_us:
         period *= DECIMATION_FACTOR
     return period
 
 
-def count_bins(last_event_us: int, period_us: int) -> int:
-    """Return the number of bins that cover an event channel's last event.
+def bin_offset_us(first_event_us: int, period_us: int) -> int:
+    """Return the time of bin 0 of a count level: the first event's bin start.
 
-    The bin axis starts at the recording start, and bin i spans the times from
-    i * period_us up to but not including (i + 1) * period_us. The result is
-    the bin holding the last event plus one, so an event that sits exactly on
-    a bin boundary is counted in the bin it opens and is never dropped. A
-    channel whose only event is at the start has 1 bin. Raises ValueError if
-    period_us is below 1 or last_event_us is negative.
+    It is the largest multiple of period_us at or before first_event_us, and
+    may be negative. Raises ValueError if period_us is below 1.
     """
     if period_us < 1:
         raise ValueError(f"period_us must be at least 1, got {period_us}")
-    if last_event_us < 0:
+    return (first_event_us // period_us) * period_us
+
+
+def count_bins(first_event_us: int, last_event_us: int, period_us: int) -> int:
+    """Return the number of bins from the first event's bin through the last's.
+
+    Bin i spans the times from bin_offset_us(first_event_us, period_us) +
+    i * period_us up to but not including the next multiple of period_us, so
+    an event that sits exactly on a bin boundary is counted in the bin it
+    opens and is never dropped. A channel whose events all share one time
+    has 1 bin. Raises ValueError if period_us is below 1 or last_event_us
+    precedes first_event_us.
+    """
+    if period_us < 1:
+        raise ValueError(f"period_us must be at least 1, got {period_us}")
+    if last_event_us < first_event_us:
         raise ValueError(
-            f"last_event_us must be at least 0, got {last_event_us}"
+            f"last_event_us {last_event_us} precedes first_event_us "
+            f"{first_event_us}"
         )
-    return last_event_us // period_us + 1
+    return last_event_us // period_us - first_event_us // period_us + 1
 
 
 def plan_count_levels(
     n_events: int,
+    first_event_us: int,
     last_event_us: int,
     max_levels: int = MAX_LEVELS,
     min_bins: int = 1024,
@@ -82,14 +92,15 @@ def plan_count_levels(
 
     A channel with at most EVENT_LEVEL_THRESHOLD events gets none, because a
     reader serves any window from the events themselves. Level 1 takes the
-    period from level1_period_us and the bin count from count_bins. Each level
-    above it spans 4x the time and holds a quarter of the bins, rounded up, and
-    the ladder stops before a level that would hold fewer than min_bins bins or
+    period from level1_period_us. Each level above it spans 4x the time, and
+    every level takes its offset_us from bin_offset_us and its bins from
+    count_bins, so its bins cover every event from the first to the last. The
+    ladder stops before a level that would hold fewer than min_bins bins or
     would pass max_levels. A channel whose level 1 already holds fewer than
     min_bins bins gets none. The plan is the same for every label column.
-    Raises ValueError if n_events is negative or above the uint32 range, which
-    a count bin can hold when equal times put every event in one bin, or if
-    last_event_us is negative.
+    Raises ValueError if n_events is negative or above the uint32 range,
+    which a count bin can hold when equal times put every event in one bin,
+    or if last_event_us precedes first_event_us.
     """
     if n_events < 0:
         raise ValueError(f"n_events must be at least 0, got {n_events}")
@@ -97,20 +108,27 @@ def plan_count_levels(
         raise ValueError(
             f"n_events {n_events} exceeds the uint32 range of a count bin"
         )
-    if last_event_us < 0:
+    if last_event_us < first_event_us:
         raise ValueError(
-            f"last_event_us must be at least 0, got {last_event_us}"
+            f"last_event_us {last_event_us} precedes first_event_us "
+            f"{first_event_us}"
         )
     if n_events <= EVENT_LEVEL_THRESHOLD:
         return []
-    period = level1_period_us(n_events, last_event_us)
-    bins = count_bins(last_event_us, period)
+    period = level1_period_us(n_events, last_event_us - first_event_us)
     plans: list[LevelPlan] = []
     for level in range(1, max_levels + 1):
+        bins = count_bins(first_event_us, last_event_us, period)
         if bins < min_bins:
             break
-        plans.append(LevelPlan(level=level, bins=bins, period_us=float(period)))
-        bins = -(-bins // DECIMATION_FACTOR)
+        plans.append(
+            LevelPlan(
+                level=level,
+                bins=bins,
+                period_us=float(period),
+                offset_us=bin_offset_us(first_event_us, period),
+            )
+        )
         period *= DECIMATION_FACTOR
     return plans
 
@@ -121,6 +139,7 @@ def _check_event_block(
     columns: int,
     previous_bin: int,
     period_us: int,
+    first_bin: int,
     bins: int,
 ) -> npt.NDArray[np.int64]:
     """Return the bin of each event, raising ValueError if the block is bad."""
@@ -128,9 +147,14 @@ def _check_event_block(
         raise ValueError(
             f"labels have shape {labels.shape} but times have {times.shape}"
         )
-    index = times // period_us
-    if index[0] < max(previous_bin, 0) or (index[1:] < index[:-1]).any():
-        raise ValueError("event times must be non-decreasing and at least 0")
+    index = times // period_us - first_bin
+    if index[0] < 0:
+        raise ValueError(
+            f"an event at {int(times[0])} precedes bin 0 at "
+            f"{first_bin * period_us}"
+        )
+    if index[0] < previous_bin or (index[1:] < index[:-1]).any():
+        raise ValueError("event times must be non-decreasing")
     if index[-1] >= bins:
         raise ValueError(
             f"an event falls in bin {int(index[-1])}, past the {bins} bins"
@@ -146,13 +170,15 @@ def iter_count_blocks(
     event_blocks: Iterable[EventBlock],
     n_labels: int,
     period_us: int,
+    offset_us: int,
     bins: int,
     block_bins: int,
 ) -> Iterator[npt.NDArray[np.uint32]]:
     """Yield level 1 counts in blocks of block_bins rows, covering every bin.
 
-    Event i with time t counts in bin t // period_us, in the column of its
-    label. The counts have max(1, n_labels) columns, and a block without
+    Event i with time t counts in bin t // period_us - offset_us // period_us,
+    in the column of its label. offset_us is the time of bin 0, a multiple of
+    period_us. The counts have max(1, n_labels) columns, and a block without
     labels counts every event in column 0. The blocks are contiguous and
     cover the whole axis of bins rows, including stretches no event falls in:
     every block has block_bins rows except the last, which holds the
@@ -160,14 +186,20 @@ def iter_count_blocks(
     across all blocks, so a block is complete, and is written out, as soon as
     an event lands past it; only one block of counts is held at a time. A
     block of no events is skipped. Raises ValueError if block_bins or
-    period_us is below 1, bins or n_labels is negative, a time is negative or
-    decreases, an event falls past the last bin, a label is outside the
-    columns, or labels and times differ in shape.
+    period_us is below 1, offset_us is not a multiple of period_us, bins or
+    n_labels is negative, an event precedes bin 0, a time decreases, an event
+    falls past the last bin, a label is outside the columns, or labels and
+    times differ in shape.
     """
     if block_bins < 1:
         raise ValueError(f"block_bins must be at least 1, got {block_bins}")
     if period_us < 1:
         raise ValueError(f"period_us must be at least 1, got {period_us}")
+    if offset_us % period_us:
+        raise ValueError(
+            f"offset_us must be a multiple of period_us, got {offset_us} "
+            f"and {period_us}"
+        )
     if bins < 0:
         raise ValueError(f"bins must be at least 0, got {bins}")
     if n_labels < 0:
@@ -176,11 +208,12 @@ def iter_count_blocks(
     buffer = np.zeros((block_bins, columns), dtype=np.uint32)
     base = 0
     previous_bin = 0
+    first_bin = offset_us // period_us
     for times, labels in event_blocks:
         if not times.shape[0]:
             continue
         index = _check_event_block(
-            times, labels, columns, previous_bin, period_us, bins
+            times, labels, columns, previous_bin, period_us, first_bin, bins
         )
         previous_bin = int(index[-1])
         column = (

@@ -298,24 +298,25 @@ def write_continuous_channel(
     key: int,
     source: ContinuousChannelSource,
     *,
-    recording_start_us: int,
+    reference_us: int,
     opts: WriteOpts,
 ) -> None:
     """Write one continuous channel as the subgroup named str(key).
 
     The channel group carries the continuous attributes, with offset_us the
-    distance in microseconds from recording_start_us, the recording start, to
-    the first sample, and the source's provenance when it has one. The raw samples are
-    written first. The levels are planned from the
-    sample count and rate, and every array is sized and compressed per opts.
-    A channel too short for level 1 gets raw and nothing else.
+    distance in microseconds from reference_us, the reference time, to the
+    first sample, negative for a channel that begins before it, and the
+    source's provenance when it has one. The raw samples are written first.
+    The levels are planned from the sample count and rate, and every array is
+    sized and compressed per opts. A channel too short for level 1 gets raw
+    and nothing else.
 
     With opts.write_var false, each level is folded from the stored members of
     the level below. With it true, every level is folded in one pass from the
     raw samples through float64 statistics, which keeps the variance exact on a
-    channel with a large DC offset. Raises ValueError if the channel starts
-    before recording_start_us, if the source's provenance is not a JSON object of finite
-    values, or, under voltage_policy require_uv, if a voltage unit is not "uV".
+    channel with a large DC offset. Raises ValueError if the source's
+    provenance is not a JSON object of finite values, or, under
+    voltage_policy require_uv, if a voltage unit is not "uV".
     """
     rate_hz = source.rate_hz()
     resolved = resolve_unit(source.unit, opts.voltage_policy)
@@ -326,7 +327,7 @@ def write_continuous_channel(
             source.name,
             source.id,
             rate_hz,
-            source.start_us() - recording_start_us,
+            source.start_us() - reference_us,
             resolved.unit,
             source_provenance(source),
         ),

@@ -73,7 +73,7 @@ class EventChannelSource(Protocol):
     Every channel has event times. Each other column is optional, and columns
     names the ones this source provides: the writer calls a column's reader
     only for a column named there. Times are wall-clock microseconds, and the
-    writer places them relative to the recording start.
+    writer places them relative to the reference time.
     """
 
     @property
