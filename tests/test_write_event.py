@@ -31,24 +31,22 @@ def _sizing():
     return ChunkShard(chunk_shape=(4,), shard_shape=(8,))
 
 
-def _write(tmp_path, source, recording_start_us=0, sizing=None):
+def _write(tmp_path, source, reference_us=0, sizing=None):
     group = open_group(tmp_path / "bundle")
-    write_events_array(
-        group, source, recording_start_us, sizing or _sizing(), 5
-    )
+    write_events_array(group, source, reference_us, sizing or _sizing(), 5)
     return open_group(tmp_path / "bundle")
 
 
-def test_write_events_array_stores_times_from_the_recording_start(
+def test_write_events_array_stores_times_from_the_reference_time(
     tmp_path, event_source
 ):
     source = event_source([1000, 1500, 1500, 9000])
-    stored = _write(tmp_path, source, recording_start_us=1000)[EVENTS_KEY][:]
+    stored = _write(tmp_path, source, reference_us=1000)[EVENTS_KEY][:]
     assert stored.tolist() == [0, 500, 500, 8000]
     assert stored.dtype == np.int64
 
 
-def test_write_events_array_with_the_recording_start_at_zero_stores_the_times(
+def test_write_events_array_with_the_reference_time_at_zero_stores_the_times(
     tmp_path, event_source
 ):
     stored = _write(tmp_path, event_source([5, 6, 700]))[EVENTS_KEY][:]
@@ -60,7 +58,7 @@ def test_write_events_array_is_exact_for_epoch_scale_microseconds(
 ):
     start = 1_700_000_000_123_456
     source = event_source([start, start + 1, start + 999_999_999_999])
-    stored = _write(tmp_path, source, recording_start_us=start)[EVENTS_KEY][:]
+    stored = _write(tmp_path, source, reference_us=start)[EVENTS_KEY][:]
     assert stored.tolist() == [0, 1, 999_999_999_999]
 
 
@@ -78,7 +76,7 @@ def test_write_events_array_leaves_the_sources_times_unchanged(
     tmp_path, event_source
 ):
     times = np.array([1000, 2000, 3000], dtype=np.int64)
-    _write(tmp_path, event_source(times), recording_start_us=1000)
+    _write(tmp_path, event_source(times), reference_us=1000)
     assert times.tolist() == [1000, 2000, 3000]
 
 
@@ -114,11 +112,11 @@ def test_write_events_array_writes_one_whole_shard_per_write(
     assert np.array_equal(stored, times)
 
 
-def test_write_events_array_rejects_a_time_before_the_recording_start(
+def test_write_events_array_stores_a_time_before_the_reference_as_negative(
     tmp_path, event_source
 ):
-    with pytest.raises(ValueError, match="precedes the recording start by 1 "):
-        _write(tmp_path, event_source([999, 1500]), recording_start_us=1000)
+    stored = _write(tmp_path, event_source([999, 1500]), reference_us=1000)
+    assert stored[EVENTS_KEY][:].tolist() == [-1, 500]
 
 
 def test_write_events_array_rejects_times_that_decrease_within_a_block(
@@ -136,12 +134,12 @@ def test_write_events_array_rejects_times_that_decrease_across_a_block_boundary(
         _write(tmp_path, event_source(times))
 
 
-def test_write_events_array_rejects_a_time_before_the_recording_start_in_a_later_block(
+def test_write_events_array_rejects_a_decrease_below_zero_in_a_later_block(
     tmp_path, event_source
 ):
     times = [1000] * 8 + [999]
-    with pytest.raises(ValueError, match="recording start"):
-        _write(tmp_path, event_source(times), recording_start_us=1000)
+    with pytest.raises(ValueError, match="non-decreasing"):
+        _write(tmp_path, event_source(times), reference_us=1000)
 
 
 def _write_durations(tmp_path, source, sizing=None):
@@ -714,16 +712,23 @@ def _dense(event_source, n=70_000, labelled=True, start_us=0, seed=0):
     return times, (labels if labelled else None), source
 
 
-def _direct_counts(times, labels, columns, period_us, bins):
-    counts = np.zeros((bins, columns), dtype=np.uint32)
+def _direct_counts(times, labels, columns, plan):
+    period_us = int(plan.period_us)
+    counts = np.zeros((plan.bins, columns), dtype=np.uint32)
     column = np.zeros(len(times), dtype=np.int64) if labels is None else labels
-    np.add.at(counts, (times // period_us, column), 1)
+    np.add.at(
+        counts, (times // period_us - plan.offset_us // period_us, column), 1
+    )
     return counts
 
 
-def _write_counts(tmp_path, source, recording_start_us=0, opts=_COUNT_OPTS):
+def _plans(times):
+    return plan_count_levels(len(times), int(times[0]), int(times[-1]), 8, 256)
+
+
+def _write_counts(tmp_path, source, reference_us=0, opts=_COUNT_OPTS):
     group = open_group(tmp_path / "bundle")
-    write_count_levels(group, source, recording_start_us, opts)
+    write_count_levels(group, source, reference_us, opts)
     return open_group(tmp_path / "bundle")
 
 
@@ -732,10 +737,10 @@ def test_write_count_levels_equal_the_direct_count_at_every_level(
 ):
     times, labels, source = _dense(event_source)
     group = _write_counts(tmp_path, source)
-    plans = plan_count_levels(len(times), _SPAN_US, 8, 256)
+    plans = _plans(times)
     assert len(plans) == 4
     for plan in plans:
-        want = _direct_counts(times, labels, 3, int(plan.period_us), plan.bins)
+        want = _direct_counts(times, labels, 3, plan)
         assert np.array_equal(group[str(plan.level)][COUNT_KEY][:], want)
 
 
@@ -744,11 +749,13 @@ def test_write_count_levels_groups_carry_the_period_and_one_count_array(
 ):
     times, _, source = _dense(event_source)
     group = _write_counts(tmp_path, source)
-    plans = plan_count_levels(len(times), _SPAN_US, 8, 256)
+    plans = _plans(times)
     assert sorted(group.group_keys()) == [str(p.level) for p in plans]
     for plan in plans:
         level = group[str(plan.level)]
-        assert dict(level.attrs) == {"tsz": {"period_us": plan.period_us}}
+        assert dict(level.attrs) == {
+            "tsz": {"period_us": plan.period_us, "offset_us": plan.offset_us}
+        }
         assert list(level.array_keys()) == [COUNT_KEY]
 
 
@@ -757,7 +764,7 @@ def test_write_count_levels_array_shape_dtype_dimensions_and_fill(
 ):
     times, _, source = _dense(event_source)
     group = _write_counts(tmp_path, source)
-    first = plan_count_levels(len(times), _SPAN_US, 8, 256)[0]
+    first = _plans(times)[0]
     arr = group["1"][COUNT_KEY]
     assert arr.shape == (first.bins, 3)
     assert arr.dtype == np.uint32
@@ -771,8 +778,8 @@ def test_write_count_levels_without_labels_has_a_single_column(
 ):
     times, _, source = _dense(event_source, labelled=False)
     group = _write_counts(tmp_path, source)
-    for plan in plan_count_levels(len(times), _SPAN_US, 8, 256):
-        want = _direct_counts(times, None, 1, int(plan.period_us), plan.bins)
+    for plan in _plans(times):
+        want = _direct_counts(times, None, 1, plan)
         assert np.array_equal(group[str(plan.level)][COUNT_KEY][:], want)
 
 
@@ -788,14 +795,32 @@ def test_write_count_levels_every_level_keeps_the_event_totals(
         )
 
 
-def test_write_count_levels_counts_from_the_recording_start(
+def test_write_count_levels_counts_from_the_reference_time(
     tmp_path, event_source
 ):
     times, labels, source = _dense(event_source, start_us=5_000_000)
-    group = _write_counts(tmp_path, source, recording_start_us=5_000_000)
-    plan = plan_count_levels(len(times), _SPAN_US, 8, 256)[0]
-    want = _direct_counts(times, labels, 3, int(plan.period_us), plan.bins)
+    group = _write_counts(tmp_path, source, reference_us=5_000_000)
+    plan = _plans(times)[0]
+    want = _direct_counts(times, labels, 3, plan)
     assert np.array_equal(group["1"][COUNT_KEY][:], want)
+
+
+@pytest.mark.parametrize("after_first", [1, 300_000_000, _SPAN_US + 7])
+def test_write_count_levels_counts_events_before_the_reference_time(
+    tmp_path, event_source, after_first
+):
+    times, labels, source = _dense(event_source)
+    reference_us = int(times[0]) + after_first
+    group = _write_counts(tmp_path, source, reference_us=reference_us)
+    shifted = times - reference_us
+    plans = _plans(shifted)
+    assert plans and plans[0].offset_us <= shifted[0] < 0
+    for plan in plans:
+        level = group[str(plan.level)]
+        assert dict(level.attrs)["tsz"]["offset_us"] == plan.offset_us
+        assert plan.offset_us % int(plan.period_us) == 0
+        want = _direct_counts(shifted, labels, 3, plan)
+        assert np.array_equal(level[COUNT_KEY][:], want)
 
 
 @pytest.mark.parametrize("n", [0, 1, 1000, 64_000])
@@ -811,7 +836,7 @@ def test_write_count_levels_level_one_under_min_bins_creates_none(
     tmp_path, event_source
 ):
     times = np.arange(70_000, dtype=np.int64) * 3
-    assert plan_count_levels(70_000, int(times[-1]), 8, 256) == []
+    assert _plans(times) == []
     group = _write_counts(tmp_path, event_source(times))
     assert list(group.group_keys()) == []
 
@@ -859,14 +884,6 @@ def test_write_count_levels_rejects_times_that_decrease(tmp_path, event_source):
     source = event_source(times, labels=labels, label_names=["u0", "u1", "u2"])
     with pytest.raises(ValueError, match="non-decreasing"):
         _write_counts(tmp_path, source)
-
-
-def test_write_count_levels_rejects_an_event_before_the_recording_start(
-    tmp_path, event_source
-):
-    times, _, source = _dense(event_source)
-    with pytest.raises(ValueError, match="at least 0"):
-        _write_counts(tmp_path, source, recording_start_us=int(times[0]) + 1)
 
 
 def test_write_count_levels_rejects_a_label_outside_the_categories(
@@ -925,7 +942,7 @@ def _write_channel(tmp_path, source, key=7, opts=_CHANNEL_OPTS):
         parent,
         key,
         source,
-        recording_start_us=_START_US,
+        reference_us=_START_US,
         channel_keys=_KEYS,
         max_key=9,
         opts=opts,
@@ -1159,7 +1176,7 @@ def test_write_event_channel_returns_none(tmp_path, event_source):
         parent,
         1,
         _full(event_source),
-        recording_start_us=_START_US,
+        reference_us=_START_US,
         channel_keys=_KEYS,
         max_key=9,
         opts=_CHANNEL_OPTS,

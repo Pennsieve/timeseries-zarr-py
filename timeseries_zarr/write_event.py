@@ -6,6 +6,7 @@ writes nothing.
 """
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from itertools import chain
 from typing import Final, cast
 
 import numpy as np
@@ -40,7 +41,7 @@ from timeseries_zarr.streaming import (
     iter_array_blocks,
     regroup,
 )
-from timeseries_zarr.types import ChunkShard, WriteOpts
+from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
 from timeseries_zarr.zarr_io import (
     ZarrArray,
     ZarrGroup,
@@ -110,7 +111,7 @@ def _write_source_blocks[T: np.generic](
 def write_events_array(
     group: ZarrGroup,
     source: EventChannelSource,
-    recording_start_us: int,
+    reference_us: int,
     sizing: ChunkShard,
     zstd_level: int,
 ) -> ZarrArray:
@@ -118,10 +119,9 @@ def write_events_array(
 
     A rank-1 int64 array named "events" with the dimension name "event" and no
     attributes. Each time is the source's wall-clock microseconds minus
-    recording_start_us, the recording start, so the stored times count from it.
-    Equal times are allowed. Raises ValueError if a time falls before the
-    recording start or if the times decrease, within a block or across a block
-    boundary.
+    reference_us, the reference time, so the stored times count from it and
+    an event before it is negative. Equal times are allowed. Raises ValueError
+    if the times decrease, within a block or across a block boundary.
     """
     array = create_array(
         group,
@@ -137,15 +137,10 @@ def write_events_array(
     previous_last: int | None = None
 
     def read(start: int, stop: int) -> npt.NDArray[np.int64]:
-        return source.read_events(start, stop) - recording_start_us
+        return source.read_events(start, stop) - reference_us
 
     def check(block: npt.NDArray[np.int64]) -> None:
         nonlocal previous_last
-        if block[0] < 0:
-            raise ValueError(
-                f"an event precedes the recording start by {-int(block[0])} "
-                "microseconds"
-            )
         decreases_inside = bool((block[1:] < block[:-1]).any())
         decreases_at_seam = (
             previous_last is not None and block[0] < previous_last
@@ -424,15 +419,15 @@ def _row_sizing(
 
 def _event_blocks(
     source: EventChannelSource,
-    recording_start_us: int,
+    reference_us: int,
     block_len: int,
     with_labels: bool,
 ) -> Iterator[EventBlock]:
-    """Yield the source's event times from the recording start, with labels."""
+    """Yield the source's event times from the reference time, with labels."""
     total = source.num_events()
     for start in range(0, total, block_len):
         stop = min(start + block_len, total)
-        times = source.read_events(start, stop) - recording_start_us
+        times = source.read_events(start, stop) - reference_us
         labels = source.read_labels(start, stop) if with_labels else None
         yield times, labels
 
@@ -450,29 +445,30 @@ def _write_count_blocks(
 def write_count_levels(
     group: ZarrGroup,
     source: EventChannelSource,
-    recording_start_us: int,
+    reference_us: int,
     opts: WriteOpts,
 ) -> None:
     """Write the count levels of a dense event channel under group.
 
-    Each level is a group named by its number, carrying period_us, with one
-    uint32 array "count" shaped (bins, L). L is the label count, or 1 without
-    labels, and the bin axis is named "time". Level 1 is counted from the
-    source's event times and labels, streamed in blocks of events; every level
-    above it sums 4 rows of the stored level below, one shard at a time.
-    Channels with too few events, or whose level 1 would hold fewer than
-    opts.min_bins bins, get no levels and nothing is created. Every write
-    covers a whole shard. Raises ValueError if the event times decrease or
-    precede recording_start_us, or if a label is outside the label categories.
+    Each level is a group named by its number, carrying period_us and
+    offset_us, with one uint32 array "count" shaped (bins, L). L is the label
+    count, or 1 without labels, and the bin axis is named "time". Level 1 is
+    counted from the source's event times and labels, streamed in blocks of
+    events; every level above it sums 4 rows of the stored level below, one
+    shard at a time, after the rows that precede its bin 0 are padded with
+    zeros so the two grids align. Channels with too few events, or whose
+    level 1 would hold fewer than opts.min_bins bins, get no levels and
+    nothing is created. Every write covers a whole shard. Raises ValueError
+    if the event times decrease or if a label is outside the label
+    categories.
     """
     total = source.num_events()
     if total == 0:
         return
-    last_event_us = (
-        int(source.read_events(total - 1, total)[0]) - recording_start_us
-    )
+    first_event_us = int(source.read_events(0, 1)[0]) - reference_us
+    last_event_us = int(source.read_events(total - 1, total)[0]) - reference_us
     plans = plan_count_levels(
-        total, last_event_us, opts.max_levels, opts.min_bins
+        total, first_event_us, last_event_us, opts.max_levels, opts.min_bins
     )
     if not plans:
         return
@@ -483,11 +479,11 @@ def write_count_levels(
         (total,), INT64_BYTES, opts.inner_len, opts.target_shard_bytes
     ).shard_shape[0]
 
-    previous: ZarrArray | None = None
+    previous: tuple[ZarrArray, LevelPlan] | None = None
     for plan in plans:
         sizing = _row_sizing(plan.bins, columns, UINT32_BYTES, opts)
         level = create_group_with_attrs(
-            group, plan.name, level_group_attrs(plan.period_us)
+            group, plan.name, level_group_attrs(plan.period_us, plan.offset_us)
         )
         array = create_array(
             level,
@@ -504,27 +500,32 @@ def write_count_levels(
         counts: Iterator[npt.NDArray[np.uint32]]
         if previous is None:
             counts = iter_count_blocks(
-                _event_blocks(
-                    source, recording_start_us, block_len, with_labels
-                ),
+                _event_blocks(source, reference_us, block_len, with_labels),
                 n_labels,
                 int(plan.period_us),
+                plan.offset_us,
                 plan.bins,
                 shard_rows,
             )
         else:
+            below, below_plan = previous
+            # Bin 0 of this level may open before bin 0 of the level below.
+            shift = (below_plan.offset_us - plan.offset_us) // int(
+                below_plan.period_us
+            )
+            blocks: Iterable[npt.NDArray[np.uint32]] = iter_array_blocks(
+                cast("BlockReadableArray", below),
+                DECIMATION_FACTOR * shard_rows,
+            )
+            if shift:
+                blocks = chain(
+                    [np.zeros((shift, columns), dtype=np.uint32)], blocks
+                )
             counts = regroup(
-                _rebuffer_and_fold(
-                    iter_array_blocks(
-                        cast("BlockReadableArray", previous),
-                        DECIMATION_FACTOR * shard_rows,
-                    ),
-                    fold_count_block,
-                ),
-                shard_rows,
+                _rebuffer_and_fold(blocks, fold_count_block), shard_rows
             )
         _write_count_blocks(array, counts)
-        previous = array
+        previous = (array, plan)
 
 
 def write_event_channel(
@@ -532,7 +533,7 @@ def write_event_channel(
     key: int,
     source: EventChannelSource,
     *,
-    recording_start_us: int,
+    reference_us: int,
     channel_keys: Mapping[str, int],
     max_key: int,
     opts: WriteOpts,
@@ -544,7 +545,7 @@ def write_event_channel(
     label_names and the duration bound max_duration_us. The events array
     comes first, then each optional column the source names in columns(),
     then the count levels of a dense channel. Times are stored from
-    recording_start_us, the recording start. channel_keys maps channel ids to
+    reference_us, the reference time. channel_keys maps channel ids to
     keys and max_key is
     the largest key in the bundle, which sizes the channels bitmask. Every
     array is sized and compressed per opts. Raises ValueError if the source
@@ -575,7 +576,7 @@ def write_event_channel(
         )
 
     write_events_array(
-        group, source, recording_start_us, sizing(INT64_BYTES), opts.zstd_level
+        group, source, reference_us, sizing(INT64_BYTES), opts.zstd_level
     )
     if "durations" in columns:
         write_durations_array(
@@ -601,4 +602,4 @@ def write_event_channel(
         )
     if "waveform_mean" in columns:
         write_waveform_mean_array(group, source, opts.zstd_level)
-    write_count_levels(group, source, recording_start_us, opts)
+    write_count_levels(group, source, reference_us, opts)

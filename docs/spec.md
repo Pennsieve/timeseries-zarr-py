@@ -156,7 +156,8 @@ with scores, and clinical marks with durations and free text. Every column has l
 |                            # Attributes: period_us, event_sample.
 |-- waveform_mean            # Array, shape (L, P), float32. Optional.
 |                            # Attributes: period_us, event_sample.
-|-- 1                        # Count level 1 group. Optional. Attribute: period_us.
+|-- 1                        # Count level 1 group. Optional. Attributes: period_us,
+|                            # offset_us.
 |   |-- zarr.json
 |   `-- count                # Array, shape (bins, L), uint32.
 `-- J                        # Count level J group.
@@ -164,7 +165,7 @@ with scores, and clinical marks with durations and free text. Every column has l
 
 | array | requirement | shape | dtype | description |
 |---|---|---|---|---|
-| `events` | MUST | `(n,)` | int64 | Time of each event in microseconds from the recording start, non-decreasing. |
+| `events` | MUST | `(n,)` | int64 | Time of each event in microseconds from the reference time, non-decreasing. May be negative. |
 | `durations` | MAY | `(n,)` | int64 | Duration of each event in microseconds, at least 0. 0 is a point event. |
 | `labels` | MAY | `(n,)` | uint16 | Category of each event, such as a cluster id or an event type. |
 | `values` | MAY | `(n,)` | float32 | One measurement per event, in the channel's `unit`. |
@@ -200,10 +201,12 @@ A dense event channel MAY hold count levels, numbered `1` through `J` with no ga
 Level 1 has a producer-chosen `period_us`, and `period_us` quadruples at each level
 after it. Level 1 SHOULD lie on the ladder `1000 * 4^j` microseconds (1 ms, 4 ms,
 16 ms, ..., 1.024 s, 4.096 s, ...). Event channels in any bundle then share bin
-grids. Bin `i` covers the times `[i * period_us, (i + 1) * period_us)` from the
-recording start, and a level has enough bins to cover the last event. An event with a duration
-is counted in the bin of its onset only. The count of a bin at level `k + 1` is the
-sum over its four child bins. A rate view from any level is exact. A producer SHOULD
+grids. Each level carries `offset_us`, the time of its bin 0 from the reference time,
+a multiple of its `period_us` at or before the first event. Bin `i` covers the times
+`[offset_us + i * period_us, offset_us + (i + 1) * period_us)`, and a level's bins
+cover every event of the channel. An event with a duration is counted in the bin of
+its onset only. The count of a bin at level `k + 1` is the sum of the level-`k` bins
+it covers. A rate view from any level is exact. A producer SHOULD
 write count levels for channels with more than about 64,000 events and SHOULD choose
 level 1 as the finest bin a reader needs once the window is too wide to serve from
 `events` directly.
@@ -223,13 +226,14 @@ keys to `attributes` beside `tsz`.
 
 ### Timeline
 
-Every time value in a bundle counts from the recording start. The recording start is
-the earliest sample or event the bundle holds, so the smallest `offset_us` of a
-continuous channel or the earliest event time is 0, and no time is negative. Sample
-and event times are `int64` microseconds. Periods are `float64` microseconds.
-`start_time` in `recording.json` gives the recording start as a wall-clock time, when
-it is known, and no other object holds one. No array carries a time axis; a reader
-computes times from `offset_us`, `rate_hz`, and `period_us`.
+Every time value in a bundle is an offset from the reference time, t = 0, and may be
+negative. A producer places the reference time at the earlier of the acquisition
+start and the first sample when it first writes a recording, and keeps it when it
+writes the recording again, so a channel added later may begin before it. Sample and
+event times are `int64` microseconds. Periods are `float64` microseconds.
+`reference_time` in `recording.json` gives the reference time as a wall-clock time,
+when it is known, and no other object holds one. No array carries a time axis; a
+reader computes times from `offset_us`, `rate_hz`, and `period_us`.
 
 ### Root metadata
 
@@ -277,7 +281,7 @@ Each channel group's `tsz` object describes the channel.
 | `id` | MAY | string | Producer identifier, stable across exports. |
 | `unit` | MUST for `continuous`, MAY for `event` | string | Unit of `raw` samples, or of the `values` column. |
 | `rate_hz` | MUST for `continuous` | number | Sample rate, greater than 0. |
-| `offset_us` | MAY for `continuous` | integer | Time of sample 0 from the recording start, at least 0. Default 0. |
+| `offset_us` | MAY for `continuous` | integer | Time of sample 0 from the reference time. May be negative. Default 0. |
 | `label_names` | MAY for `event` | array of string | Name of each label category, indexed by label value. |
 | `max_duration_us` | MUST when `durations` exists | integer | Upper bound on every value in `durations`. |
 | `provenance` | MAY | object | What produced the channel, such as detector name and version. Content is producer-defined. |
@@ -371,15 +375,15 @@ keys.
 
 | key | requirement | type | description |
 |---|---|---|---|
-| `start_time` | MAY | string | The recording start as a wall-clock time, RFC 3339 with a UTC offset. A reader adds a time in the bundle to it to get a wall-clock time. |
+| `reference_time` | MAY | string | The reference time, t = 0 of every time in the bundle, as a wall-clock time, RFC 3339 with a UTC offset. A reader adds a time in the bundle to it to get a wall-clock time. |
 | `subject` | MAY | object | Who was recorded. Content is producer-defined. |
-| `session` | MAY | object | The recording session. `start_time`, when present, is the wall-clock time the session began, RFC 3339 with a UTC offset. Other content is producer-defined. |
+| `session` | MAY | object | The recording session. `start_time`, when present, is the wall-clock time acquisition began, RFC 3339 with a UTC offset. Other content is producer-defined. |
 | `source` | MAY | object | Acquisition system and converting software. Content is producer-defined. |
 
-`session.start_time` describes the session and places no data. It equals `start_time`
-when the first sample or event is at the session start. It is later when the bundle
-holds an annotation from before the session began, and earlier when the session began
-before the first stored sample.
+`session.start_time` describes the session and places no data. In the usual case it
+equals `reference_time`. It is later when the first sample precedes the acquisition
+start, and it differs when a recording written again keeps its earlier reference
+time.
 
 Producers MUST keep identity and wall-clock time out of every other object: channel
 `name`, `id`, and `provenance` MUST NOT identify a person, and no other key holds a
@@ -388,13 +392,13 @@ and the `text` columns of event channels, which the root `zarr.json` enumerates.
 Deleting `recording.json` removes structured identity and the date and changes no
 other object. Free text is redacted in place: a `text` column stored as the next
 section recommends is readable text on disk, and overwriting bytes within a row
-changes no other object. A date shift adds the same amount to `start_time` and
-`session.start_time`. Every other time in the bundle is relative to `start_time`, so
-the shift changes no other object.
+changes no other object. A date shift adds the same amount to `reference_time` and
+`session.start_time`. Every other time in the bundle is relative to `reference_time`,
+so the shift changes no other object.
 
 ```json
 {
-  "start_time": "2024-03-14T09:14:59.968000-05:00",
+  "reference_time": "2024-03-14T09:15:00.000000-05:00",
   "subject": {"id": "sub-0931", "species": "Homo sapiens", "sex": "F", "age": "P34Y"},
   "session": {"id": "ses-01", "start_time": "2024-03-14T09:15:00.000000-05:00", "description": "EMU admission, day 3"},
   "source": {"system": "Natus Quantum", "converter": "timeseries-zarr-py 2.0.0"}
@@ -467,7 +471,7 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - Every child group of the root is a channel group with a valid `kind` and the
   attributes that `kind` requires.
 - Level groups are named `1` through `K`, or `1` through `J` for count levels, with
-  no gaps, and each carries `period_us`.
+  no gaps, and each carries `period_us`. A count level also carries `offset_us`.
   Continuous levels satisfy `period_us = 4^k * 1e6 / rate_hz`. Count levels satisfy
   `period_us(k + 1) = 4 * period_us(k)`.
 - Every channel holds the arrays its tables require: `raw` for a continuous channel,
@@ -483,8 +487,9 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - Every row of `text` is valid UTF-8 followed by zero bytes. `M` equals
   `ceil((max_key + 1) / 8)`, and every set bit in `channels` names a channel group
   in the bundle.
-- The smallest `offset_us` of a continuous channel or the earliest event time is 0.
-- `recording.json`, when present, parses as JSON, and `start_time` and
+- Each count level's `offset_us` is a multiple of its `period_us` and at most the
+  channel's first event.
+- `recording.json`, when present, parses as JSON, and `reference_time` and
   `session.start_time` parse as RFC 3339.
 - `name`, `id`, and `provenance` values match no identity-like pattern (warning).
 

@@ -44,9 +44,9 @@ def test_continuous_channel_attrs_rejects_a_non_positive_rate(rate_hz):
         continuous_channel_attrs("c", "i", rate_hz, 0, "uV", None)
 
 
-def test_continuous_channel_attrs_rejects_a_negative_offset():
-    with pytest.raises(ValueError, match="offset_us"):
-        continuous_channel_attrs("c", "i", 512.0, -1, "uV", None)
+def test_continuous_channel_attrs_keeps_a_negative_offset():
+    attrs = continuous_channel_attrs("c", "i", 512.0, -32_000, "uV", None)
+    assert attrs["tsz"]["offset_us"] == -32_000
 
 
 def test_continuous_channel_attrs_writes_the_given_provenance_last():
@@ -118,6 +118,18 @@ def test_level_group_attrs_nests_period_under_tsz(period_us):
 def test_level_group_attrs_rejects_a_non_positive_period(period_us):
     with pytest.raises(ValueError, match="period_us"):
         level_group_attrs(period_us)
+
+
+@pytest.mark.parametrize("offset_us", [0, 16_000, -32_000])
+def test_level_group_attrs_writes_a_count_level_offset_on_the_grid(offset_us):
+    assert level_group_attrs(16_000.0, offset_us) == {
+        "tsz": {"period_us": 16_000.0, "offset_us": offset_us}
+    }
+
+
+def test_level_group_attrs_rejects_an_offset_off_the_grid():
+    with pytest.raises(ValueError, match="multiple of period_us"):
+        level_group_attrs(16_000.0, -31_999)
 
 
 @pytest.mark.parametrize("period_us", [31.25, 125.0])

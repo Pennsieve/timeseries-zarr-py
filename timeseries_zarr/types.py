@@ -31,12 +31,15 @@ class LevelPlan:
 
     bins is the number of entries along the level's time axis. period_us is
     the microseconds that one entry spans, widening 4x with each coarser
-    level.
+    level. offset_us is the time of entry 0 from the reference time. It is 0
+    for a level of a continuous channel, whose entries count from the
+    channel's own offset, and a multiple of period_us for a count level.
     """
 
     level: int
     bins: int
     period_us: float
+    offset_us: int = 0
 
     @property
     def name(self) -> str:
@@ -73,18 +76,24 @@ class ResolvedUnit:
 
 @dataclass(frozen=True, slots=True)
 class RecordingMeta:
-    """Identity and session start of a recording, for recording.json.
+    """Identity and wall-clock times of a recording, for recording.json.
 
-    session_start_time is the wall-clock instant the session began. It must
-    carry a UTC offset, it is written as the start_time of the session
-    object, and it places no data. The three objects are producer-defined
-    and default to empty. wall_clock states whether the source times are
-    wall-clock times, microseconds since the Unix epoch. The writer then
-    records the recording start as start_time. When it is False, the times
-    count from an unknown instant and recording.json holds no start_time.
+    session_start_time is the wall-clock instant acquisition began. It is
+    written as the start_time of the session object and places no data.
+    reference_time is the instant every time in the bundle counts from.
+    When it is given, the writer uses it as it is, so a rewrite keeps a
+    bundle's reference time and a channel that begins before it gets a
+    negative offset. When it is None, the writer places the reference time
+    at the earlier of the session start and the first sample. Each time must
+    carry a UTC offset. The three objects are producer-defined and default
+    to empty. wall_clock states whether the source times are wall-clock
+    times, microseconds since the Unix epoch. When it is False, the times
+    count from an unknown instant and recording.json holds no
+    reference_time.
     """
 
     session_start_time: datetime | None = None
+    reference_time: datetime | None = None
     subject: dict[str, object] = field(default_factory=dict)
     session: dict[str, object] = field(default_factory=dict)
     source: dict[str, object] = field(default_factory=dict)
