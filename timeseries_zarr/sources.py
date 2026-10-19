@@ -1,7 +1,7 @@
 """Writer sources that read the channels of an open bundle.
 
 A source gives the writer wall-clock times in microseconds since the Unix
-epoch. It adds epoch_us, the wall-clock time of the recording start, to every
+epoch. It adds epoch_us, the wall-clock time of the reference time, to every
 time the bundle stores.
 """
 
@@ -91,7 +91,7 @@ def _carried_columns(
 class BundleContinuousSource:
     """A continuous channel of an open bundle as a writer source.
 
-    epoch_us is the wall-clock time of the recording start in microseconds
+    epoch_us is the wall-clock time of the reference time in microseconds
     since the Unix epoch. Sample 0 starts at epoch_us plus the offset_us of
     the channel. Raises TypeError if epoch_us is not an integer.
     """
@@ -99,7 +99,7 @@ class BundleContinuousSource:
     __slots__ = ("_channel", "_epoch_us")
 
     def __init__(self, channel: ContinuousChannel, *, epoch_us: int) -> None:
-        """Wrap channel with the wall-clock time of its recording start."""
+        """Wrap channel with the wall-clock time of its reference time."""
         self._channel = channel
         self._epoch_us = integer_argument(epoch_us, "epoch_us")
 
@@ -144,7 +144,7 @@ class BundleEventSource:
     """An event channel of an open bundle as a writer source.
 
     ids maps the key of each channel the writer receives to its id.
-    epoch_us is the wall-clock time of the recording start in microseconds
+    epoch_us is the wall-clock time of the reference time in microseconds
     since the Unix epoch. columns names the optional columns to carry, and
     None names every one. The source carries a named column when the channel
     holds it, except a text column of width 0, and waveform_mean when it
@@ -173,7 +173,7 @@ class BundleEventSource:
         epoch_us: int,
         columns: Iterable[str] | None = None,
     ) -> None:
-        """Wrap channel with the ids of the bundle and its recording start."""
+        """Wrap channel with the ids of the bundle and its reference time."""
         wanted = (
             set(_EVENT_COLUMNS)
             if columns is None
@@ -374,24 +374,27 @@ def _missing_column(key: int, name: str) -> str:
 
 
 def bundle_epoch_us(bundle: Bundle) -> int:
-    """Return the recording start in microseconds since the Unix epoch.
+    """Return the reference time in microseconds since the Unix epoch.
 
-    The recording start is the start_time of recording.json, and the
+    The reference time is the reference_time of recording.json, and the
     arithmetic is exact in integers. A bundle without that time gives 0.
     """
     recording = bundle.recording
-    start = None if recording is None else recording.start_time
-    return 0 if start is None else epoch_us(start)
+    reference = None if recording is None else recording.reference_time
+    return 0 if reference is None else epoch_us(reference)
 
 
 def recording_meta(bundle: Bundle) -> RecordingMeta | None:
     """Return the recording input that rewrites the recording.json of bundle.
 
-    A bundle without recording.json gives None. The result holds the session
-    start of recording.json, and subject, session, and source as deep copies
-    in plain dicts. session leaves out start_time, which the writer puts back
-    from session_start_time. wall_clock is whether recording.json holds a
-    start_time, so a rewrite of a bundle without one stays without one.
+    A bundle without recording.json gives None. The result holds the
+    reference time and the session start of recording.json, and subject,
+    session, and source as deep copies in plain dicts. The writer uses the
+    reference time as it is, so a rewrite keeps every offset and a channel
+    that begins before it gets a negative offset. session leaves out
+    start_time, which the writer puts back from session_start_time.
+    wall_clock is whether recording.json holds a reference_time, so a
+    rewrite of a bundle without one stays without one.
     """
     recording = bundle.recording
     if recording is None:
@@ -400,10 +403,11 @@ def recording_meta(bundle: Bundle) -> RecordingMeta | None:
     session.pop("start_time", None)
     return RecordingMeta(
         session_start_time=recording.session_start_time,
+        reference_time=recording.reference_time,
         subject=copy.deepcopy(dict(recording.subject)),
         session=session,
         source=copy.deepcopy(dict(recording.source)),
-        wall_clock=recording.start_time is not None,
+        wall_clock=recording.reference_time is not None,
     )
 
 
@@ -443,8 +447,9 @@ def bundle_sources(
     """Return writer sources for channels of bundle, each list in key order.
 
     keys names the channels to keep, and None keeps every channel. epoch_us
-    is the wall-clock time of the recording start. None takes the start_time
-    of recording.json in microseconds since the Unix epoch, or 0 without one.
+    is the wall-clock time of the reference time. None takes the
+    reference_time of recording.json in microseconds since the Unix epoch, or
+    0 without one.
     drop_columns names the event columns that
     no event source carries. Each event source maps the key of every kept
     channel to its id. A key whose channel has no id maps to the key as a

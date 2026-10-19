@@ -279,8 +279,8 @@ def test_a_rewrite_of_the_mixed_bundle_reproduces_both_recording_times(
         recording = copy.recording
     assert recording.session_start_time.isoformat() == _SESSION.isoformat()
     assert (
-        recording.start_time.isoformat()
-        == mixed.recording.start_time.isoformat()
+        recording.reference_time.isoformat()
+        == mixed.recording.reference_time.isoformat()
     )
     assert recording == mixed.recording
 
@@ -298,9 +298,7 @@ def test_a_rewrite_of_the_mixed_bundle_reproduces_every_file_byte_for_byte(
     assert files(mixed_copy) == files(mixed_bundle)
 
 
-def test_a_subset_without_the_channels_column_keeps_every_wall_clock_time(
-    mixed, tmp_path
-):
+def test_a_subset_without_the_channels_column_keeps_every_time(mixed, tmp_path):
     copy = _rewrite(
         mixed,
         tmp_path / "subset",
@@ -309,21 +307,12 @@ def test_a_subset_without_the_channels_column_keeps_every_wall_clock_time(
         drop_columns={"channels"},
     )
     assert channel_ids(copy) == {0: "LA2", 1: "marks"}
-    shift = mixed.channels[1].offset_us
-    assert copy.channels[0].offset_us == 0
-    np.testing.assert_array_equal(
-        copy.channels[0].raw[:], mixed.channels[1].raw[:]
-    )
+    _assert_same_continuous(mixed.channels[1], copy.channels[0])
     marks = copy.events[1]
     assert marks.channels is None
     assert marks.columns == ("durations", "labels", "text")
-    np.testing.assert_array_equal(
-        marks.events[:], mixed.events[3].events[:] - shift
-    )
-    assert copy.recording.start_time == mixed.recording.start_time + (
-        dt.timedelta(microseconds=shift)
-    )
-    assert copy.recording.session_start_time == _SESSION
+    np.testing.assert_array_equal(marks.events[:], mixed.events[3].events[:])
+    assert copy.recording == mixed.recording
 
 
 def test_a_subset_that_leaves_out_a_named_channel_makes_the_writer_raise(
@@ -746,7 +735,7 @@ def test_sources_copy_the_name_unit_label_names_and_provenance(mixed):
     assert dense.num_events() == mixed.channels[4].num_events
 
 
-def test_the_recording_start_moves_to_the_earliest_kept_channel(
+def test_the_reference_time_moves_to_the_first_kept_sample_without_a_recording(
     write_mixed, tmp_path
 ):
     plain = open_bundle(write_mixed("plain", recording=None))
@@ -759,17 +748,18 @@ def test_the_recording_start_moves_to_the_earliest_kept_channel(
     )
 
 
-def test_a_kept_event_channel_moves_the_recording_start_to_its_first_event(
+def test_a_kept_event_channel_before_the_first_sample_goes_negative(
     write_mixed, tmp_path
 ):
     plain = open_bundle(write_mixed("plain", recording=None))
     first_spike = int(plain.channels[2].events[0])
     assert 0 < first_spike < 500_000
     copy = _rewrite(plain, tmp_path / "copy", keys=[1, 2])
-    assert copy.channels[0].offset_us == 500_000 - first_spike
+    assert copy.channels[0].offset_us == 0
     np.testing.assert_array_equal(
-        copy.channels[1].events[:], plain.channels[2].events[:] - first_spike
+        copy.channels[1].events[:], plain.channels[2].events[:] - 500_000
     )
+    assert int(copy.channels[1].events[0]) == first_spike - 500_000 < 0
 
 
 def test_an_epoch_us_override_shifts_every_wall_clock_time(mixed):
@@ -789,23 +779,23 @@ def test_an_epoch_us_override_and_a_session_start_date_the_copy(
         recording=RecordingMeta(session_start_time=_SESSION),
         epoch_us=_SESSION_US,
     )
-    assert copy.recording.start_time == _SESSION
+    assert copy.recording.reference_time == _SESSION
     assert copy.recording.session_start_time == _SESSION
     _assert_same_channels(plain, copy)
 
 
-def test_the_sources_default_to_the_epoch_of_the_start_time(mixed):
+def test_the_sources_default_to_the_epoch_of_the_reference_time(mixed):
     continuous, events = bundle_sources(mixed)
     assert continuous[1].start_us() == _SESSION_US + 500_000
     first_spike = int(mixed.channels[2].events[0])
     assert events[0].read_events(0, 1).tolist() == [_SESSION_US + first_spike]
 
 
-def test_bundle_epoch_us_is_the_start_time_in_microseconds(mixed):
+def test_bundle_epoch_us_is_the_reference_time_in_microseconds(mixed):
     assert bundle_epoch_us(mixed) == _SESSION_US
 
 
-def test_bundle_epoch_us_is_the_start_time_before_the_session_start(
+def test_bundle_epoch_us_is_the_reference_time_before_the_session_start(
     write_mixed,
 ):
     bundle = open_bundle(write_mixed("early", base=_EARLY_US))
@@ -813,7 +803,7 @@ def test_bundle_epoch_us_is_the_start_time_before_the_session_start(
     assert bundle_epoch_us(bundle) == _EARLY_US
 
 
-def test_bundle_epoch_us_is_exact_for_a_start_time_far_from_the_epoch(
+def test_bundle_epoch_us_is_exact_for_a_reference_time_far_from_the_epoch(
     write_mixed,
 ):
     path = write_mixed(
@@ -824,10 +814,10 @@ def test_bundle_epoch_us_is_exact_for_a_start_time_far_from_the_epoch(
     assert bundle_epoch_us(open_bundle(path)) == _FAR_US
 
 
-def test_bundle_epoch_us_is_0_without_a_start_time(odd, write_mixed):
+def test_bundle_epoch_us_is_0_without_a_reference_time(odd, write_mixed):
     assert bundle_epoch_us(odd) == 0
-    bundle = _edit_recording(write_mixed("edited"), "start_time")
-    assert bundle.recording.start_time is None
+    bundle = _edit_recording(write_mixed("edited"), "reference_time")
+    assert bundle.recording.reference_time is None
     assert bundle_epoch_us(bundle) == 0
 
 
@@ -836,14 +826,16 @@ def test_bundle_epoch_us_needs_no_session_start(write_mixed):
     bundle = open_bundle(write_mixed("subject", recording=subject_only))
     assert bundle.recording.session_start_time is None
     assert bundle_epoch_us(bundle) == _SESSION_US
-    assert recording_meta(bundle) == subject_only
+    assert recording_meta(bundle) == dataclasses.replace(
+        subject_only, reference_time=bundle.recording.reference_time
+    )
 
 
 def test_recording_meta_keeps_the_session_start_outside_the_session_object(
     mixed,
 ):
     meta = recording_meta(mixed)
-    assert meta == _RECORDING
+    assert meta == dataclasses.replace(_RECORDING, reference_time=_SESSION)
     assert "start_time" in mixed.recording.session
     assert meta.session_start_time.utcoffset() == _SESSION.utcoffset()
     assert all(
@@ -868,33 +860,36 @@ def test_recording_meta_shares_no_nested_object_with_the_bundle(write_mixed):
     assert bundle.recording.source == nested.source
 
 
-def test_a_rewrite_of_a_bundle_without_a_start_time_stays_undated(
+def test_a_rewrite_of_a_bundle_without_a_reference_time_stays_undated(
     write_mixed, tmp_path
 ):
-    bundle = _edit_recording(write_mixed("edited"), "start_time")
+    bundle = _edit_recording(write_mixed("edited"), "reference_time")
     meta = recording_meta(bundle)
     assert meta.session_start_time == _SESSION
+    assert meta.reference_time is None
     assert meta.wall_clock is False
     copy = _rewrite(bundle, tmp_path / "copy", recording=meta)
     assert copy.recording == bundle.recording
     _assert_same_channels(bundle, copy)
 
 
-def test_a_rewrite_of_a_lone_start_time_keeps_it_and_no_session_start(
+def test_a_rewrite_of_a_lone_reference_time_keeps_it_and_no_session_start(
     write_mixed, tmp_path
 ):
     lone = RecordingMeta(session={"id": "ses-01"})
     bundle = open_bundle(write_mixed("lone", recording=lone))
-    assert bundle.recording.start_time == _SESSION
+    assert bundle.recording.reference_time == _SESSION
     assert bundle.recording.session_start_time is None
     meta = recording_meta(bundle)
-    assert meta == lone
+    assert meta == dataclasses.replace(
+        lone, reference_time=bundle.recording.reference_time
+    )
     copy = _rewrite(bundle, tmp_path / "copy", recording=meta)
     assert copy.recording == bundle.recording
     _assert_same_channels(bundle, copy)
 
 
-def test_a_rewrite_keeps_a_session_start_later_than_the_start_time(
+def test_a_rewrite_keeps_a_session_start_later_than_the_reference_time(
     write_mixed, tmp_path
 ):
     bundle = open_bundle(write_mixed("early", base=_EARLY_US))
@@ -902,39 +897,58 @@ def test_a_rewrite_keeps_a_session_start_later_than_the_start_time(
     assert meta.session_start_time == _SESSION
     copy = _rewrite(bundle, tmp_path / "copy", recording=meta)
     assert copy.recording == bundle.recording
-    assert copy.recording.start_time != _SESSION
+    assert copy.recording.reference_time != _SESSION
     _assert_same_channels(bundle, copy)
 
 
-def test_a_session_start_before_the_start_time_places_no_data(
+def test_a_session_start_before_the_reference_time_places_no_data(
     write_mixed, tmp_path
 ):
     earlier = _SESSION - dt.timedelta(microseconds=_SHIFT_US)
     bundle = _edit_recording(write_mixed("late"), "session.start_time", earlier)
-    assert bundle.recording.start_time == _SESSION
+    assert bundle.recording.reference_time == _SESSION
     assert bundle.recording.session_start_time == earlier
     copy = _rewrite(bundle, tmp_path / "copy", recording=recording_meta(bundle))
     assert copy.recording == bundle.recording
     _assert_same_channels(bundle, copy)
 
 
-def test_a_rewrite_of_continuous_channels_past_offset_0_moves_the_recording_start(
+def test_a_rewrite_with_recording_meta_keeps_the_reference_time_and_every_offset(
     write_mixed, tmp_path
 ):
     bundle = open_bundle(write_mixed("early", base=_EARLY_US))
-    start = bundle.recording.start_time
-    assert bundle.recording.session_start_time > start
+    reference = bundle.recording.reference_time
+    assert bundle.recording.session_start_time > reference
     assert bundle.channels[1].offset_us == 500_000
     copy = _rewrite(
         bundle, tmp_path / "copy", recording=recording_meta(bundle), keys=[1]
     )
-    assert copy.channels[0].offset_us == 0
-    assert copy.recording.session_start_time == _SESSION
-    assert copy.recording.start_time == start + dt.timedelta(
-        microseconds=500_000
-    )
+    assert copy.channels[0].offset_us == 500_000
+    assert copy.recording == bundle.recording
     np.testing.assert_array_equal(
         copy.channels[0].raw[:], bundle.channels[1].raw[:]
+    )
+
+
+def test_a_rewrite_with_a_later_reference_time_gives_negative_offsets(
+    write_mixed, tmp_path
+):
+    bundle = open_bundle(write_mixed("early", base=_EARLY_US))
+    later = bundle.recording.reference_time + dt.timedelta(seconds=3)
+    meta = dataclasses.replace(recording_meta(bundle), reference_time=later)
+    copy = _rewrite(bundle, tmp_path / "copy", recording=meta)
+    assert copy.recording.reference_time == later
+    assert [c.offset_us for c in copy.continuous.values()] == [
+        -3_000_000,
+        -2_500_000,
+    ]
+    for key, channel in bundle.events.items():
+        np.testing.assert_array_equal(
+            copy.events[key].events[:], channel.events[:] - 3_000_000
+        )
+    _assert_same_continuous_data = np.testing.assert_array_equal
+    _assert_same_continuous_data(
+        copy.channels[0].raw[:], bundle.channels[0].raw[:]
     )
 
 

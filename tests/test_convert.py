@@ -106,6 +106,7 @@ def _counts(label_names=("ripple", "fast-ripple"), bins=2):
         level=1,
         first=3,
         period_us=1000.0,
+        offset_us=0,
         count=np.arange(bins * 2, dtype=np.uint32).reshape(bins, 2),
         label_names=label_names,
     )

@@ -139,7 +139,7 @@ def _microsecond_offsets(
             f"{_DATETIME_BOUND}, got a number beyond the float64 range"
         ) from error
     flat = np.ravel(values)
-    # The bound keeps the recording start plus an offset inside datetime64[us].
+    # The bound keeps the reference time plus an offset inside datetime64[us].
     inside = (flat > -_DATETIME_LIMIT_US) & (flat < _DATETIME_LIMIT_US)
     if not is_integer:
         inside |= np.isnan(flat)
@@ -241,33 +241,35 @@ class Bundle:
     def datetimes(self, time_us: npt.ArrayLike) -> npt.NDArray[np.datetime64]:
         """Return the UTC wall-clock time of each time in time_us.
 
-        time_us counts microseconds from the recording start, and a fraction
+        time_us counts microseconds from the reference time, and a fraction
         rounds to the nearest microsecond. A time halfway between two
         microseconds rounds to the even one. The result has dtype
         datetime64[us], the shape of time_us, and NaT for a NaN.
 
-        Raises ValueError if recording.json holds no start_time, or one
+        Raises ValueError if recording.json holds no reference_time, or one
         whose UTC time falls outside years 1 through 9999. Also raises
         ValueError if a time is infinite or reaches 2^62 microseconds in
         magnitude.
         """
-        start = None if self.recording is None else self.recording.start_time
-        if start is None:
+        reference = (
+            None if self.recording is None else self.recording.reference_time
+        )
+        if reference is None:
             raise ValueError(
-                f"{RECORDING_FILE} holds no start_time; "
+                f"{RECORDING_FILE} holds no reference_time; "
                 "wall-clock times are unavailable"
             )
         try:
-            utc = start.astimezone(UTC)
+            utc = reference.astimezone(UTC)
         except OverflowError as error:
             raise ValueError(
-                f"{RECORDING_FILE}: start_time must fall within years 1 "
-                f"through 9999 in UTC, got {start.isoformat()!r}"
+                f"{RECORDING_FILE}: reference_time must fall within years 1 "
+                f"through 9999 in UTC, got {reference.isoformat()!r}"
             ) from error
         # numpy warns on a datetime that carries a UTC offset.
-        start64 = np.datetime64(utc.replace(tzinfo=None), "us")
+        reference64 = np.datetime64(utc.replace(tzinfo=None), "us")
         offsets = _microsecond_offsets(time_us)
-        return np.asarray(start64 + offsets, dtype="datetime64[us]")
+        return np.asarray(reference64 + offsets, dtype="datetime64[us]")
 
     def stack(
         self,

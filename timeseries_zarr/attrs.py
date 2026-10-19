@@ -29,6 +29,7 @@ _STRING = "a string"
 _VERSION = "a string of the form major.minor"
 _POSITIVE_NUMBER = "a finite number above 0"
 _NONNEGATIVE_INTEGER = "an integer from 0 to 2^63 - 1"
+_INTEGER = "an integer from -2^63 to 2^63 - 1"
 _INT64_MAX = 2**63 - 1
 _STRING_LIST = "a non-empty list of strings"
 _OBJECT = "an object"
@@ -39,7 +40,8 @@ class ContinuousAttrs:
     """Parsed tsz fields of a continuous channel group.
 
     rate_hz is the sample rate in hertz. offset_us is the time of sample 0
-    in microseconds from the recording start. id and provenance are None when
+    in microseconds from the reference time, and may be negative. id and
+    provenance are None when
     the group omits them.
     """
 
@@ -66,6 +68,19 @@ class EventAttrs:
     label_names: tuple[str, ...] | None
     max_duration_us: int | None
     provenance: Mapping[str, object] | None
+
+
+@dataclass(frozen=True, slots=True)
+class CountLevelAttrs:
+    """Parsed tsz fields of a count level group.
+
+    period_us is the bin width in microseconds. offset_us is the time of bin
+    0 in microseconds from the reference time, a multiple of period_us, and
+    may be negative.
+    """
+
+    period_us: float
+    offset_us: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -339,6 +354,22 @@ def _nonnegative_integer(
     return default if integer is None else integer
 
 
+def _integer(
+    fields: Mapping[str, object], key: str, where: str, default: int
+) -> int:
+    """Return the int64 under key, or default if absent.
+
+    Raises ValueError if the value is not an integer within the int64 range.
+    """
+    if key not in fields:
+        return default
+    value = fields[key]
+    integer = _as_integer(value)
+    if integer is None or integer < -_INT64_MAX - 1 or integer > _INT64_MAX:
+        raise _invalid(where, key, _INTEGER, value)
+    return integer
+
+
 def _optional_string_tuple(
     fields: Mapping[str, object], key: str, where: str
 ) -> tuple[str, ...] | None:
@@ -433,8 +464,9 @@ def parse_continuous_attrs(
 ) -> ContinuousAttrs:
     """Return the tsz fields of a continuous channel group.
 
-    offset_us defaults to 0. Raises ValueError if name, unit, or rate_hz is
-    absent, or if a key holds a value outside its type or range.
+    offset_us defaults to 0 and may be negative. Raises ValueError if name,
+    unit, or rate_hz is absent, or if a key holds a value outside its type or
+    range.
     """
     fields = tsz_fields(attributes, where)
     return ContinuousAttrs(
@@ -442,7 +474,7 @@ def parse_continuous_attrs(
         id=_optional_string(fields, "id", where),
         unit=_string(fields, "unit", where),
         rate_hz=_positive_number(fields, "rate_hz", where),
-        offset_us=_nonnegative_integer(fields, "offset_us", where, 0),
+        offset_us=_integer(fields, "offset_us", where, 0),
         provenance=_optional_object(fields, "provenance", where),
     )
 
@@ -474,6 +506,27 @@ def parse_level_attrs(attributes: Mapping[str, object], where: str) -> float:
     Raises ValueError unless tsz.period_us is a finite number above 0.
     """
     return _positive_number(tsz_fields(attributes, where), "period_us", where)
+
+
+def parse_count_level_attrs(
+    attributes: Mapping[str, object], where: str
+) -> CountLevelAttrs:
+    """Return the tsz fields of a count level group.
+
+    offset_us defaults to 0. Raises ValueError unless tsz.period_us is a
+    finite number above 0 and tsz.offset_us is an integer multiple of it.
+    """
+    fields = tsz_fields(attributes, where)
+    period_us = _positive_number(fields, "period_us", where)
+    offset_us = _integer(fields, "offset_us", where, 0)
+    if offset_us % period_us:
+        raise _invalid(
+            where,
+            "offset_us",
+            f"a multiple of period_us {period_us!r}",
+            offset_us,
+        )
+    return CountLevelAttrs(period_us=period_us, offset_us=offset_us)
 
 
 def parse_waveform_attrs(

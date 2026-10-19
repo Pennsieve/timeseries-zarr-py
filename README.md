@@ -100,7 +100,7 @@ with open_bundle("sine.zarr") as bundle:
 ```
 
 The `start_us` and `end_us` arguments of `read` and `level_for` are integer
-microseconds from the recording start.
+microseconds from the reference time.
 
 `to_dataframe` and `to_series` requires the `pandas` extra, `to_xarray` requires the `xarray`
 extra, and a remote URL requires the `remote` extra.

@@ -30,15 +30,15 @@ _JSON_TYPE_NAMES: Mapping[type, str] = {
 class Recording:
     """Identity and wall-clock times read from recording.json.
 
-    start_time is the recording start, the wall-clock instant every time in
-    the bundle counts from. session_start_time is the start_time of the
-    session object, the instant the session began. Each carries the UTC
+    reference_time is the reference time, t = 0 of every time in the bundle,
+    as a wall-clock instant. session_start_time is the start_time of the
+    session object, the instant acquisition began. Each carries the UTC
     offset the file gives it and is None when the file omits it. subject,
     session, and source are producer-defined objects, read-only after parsing
     and empty when the file omits them. session keeps its start_time entry.
     """
 
-    start_time: datetime | None = None
+    reference_time: datetime | None = None
     session_start_time: datetime | None = None
     subject: Mapping[str, object] = field(default=_EMPTY, hash=False)
     session: Mapping[str, object] = field(default=_EMPTY, hash=False)
@@ -117,14 +117,14 @@ def _optional_object(
 def parse_recording_document(document: Mapping[str, object]) -> Recording:
     """Return the Recording that a parsed recording.json document describes.
 
-    parse_recording_document reads only start_time, subject, session, source,
-    and the start_time of session. Raises ValueError if a time is not an RFC
+    parse_recording_document reads only reference_time, subject, session,
+    source, and the start_time of session. Raises ValueError if a time is not an RFC
     3339 string with a UTC offset, if a time lies past the year 9999, or if an
     object key holds a non-object.
     """
     session = _optional_object(document, "session")
     return Recording(
-        start_time=_optional_time(document, "start_time"),
+        reference_time=_optional_time(document, "reference_time"),
         session_start_time=_optional_time(
             session, "start_time", "session.start_time"
         ),
