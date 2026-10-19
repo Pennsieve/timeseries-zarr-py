@@ -75,12 +75,12 @@ class ResolvedUnit:
 class RecordingMeta:
     """Identity and wall-clock start of a recording, for recording.json.
 
-    start is the session's wall-clock start and must carry a UTC offset. A
-    start of None leaves the date out of recording.json. The three objects are
-    producer-defined and default to empty.
+    session_start_time is the instant the recording session began and must
+    carry a UTC offset. When it is None, recording.json holds no date. The
+    three objects are producer-defined and default to empty.
     """
 
-    start: datetime | None = None
+    session_start_time: datetime | None = None
     subject: dict[str, object] = field(default_factory=dict)
     session: dict[str, object] = field(default_factory=dict)
     source: dict[str, object] = field(default_factory=dict)

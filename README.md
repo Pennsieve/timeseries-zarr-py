@@ -74,7 +74,11 @@ section of the specification lists what the file can hold.
 Sources must provide times in microseconds since the Unix epoch.
 The writer stores them as offsets from the earliest start time in the recording.
 
-`WriteOpts` fields:
+`session_start_time` must be a timezone-aware `datetime`. When you set it,
+`recording.json` holds it and also holds `timestamps_reference_time`, the wall-clock
+time of the bundle origin. You cannot set `timestamps_reference_time`. The writer
+derives it. It is earlier than the session start when a channel or an event
+begins first. Without a session start, `recording.json` holds neither time.
 
 | Field | Description | Default |
 |---|---|---|

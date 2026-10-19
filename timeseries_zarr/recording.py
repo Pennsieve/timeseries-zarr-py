@@ -12,17 +12,23 @@ RECORDING_FILE = "recording.json"
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
+def _require_offset(start: datetime) -> None:
+    """Raise ValueError if start has no UTC offset."""
+    if start.utcoffset() is None:
+        raise ValueError("session_start_time must carry a UTC offset")
+
+
 def session_start_us(meta: RecordingMeta) -> int | None:
     """Return the session start in microseconds since the Unix epoch.
 
-    The arithmetic is exact in integers. A meta without a start returns None.
-    Raises ValueError if meta.start has no UTC offset.
+    The arithmetic is exact in integers. A meta without a session start returns
+    None. Raises ValueError if meta.session_start_time has no UTC offset.
     """
-    if meta.start is None:
+    start = meta.session_start_time
+    if start is None:
         return None
-    if meta.start.utcoffset() is None:
-        raise ValueError("meta.start must carry a UTC offset")
-    return (meta.start - _EPOCH) // timedelta(microseconds=1)
+    _require_offset(start)
+    return (start - _EPOCH) // timedelta(microseconds=1)
 
 
 def recording_document(
@@ -30,23 +36,28 @@ def recording_document(
 ) -> dict[str, object]:
     """Return the recording.json content for a bundle with the given origin.
 
-    start is the bundle origin, the instant every time in the bundle counts
-    from, as an RFC 3339 string with microsecond precision. It is written in
-    the UTC offset of meta.start, and it comes from origin_us and not from
-    meta.start, because a channel can begin before the session start. origin_us
-    is wall-clock microseconds since the Unix epoch. A meta without a start
-    gives a document without one, and origin_us is then unused. subject,
-    session, and source are copied in that order and only when they hold
-    something. Raises ValueError if meta.start has no UTC offset.
+    session_start_time is meta.session_start_time as given.
+    timestamps_reference_time is origin_us, the instant every time in the
+    bundle counts from, in the UTC offset of the session start. Both are RFC
+    3339 strings with microsecond precision. origin_us is wall-clock
+    microseconds since the Unix epoch. A meta without a session start gives a
+    document with neither time, and origin_us is then unused.
+    subject, session, and source follow in that order, each only when it holds
+    something. Raises ValueError if meta.session_start_time has no UTC offset.
     """
     document: dict[str, object] = {}
-    if meta.start is not None:
-        if meta.start.utcoffset() is None:
-            raise ValueError("meta.start must carry a UTC offset")
+    start = meta.session_start_time
+    if start is not None:
+        _require_offset(start)
         origin = (_EPOCH + timedelta(microseconds=origin_us)).astimezone(
-            meta.start.tzinfo
+            start.tzinfo
         )
-        document["start"] = origin.isoformat(timespec="microseconds")
+        document["session_start_time"] = start.isoformat(
+            timespec="microseconds"
+        )
+        document["timestamps_reference_time"] = origin.isoformat(
+            timespec="microseconds"
+        )
     for key, value in (
         ("subject", meta.subject),
         ("session", meta.session),

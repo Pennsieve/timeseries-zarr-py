@@ -61,12 +61,12 @@ def test_levelmembers_frozen_rejects_mutation():
 def test_recordingmeta_construction_stores_fields():
     start = datetime(2024, 3, 14, 9, 15, tzinfo=UTC)
     meta = RecordingMeta(
-        start=start,
+        session_start_time=start,
         subject={"id": "sub-01"},
         session={"id": "ses-01"},
         source={"converter": "timeseries-zarr-py"},
     )
-    assert meta.start is start
+    assert meta.session_start_time is start
     assert meta.subject == {"id": "sub-01"}
     assert meta.session == {"id": "ses-01"}
     assert meta.source == {"converter": "timeseries-zarr-py"}
@@ -74,7 +74,7 @@ def test_recordingmeta_construction_stores_fields():
 
 def test_recordingmeta_frozen_rejects_mutation():
     meta = RecordingMeta(
-        start=datetime(2024, 3, 14, tzinfo=UTC),
+        session_start_time=datetime(2024, 3, 14, tzinfo=UTC),
         subject={},
         session={},
         source={},
@@ -83,9 +83,9 @@ def test_recordingmeta_frozen_rejects_mutation():
         meta.subject = {"id": "x"}
 
 
-def test_recordingmeta_defaults_to_no_start_and_empty_objects():
+def test_recordingmeta_defaults_to_no_session_start_and_empty_objects():
     meta = RecordingMeta()
-    assert meta.start is None
+    assert meta.session_start_time is None
     assert meta.subject == {}
     assert meta.session == {}
     assert meta.source == {}

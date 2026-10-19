@@ -179,13 +179,14 @@ def write_bundle(
     The root group carries the format version. Every channel is written into
     a fresh root group at output_path, the metadata of every node is
     consolidated into the root, and then recording.json is written when
-    recording is given, so identity and the wall-clock start never enter the
+    recording is given, so identity and the wall-clock times never enter the
     root object. A bundle an earlier run left at output_path is replaced.
     Every time counts from the origin, the earliest of the session start in
-    recording and every channel start. recording.json holds that instant as
-    its start when recording has a start. Sizing and compression follow opts.
-    Raises ValueError if two channels share an id, recording.start has no UTC
-    offset, a voltage unit is not "uV" under voltage_policy require_uv, a
+    recording and every channel start. When recording has a session start,
+    recording.json holds it as session_start_time and the origin as
+    timestamps_reference_time. Sizing and compression follow opts. Raises
+    ValueError if two channels share an id, recording.session_start_time has
+    no UTC offset, a voltage unit is not "uV" under voltage_policy require_uv, a
     channel's provenance is not a JSON object of finite values, or output_path
     is not absent, empty, or a bundle, before anything is written. A failed
     write leaves a partial bundle with no consolidated metadata.
