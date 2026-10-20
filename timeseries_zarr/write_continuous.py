@@ -17,7 +17,6 @@ from timeseries_zarr.constants import (
     COUNT_KEY,
     DECIMATION_FACTOR,
     ENVELOPE_PAIR_SIZE,
-    FLOAT32_BYTES,
     MEAN_KEY,
     MINMAX_KEY,
     RAW_KEY,
@@ -34,7 +33,7 @@ from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     source_provenance,
 )
-from timeseries_zarr.sizing import chunk_and_shard, level_sizing, member_sizing
+from timeseries_zarr.sizing import level_sizing, member_sizing, raw_sizing
 from timeseries_zarr.streaming import (
     BlockReadableArray,
     _rebuffer_and_fold,
@@ -323,11 +322,8 @@ def write_continuous_channel(
     raw = write_raw(
         group,
         source,
-        chunk_and_shard(
-            raw_shape(source.num_samples()),
-            FLOAT32_BYTES,
-            opts.inner_len,
-            opts.target_shard_bytes,
+        raw_sizing(
+            source.num_samples(), opts.inner_len, opts.target_shard_bytes
         ),
         opts.zstd_level,
         resolved.factor,

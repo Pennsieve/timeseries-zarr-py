@@ -10,6 +10,7 @@ from timeseries_zarr.sizing import (
     chunk_shape_for_level,
     level_sizing,
     member_sizing,
+    raw_sizing,
     shard_shape_for_level,
 )
 from timeseries_zarr.types import ChunkShard
@@ -187,6 +188,28 @@ def test_level_sizing_empty_level_takes_one_row_chunks():
         chunk_shape=(1, ENVELOPE_PAIR_SIZE),
         shard_shape=(1, ENVELOPE_PAIR_SIZE),
     )
+
+
+def test_raw_sizing_matches_chunk_and_shard_of_a_rank_one_float32_array() -> (
+    None
+):
+    default = raw_sizing(100_000_000)
+    assert default == chunk_and_shard((100_000_000,), FLOAT32_BYTES)
+    assert default == ChunkShard(chunk_shape=(8192,), shard_shape=(4194304,))
+    small = raw_sizing(
+        100_000_000, inner_len=1024, target_shard_bytes=64 * 1024
+    )
+    assert small == chunk_and_shard(
+        (100_000_000,),
+        FLOAT32_BYTES,
+        inner_len=1024,
+        target_shard_bytes=64 * 1024,
+    )
+    assert small == ChunkShard(chunk_shape=(1024,), shard_shape=(16384,))
+
+
+def test_raw_sizing_of_no_samples_takes_one_row_chunks_and_shards() -> None:
+    assert raw_sizing(0) == ChunkShard(chunk_shape=(1,), shard_shape=(1,))
 
 
 def test_member_sizing_drops_the_pair_axis():
