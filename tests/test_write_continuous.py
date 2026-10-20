@@ -1,11 +1,13 @@
 import dataclasses
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
 from zarr import Array
 
-from tests.conftest import ArrayContinuousSource
+from tests.conftest import ArrayContinuousSource, ArrayMultiChannelSource
 from timeseries_zarr.constants import (
     COUNT_KEY,
     MEAN_KEY,
@@ -16,12 +18,14 @@ from timeseries_zarr.constants import (
 from timeseries_zarr.fold import fold_raw_block, split_members
 from timeseries_zarr.planning import level_period_us, plan_levels
 from timeseries_zarr.sizing import level_sizing, raw_sizing
+from timeseries_zarr.streaming import scale_block
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
 from timeseries_zarr.write_continuous import (
     create_channel_group,
     create_level,
     create_raw,
     write_continuous_channel,
+    write_continuous_channels,
     write_levels,
     write_raw,
     write_statistics_blocks,
@@ -772,3 +776,538 @@ def test_write_continuous_channel_leaves_an_unknown_unit_unchanged(
     group = _write(tmp_path, continuous_source(samples, unit="pA"), opts)
     assert group.attrs["tsz"]["unit"] == "pA"
     assert np.array_equal(group[RAW_KEY][:], samples, equal_nan=True)
+
+
+class _WindowSource:
+    """A multi-channel source over prepared windows.
+
+    It counts the calls to iter_windows.
+    """
+
+    def __init__(
+        self, channels: Sequence[Any], windows: Sequence[Sequence[Any]]
+    ) -> None:
+        self._channels = list(channels)
+        self._windows = list(windows)
+        self.calls = 0
+
+    def channels(self) -> list[Any]:
+        return self._channels
+
+    def iter_windows(self) -> Any:
+        self.calls += 1
+        return iter(self._windows)
+
+
+class _MetadataChannel:
+    """A channel that declares its metadata and has no read_samples."""
+
+    def __init__(self, id: str, num_samples: int) -> None:
+        self.id = id
+        self.name = id
+        self.unit = "uV"
+        self._num_samples = num_samples
+
+    def rate_hz(self) -> float:
+        return 32000.0
+
+    def start_us(self) -> int:
+        return 0
+
+    def num_samples(self) -> int:
+        return self._num_samples
+
+
+def _write_many(
+    tmp_path: Path,
+    source: Any,
+    opts: WriteOpts,
+    first_key: int = 0,
+    reference_us: int = 0,
+    name: str = "bundle",
+) -> Any:
+    """Write source below the root group at tmp_path / name and return it."""
+    parent = open_group(tmp_path / name)
+    write_continuous_channels(
+        parent, first_key, source, reference_us=reference_us, opts=opts
+    )
+    return open_group(tmp_path / name)
+
+
+def _files(root: Path) -> dict[str, bytes]:
+    """Return the content of every file below root by relative path."""
+    return {
+        file.relative_to(root).as_posix(): file.read_bytes()
+        for file in sorted(root.rglob("*"))
+        if file.is_file()
+    }
+
+
+def _record_level_writes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Record the group name of every write_levels call."""
+    folded: list[str] = []
+
+    def spy(group: Any, raw: Any, rate_hz: float, opts: WriteOpts) -> None:
+        folded.append(group.name)
+        write_levels(group, raw, rate_hz, opts)
+
+    monkeypatch.setattr("timeseries_zarr.write_continuous.write_levels", spy)
+    return folded
+
+
+def _assert_levels_equal_the_definition(
+    group: Any, samples: np.ndarray, rate_hz: float, opts: WriteOpts
+) -> None:
+    plans = plan_levels(
+        samples.shape[0], rate_hz, opts.max_levels, opts.min_bins
+    )
+    assert plans
+    assert sorted(group.group_keys()) == sorted(str(p.level) for p in plans)
+    for plan in plans:
+        want = _direct(samples, 4**plan.level)
+        level = group[str(plan.level)]
+        assert dict(level.attrs) == {
+            "tsz": {"period_us": level_period_us(rate_hz, plan.level)}
+        }
+        assert np.array_equal(
+            level[MINMAX_KEY][:], want[:, :2].astype(np.float32), equal_nan=True
+        )
+        assert np.array_equal(level[COUNT_KEY][:], want[:, 4])
+        assert _close(level[MEAN_KEY][:], want[:, 2]), plan.level
+        if opts.write_var:
+            assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
+        else:
+            assert VAR_KEY not in list(level.array_keys())
+
+
+def test_write_continuous_channels_stores_each_channels_raw_samples_unchanged(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    samples = [_series(1000, seed=1), _series(1000, seed=2), _series(256)]
+    channels = [
+        continuous_source(each, id=f"c{i}") for i, each in enumerate(samples)
+    ]
+    root = _write_many(tmp_path, multi_channel_source(channels), _OPTS)
+    for index, expected in enumerate(samples):
+        stored = root[str(index)][RAW_KEY][:]
+        assert stored.dtype == np.float32
+        assert np.array_equal(stored, expected, equal_nan=True)
+
+
+def test_write_continuous_channels_names_the_groups_from_the_first_key_in_channel_order(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    channels = [
+        continuous_source(
+            np.arange(64, dtype=np.float32),
+            id=name,
+            name=f"name {name}",
+            start_us=start_us,
+        )
+        for name, start_us in (("a", 10), ("b", 20), ("c", 30))
+    ]
+    root = _write_many(
+        tmp_path,
+        multi_channel_source(channels),
+        _OPTS,
+        first_key=4,
+        reference_us=5,
+    )
+    assert sorted(root.group_keys()) == ["4", "5", "6"]
+    stored = [dict(root[key].attrs)["tsz"] for key in ("4", "5", "6")]
+    assert [(tsz["id"], tsz["name"]) for tsz in stored] == [
+        ("a", "name a"),
+        ("b", "name b"),
+        ("c", "name c"),
+    ]
+    assert [tsz["offset_us"] for tsz in stored] == [5, 15, 25]
+
+
+@pytest.mark.parametrize("window_rows", [1, 3, 7, 8, 13, 1000])
+def test_write_continuous_channels_every_write_covers_a_whole_shard_whatever_the_window_length(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    monkeypatch: pytest.MonkeyPatch,
+    opts: WriteOpts,
+    window_rows: int,
+) -> None:
+    writes: list[tuple[str, int, int, int, int]] = []
+
+    def spy(array: Any, start: int, block: np.ndarray) -> None:
+        writes.append(
+            (array.name, start, block.shape[0], array.shape[0], array.shards[0])
+        )
+        write_region(array, start, block)
+
+    monkeypatch.setattr("timeseries_zarr.write_continuous.write_region", spy)
+    samples = [_series(1000, seed=1), _series(700, seed=2)]
+    channels = [
+        continuous_source(each, id=f"c{i}") for i, each in enumerate(samples)
+    ]
+    root = _write_many(
+        tmp_path, multi_channel_source(channels, window_rows), opts
+    )
+    assert len(writes) > 10
+    for name, start, rows, length, shard_rows in writes:
+        assert start % shard_rows == 0, name
+        assert rows == min(shard_rows, length - start), name
+    for index, expected in enumerate(samples):
+        shard_rows = raw_sizing(
+            expected.shape[0], opts.inner_len, opts.target_shard_bytes
+        ).shard_shape[0]
+        raw_starts = [
+            start for name, start, *_ in writes if name == f"/{index}/raw"
+        ]
+        assert raw_starts == list(range(0, expected.shape[0], shard_rows))
+        stored = root[str(index)][RAW_KEY][:]
+        assert np.array_equal(stored, expected, equal_nan=True)
+
+
+def test_write_continuous_channels_scales_each_channel_by_its_own_unit(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    samples = _series(300, offset=0.005, scale=0.001)
+    cases = [
+        ("volts", 1e6, "uV"),
+        ("mV", 1e3, "uV"),
+        ("uV", 1.0, "uV"),
+        ("pA", 1.0, "pA"),
+    ]
+    channels = [
+        continuous_source(samples, id=f"c{i}", unit=unit)
+        for i, (unit, _, _) in enumerate(cases)
+    ]
+    root = _write_many(tmp_path, multi_channel_source(channels), _OPTS)
+    for index, (_, factor, stored_unit) in enumerate(cases):
+        group = root[str(index)]
+        want = samples * np.float32(factor) if factor != 1.0 else samples
+        assert group.attrs["tsz"]["unit"] == stored_unit
+        assert np.array_equal(group[RAW_KEY][:], want, equal_nan=True)
+
+
+def test_write_continuous_channels_writes_each_channels_provenance_on_its_group(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    channels = [
+        continuous_source(
+            np.arange(64, dtype=np.float32), id="a", provenance=_PROVENANCE
+        ),
+        continuous_source(np.arange(64, dtype=np.float32), id="b"),
+    ]
+    root = _write_many(tmp_path, multi_channel_source(channels), _OPTS)
+    assert dict(root["0"].attrs)["tsz"]["provenance"] == _PROVENANCE
+    assert "provenance" not in dict(root["1"].attrs)["tsz"]
+
+
+def test_write_continuous_channels_writes_an_empty_raw_array_for_a_channel_without_samples(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    opts: WriteOpts,
+) -> None:
+    samples = _series(200)
+    channels = [
+        continuous_source(np.empty(0, np.float32), id="empty"),
+        continuous_source(samples, id="full"),
+    ]
+    root = _write_many(tmp_path, multi_channel_source(channels), opts)
+    assert root["0"][RAW_KEY].shape == (0,)
+    assert list(root["0"].group_keys()) == []
+    assert np.array_equal(root["1"][RAW_KEY][:], samples, equal_nan=True)
+
+
+def test_write_continuous_channels_accepts_channels_of_different_lengths_and_rates(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    lengths = [1000, 333, 700]
+    rates = [32000.0, 1000.0, 250.0]
+    samples = [_series(n, seed=n) for n in lengths]
+    channels = [
+        continuous_source(each, id=f"c{i}", rate_hz=rate)
+        for i, (each, rate) in enumerate(zip(samples, rates))
+    ]
+    source = multi_channel_source(channels, window_rows=[7, 5, 13])
+    root = _write_many(tmp_path, source, _OPTS)
+    for index, (each, rate) in enumerate(zip(samples, rates)):
+        group = root[str(index)]
+        plans = plan_levels(
+            each.shape[0], rate, _OPTS.max_levels, _OPTS.min_bins
+        )
+        assert group.attrs["tsz"]["rate_hz"] == rate
+        assert np.array_equal(group[RAW_KEY][:], each, equal_nan=True)
+        assert sorted(group.group_keys()) == sorted(str(p.level) for p in plans)
+
+
+def test_write_continuous_channels_folds_the_levels_of_each_channel(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    opts: WriteOpts,
+) -> None:
+    samples = [_series(1000, seed=1), _series(600, seed=2)]
+    rates = [32000.0, 1000.0]
+    channels = [
+        continuous_source(each, id=f"c{i}", rate_hz=rate)
+        for i, (each, rate) in enumerate(zip(samples, rates))
+    ]
+    source = multi_channel_source(channels, window_rows=[11, 40])
+    root = _write_many(tmp_path, source, opts)
+    for index, (each, rate) in enumerate(zip(samples, rates)):
+        _assert_levels_equal_the_definition(root[str(index)], each, rate, opts)
+
+
+def test_write_continuous_channels_matches_write_continuous_channel_for_each_channel(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    opts: WriteOpts,
+) -> None:
+    channels = [
+        continuous_source(
+            _series(1000, seed=1),
+            id="a",
+            start_us=10,
+            provenance=_PROVENANCE,
+        ),
+        continuous_source(
+            _series(333, offset=0.005, scale=0.001, seed=2),
+            id="b",
+            rate_hz=1000.0,
+            start_us=50,
+            unit="volts",
+        ),
+        continuous_source(
+            _series(700, seed=3), id="c", rate_hz=250.0, unit="pA"
+        ),
+    ]
+    single = open_group(tmp_path / "single")
+    for key, channel in enumerate(channels):
+        write_continuous_channel(
+            single, key, channel, reference_us=10, opts=opts
+        )
+    source = multi_channel_source(channels, window_rows=[7, 5, 13])
+    _write_many(tmp_path, source, opts, reference_us=10, name="sweep")
+    left, right = _files(tmp_path / "single"), _files(tmp_path / "sweep")
+    assert len(left) > 20
+    assert left.keys() == right.keys()
+    assert [name for name in left if left[name] != right[name]] == []
+
+
+@pytest.mark.parametrize("window_rows", [7, 100])
+def test_write_continuous_channels_accepts_strided_column_views(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    window_rows: int,
+) -> None:
+    matrix = np.stack([_series(300, seed=i) for i in range(3)], axis=1)
+    channels = [continuous_source(matrix[:, i], id=f"c{i}") for i in range(3)]
+    windows = [
+        list(matrix[start : start + window_rows].T)
+        for start in range(0, 300, window_rows)
+    ]
+    assert not windows[0][0].flags["C_CONTIGUOUS"]
+    root = _write_many(tmp_path, _WindowSource(channels, windows), _OPTS)
+    for index in range(3):
+        stored = root[str(index)][RAW_KEY][:]
+        assert np.array_equal(stored, matrix[:, index], equal_nan=True)
+
+
+def test_write_continuous_channels_casts_a_float64_block_to_float32(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+) -> None:
+    wide = np.random.default_rng(3).standard_normal(300)
+    narrow = wide.astype(np.float32)
+    channels = [continuous_source(narrow, id="a", unit="volts")]
+    windows = [[wide[:100]], [wide[100:]]]
+    root = _write_many(tmp_path, _WindowSource(channels, windows), _OPTS)
+    stored = root["0"][RAW_KEY][:]
+    assert stored.dtype == np.float32
+    assert np.array_equal(stored, narrow * np.float32(1e6))
+
+
+def test_write_continuous_channels_needs_only_channel_metadata(
+    tmp_path: Path,
+) -> None:
+    channels = [_MetadataChannel("a", 40), _MetadataChannel("b", 10)]
+    samples = [np.arange(40, dtype=np.float32), np.arange(10, dtype=np.float32)]
+    windows = [[samples[0][:25], samples[1]], [samples[0][25:], samples[1][:0]]]
+    root = _write_many(tmp_path, _WindowSource(channels, windows), _OPTS)
+    assert np.array_equal(root["0"][RAW_KEY][:], samples[0])
+    assert np.array_equal(root["1"][RAW_KEY][:], samples[1])
+
+
+def test_write_continuous_channels_with_no_channels_writes_nothing_and_reads_no_window(
+    tmp_path: Path,
+) -> None:
+    source = _WindowSource([], [])
+    root = _write_many(tmp_path, source, _OPTS, first_key=5)
+    assert list(root.group_keys()) == []
+    assert list(root.array_keys()) == []
+    assert source.calls == 0
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_write_continuous_channels_rejects_a_window_with_the_wrong_block_count(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+) -> None:
+    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
+    channels = [
+        continuous_source(_series(1000, seed=1), id="a"),
+        continuous_source(_series(1000, seed=2), id="b"),
+    ]
+    short = np.zeros(8, dtype=np.float32)
+    long = np.zeros(100, dtype=np.float32)
+    source = _WindowSource(channels, [[short, short], [long] * count])
+    with pytest.raises(
+        ValueError,
+        match=rf"window 1 holds {count} blocks and the source has 2 channels",
+    ):
+        _write_many(tmp_path, source, _OPTS)
+    assert writes == []
+
+
+@pytest.mark.parametrize(
+    ("shape", "rank"), [((4, 2), 2), ((), 0)], ids=["matrix", "scalar"]
+)
+def test_write_continuous_channels_rejects_a_block_that_is_not_rank_one(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    shape: tuple[int, ...],
+    rank: int,
+) -> None:
+    channels = [
+        continuous_source(_series(1000, seed=1), id="a"),
+        continuous_source(_series(1000, seed=2), id="b"),
+    ]
+    good = np.zeros(8, dtype=np.float32)
+    source = _WindowSource(channels, [[good, np.zeros(shape, np.float32)]])
+    with pytest.raises(
+        ValueError, match=rf"channel 4 \('b'\) gives a block of rank {rank}"
+    ):
+        _write_many(tmp_path, source, _OPTS, first_key=3)
+
+
+@pytest.mark.parametrize(
+    ("counts", "message"),
+    [
+        (
+            (1024, 1000),
+            r"channel 3 \('short'\) yields 1000 samples and declares 1024",
+        ),
+        (None, r"channel 2 \('ok'\) yields 0 samples and declares 1024"),
+    ],
+    ids=["short window", "no window"],
+)
+def test_write_continuous_channels_rejects_a_channel_with_too_few_samples(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    monkeypatch: pytest.MonkeyPatch,
+    counts: tuple[int, int] | None,
+    message: str,
+) -> None:
+    folded = _record_level_writes(monkeypatch)
+    channels = [
+        continuous_source(_series(1024, seed=1), id="ok"),
+        continuous_source(_series(1024, seed=2), id="short"),
+    ]
+    windows = (
+        []
+        if counts is None
+        else [
+            [
+                channel.read_samples(0, count)
+                for channel, count in zip(channels, counts)
+            ]
+        ]
+    )
+    with pytest.raises(ValueError, match=message):
+        _write_many(
+            tmp_path, _WindowSource(channels, windows), _OPTS, first_key=2
+        )
+    assert folded == []
+
+
+@pytest.mark.parametrize(
+    ("declared", "sizes", "expected_writes", "received"),
+    [(40, (32, 16), [(0, 32)], 48), (40, (41,), [], 41), (0, (1,), [], 1)],
+    ids=["after a shard", "in one block", "no samples declared"],
+)
+def test_write_continuous_channels_rejects_too_many_samples_before_writing_past_the_array(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    monkeypatch: pytest.MonkeyPatch,
+    declared: int,
+    sizes: tuple[int, ...],
+    expected_writes: list[tuple[int, int]],
+    received: int,
+) -> None:
+    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
+    folded = _record_level_writes(monkeypatch)
+    scaled: list[int] = []
+
+    def spy_scale(block: np.ndarray, factor: float) -> np.ndarray:
+        scaled.append(block.shape[0])
+        return scale_block(block, factor)
+
+    monkeypatch.setattr(
+        "timeseries_zarr.write_continuous.scale_block", spy_scale
+    )
+    channel = continuous_source(np.zeros(declared, np.float32), id="x")
+    windows = [[np.ones(size, np.float32)] for size in sizes]
+    with pytest.raises(
+        ValueError,
+        match=rf"channel 0 \('x'\) yields at least {received} samples "
+        rf"and declares {declared}",
+    ):
+        _write_many(tmp_path, _WindowSource([channel], windows), _OPTS)
+    assert writes == expected_writes
+    assert all(start + rows <= declared for start, rows in writes)
+    assert scaled == list(sizes[:-1])
+    assert folded == []
+
+
+def test_write_continuous_channels_rejects_a_volts_unit_under_require_uv(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+) -> None:
+    channels = [
+        continuous_source(np.arange(64, dtype=np.float32), id="a", unit="uV"),
+        continuous_source(
+            np.arange(64, dtype=np.float32), id="b", unit="volts"
+        ),
+    ]
+    source = _WindowSource(channels, [])
+    strict = dataclasses.replace(_OPTS, voltage_policy="require_uv")
+    with pytest.raises(ValueError, match="voltage unit"):
+        _write_many(tmp_path, source, strict)
+    assert source.calls == 0
+
+
+def test_write_continuous_channels_returns_none(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    parent = open_group(tmp_path / "bundle")
+    source = multi_channel_source(
+        [continuous_source(np.arange(64, dtype=np.float32))]
+    )
+    result = write_continuous_channels(
+        parent, 0, source, reference_us=0, opts=_OPTS
+    )
+    assert result is None
