@@ -364,6 +364,24 @@ def test_reference_us_ignores_an_event_before_the_first_sample(
     assert reference_us(sources, session_start_us=5_000) == 5_000
 
 
+def test_reference_us_ignores_a_continuous_channel_without_samples(
+    continuous_source,
+):
+    empty = continuous_source(np.zeros(0, np.float32), start_us=1_000)
+    sources = [empty, _samples(continuous_source, 5_000)]
+    assert reference_us(sources) == 5_000
+    assert reference_us(sources, session_start_us=9_000) == 5_000
+
+
+def test_reference_us_falls_back_to_events_when_every_channel_is_empty(
+    continuous_source, event_source
+):
+    empty = continuous_source(np.zeros(0, np.float32), start_us=1_000)
+    assert reference_us([empty, event_source([40, 50])]) == 40
+    assert reference_us([empty, event_source([40])], session_start_us=90) == 90
+    assert reference_us([empty]) is None
+
+
 def test_reference_us_is_the_session_start_without_samples(event_source):
     assert reference_us([event_source([40, 50])], session_start_us=90) == 90
 
@@ -897,6 +915,31 @@ def test_write_bundle_places_an_epoch_before_the_session_at_a_negative_time(
     assert _check_recording(output, nodes) == [_SESSION, _SESSION]
     assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
     assert open_group(output)["1"]["events"][:].tolist() == [-32_000]
+
+
+def test_write_bundle_places_the_reference_at_the_first_sample_past_an_empty_channel(
+    tmp_path, continuous_source
+):
+    hour_us = 3_600_000_000
+    empty = continuous_source(
+        np.zeros(0, np.float32), id="empty", start_us=_SESSION_US - hour_us
+    )
+    eeg = continuous_source(
+        np.zeros(64, np.float32), id="eeg", start_us=_SESSION_US
+    )
+    output = tmp_path / "bundle"
+    write_bundle(
+        [empty, eeg],
+        [],
+        output_path=output,
+        opts=_OPTS,
+        recording=RecordingMeta(subject={"id": "sub-0931"}),
+    )
+    document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
+    assert document["reference_time"] == "2024-03-14T14:15:00.000000+00:00"
+    group = open_group(output)
+    assert dict(group["0"].attrs)["tsz"]["offset_us"] == -hour_us
+    assert dict(group["1"].attrs)["tsz"]["offset_us"] == 0
 
 
 def test_write_bundle_annotations_alone_share_the_reference_of_their_recording(
