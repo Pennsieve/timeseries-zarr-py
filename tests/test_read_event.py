@@ -1,5 +1,4 @@
 import dataclasses
-import json
 import re
 import sys
 from types import MappingProxyType
@@ -101,12 +100,6 @@ def _counts(rows, labels):
 
 
 @pytest.fixture(scope="module")
-def synthetic(synthetic_bundle):
-    root = open_root(synthetic_bundle)
-    return {key: _parse(root, key) for key in (3, 4, 5)}
-
-
-@pytest.fixture(scope="module")
 def odd(odd_bundle):
     root = open_root(odd_bundle)
     return {key: _parse(root, key) for key in (9, 12)}
@@ -116,131 +109,6 @@ def odd(odd_bundle):
 def mixed(mixed_bundle):
     root = open_root(mixed_bundle)
     return {key: _parse(root, key) for key in (2, 3, 4)}
-
-
-def test_read_returns_the_seven_marks_from_100_to_300_seconds(synthetic):
-    table = synthetic[4].read(100_000_000, 300_000_000)
-    assert table.time_us.tolist() == [
-        111014882,
-        115254398,
-        120000000,
-        123075056,
-        142306524,
-        148108656,
-        222000000,
-    ]
-    assert table.channel_keys == [[0], [0], [2], [0], [0], [0], []]
-    assert table.label_name == ["spike"] * 2 + ["note"] + ["spike"] * 3 + [
-        "seizure"
-    ]
-
-
-def test_read_keeps_an_interval_that_ends_at_the_window_start(synthetic):
-    table = synthetic[4].read(312_000_000, 320_000_000)
-    assert table.time_us.tolist() == [222_000_000]
-    assert table.duration_us.tolist() == [90_000_000]
-    assert table.label_name == ["seizure"]
-
-
-def test_read_drops_an_interval_that_ends_before_the_window_start(synthetic):
-    assert len(synthetic[4].read(312_000_001, 320_000_000)) == 0
-
-
-def test_read_decodes_a_text_row_that_fills_its_width(synthetic):
-    channel = synthetic[4]
-    stored = np.asarray(channel.text[11])
-    assert stored.shape == (37,)
-    assert np.all(stored != 0)
-    assert channel.read().text[11].encode("utf-8") == stored.tobytes()
-
-
-def test_synthetic_marks_channel_carries_its_attributes(synthetic):
-    channel = synthetic[4]
-    assert channel.kind == "event"
-    assert channel.id == "synth-marks-05"
-    assert channel.label_names == ("seizure", "spike", "note")
-    assert channel.max_duration_us == 90_000_000
-    assert channel.provenance == {"software": "synth-review 0.1"}
-    assert channel.count_levels == {}
-
-
-def test_repr_names_the_key_name_event_count_and_columns(synthetic):
-    assert repr(synthetic[4]) == (
-        "EventChannel(key=4, name='curated marks', num_events=14, "
-        "columns=('durations', 'labels', 'text', 'channels'))"
-    )
-
-
-def test_read_returns_194_events_of_five_units_with_their_waveforms(synthetic):
-    table = synthetic[3].read(300_000_000, 330_000_000)
-    assert len(table) == 194
-    assert np.bincount(table.label, minlength=5).tolist() == [73, 9, 34, 49, 29]
-    assert table.waveform.values.shape == (194, 32)
-    assert table.waveform.event_sample == 12
-    assert table.waveform.period_us == 122.0703125
-    assert table.waveform.rows == "event"
-
-
-def test_read_counts_covers_the_bins_that_overlap_the_window(synthetic):
-    counts = synthetic[3].read_counts(300_000_000, 330_000_000, level=1)
-    assert (counts.first, counts.first + len(counts)) == (1171, 1290)
-    assert int(counts.count.sum()) == 197
-    assert counts.time_us[0] == 1171 * 256_000.0
-    assert counts.label_names == (
-        "unit-0",
-        "unit-1",
-        "unit-2",
-        "unit-3",
-        "unit-4",
-    )
-
-
-def test_count_level_2_sums_four_bins_of_level_1(synthetic):
-    channel = synthetic[3]
-    level_1 = channel.read_counts(level=1).count
-    level_2 = channel.read_counts(level=2).count
-    np.testing.assert_array_equal(
-        level_1.reshape(-1, 4, 5).sum(axis=1), level_2
-    )
-    assert int(level_1.sum()) == int(level_2.sum()) == 8099
-    assert channel.num_events == 8099
-
-
-def test_waveform_mean_time_axis_is_zero_at_the_event_sample(synthetic):
-    snippets = synthetic[3].waveform_mean
-    assert snippets.time_us[12] == 0.0
-    assert snippets.read().values.shape == (5, 32)
-
-
-@pytest.mark.parametrize(
-    ("bins", "level"),
-    [(100, 2), (586, 2), (587, 1), (2344, 1), (2345, 0)],
-)
-def test_level_for_over_the_whole_channel_picks_the_coarsest_level(
-    synthetic, bins, level
-):
-    assert synthetic[3].level_for(bins=bins) == level
-
-
-@pytest.mark.parametrize(
-    ("bins", "level"), [(31, 2), (32, 1), (119, 1), (120, 0)]
-)
-def test_level_for_a_window_counts_its_overlapping_bins(synthetic, bins, level):
-    assert synthetic[3].level_for(300_000_000, 330_000_000, bins=bins) == level
-
-
-def test_read_returns_detector_values_and_json_text(synthetic):
-    table = synthetic[5].read()
-    top = np.argsort(table.value)[::-1][:3]
-    np.testing.assert_allclose(
-        table.value[top], [0.94737792, 0.88927662, 0.84740794], rtol=1e-7
-    )
-    assert table.time_us[top].tolist() == [
-        489_531_239,
-        559_385_070,
-        450_611_878,
-    ]
-    assert json.loads(table.text[0]) == {"score": 0.3294, "band": "ripple"}
 
 
 def test_read_keeps_both_events_of_a_tie_at_the_window_start(odd):
@@ -849,6 +717,42 @@ def test_written_count_levels_each_count_every_event(mixed):
         counts = channel.read_counts(level=number)
         assert int(counts.count.sum()) == channel.num_events == 70_000
         assert counts.label_names == ("ripple", "fast-ripple")
+
+
+def _expected_counts(channel, number):
+    """Count the events of each label in each bin of count level number."""
+    level = channel.count_levels[number]
+    assert level.period_us.is_integer()
+    times = np.asarray(channel.events[:], dtype=np.int64)
+    labels = np.asarray(channel.labels[:], dtype=np.int64)
+    bins = (times - level.offset_us) // int(level.period_us)
+    expected = np.zeros((level.bins, level.num_labels), dtype=np.int64)
+    np.add.at(expected, (bins, labels), 1)
+    return expected
+
+
+def test_written_count_levels_count_each_label_in_each_bin(mixed):
+    channel = mixed[4]
+    for number in channel.count_levels:
+        counts = channel.read_counts(level=number)
+        np.testing.assert_array_equal(
+            counts.count, _expected_counts(channel, number)
+        )
+
+
+def test_read_counts_returns_the_bins_that_overlap_the_window(mixed):
+    channel = mixed[4]
+    level = channel.count_levels[2]
+    period = int(level.period_us)
+    start_us, end_us = 123_456_789, 234_567_890
+    first = (start_us - level.offset_us) // period
+    stop = -((level.offset_us - end_us) // period)
+    counts = channel.read_counts(start_us, end_us, level=2)
+    assert (counts.first, len(counts)) == (first, stop - first)
+    assert counts.time_us[0] == level.offset_us + first * period
+    np.testing.assert_array_equal(
+        counts.count, _expected_counts(channel, 2)[first:stop]
+    )
 
 
 def test_written_waveform_mean_without_waveforms_reads_back(mixed):

@@ -1,11 +1,13 @@
 import importlib.util
 import json
 import re
+import shutil
 from pathlib import Path
 from types import MappingProxyType
 
 import numpy as np
 import pytest
+import zarr
 from zarr.buffer import default_buffer_prototype
 from zarr.storage import MemoryStore, StorePath
 
@@ -24,6 +26,7 @@ from tests.test_bundle import (
     _SPEC_OPTS,
 )
 from tests.test_zarr_io import _RecordingStore
+from timeseries_zarr import read_event
 from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.bundle import write_bundle
 from timeseries_zarr.read_bundle import Bundle, open_bundle, parse_bundle
@@ -545,9 +548,8 @@ def test_datetimes_places_the_event_times_on_the_wall_clock(mixed):
     ]
 
 
-@pytest.mark.parametrize("fixture", ["odd_bundle", "synthetic_bundle"])
-def test_datetimes_rejects_a_bundle_without_a_reference_time(request, fixture):
-    bundle = open_bundle(request.getfixturevalue(fixture))
+def test_datetimes_rejects_a_bundle_without_a_reference_time(odd_bundle):
+    bundle = open_bundle(odd_bundle)
     with pytest.raises(ValueError, match=f"^{_NO_REFERENCE}$"):
         bundle.datetimes([0])
 
@@ -737,3 +739,153 @@ def test_open_bundle_without_recording_json_reads_only_the_two_root_keys(
 def test_writing_through_a_raw_array_raises(mixed):
     with pytest.raises(ValueError, match="read-only"):
         mixed.continuous[0].raw[0:1] = np.zeros(1, dtype=np.float32)
+
+
+_SMALL_CHUNK_ROWS = 20
+_LARGE_CHUNK_ROWS = 1000
+_LARGE_ARRAY_ROWS = 20_000
+_STATISTICS = ("min", "max", "mean", "var", "count")
+
+
+def _relayout(source, destination):
+    """Copy the bundle at source to destination without sharding or compression.
+
+    An array of up to _LARGE_ARRAY_ROWS rows takes chunks of _SMALL_CHUNK_ROWS
+    rows, and a longer array chunks of _LARGE_CHUNK_ROWS rows. A chunk that
+    holds only the fill value is left out.
+    """
+    original = zarr.open_group(str(source), mode="r")
+    copy = zarr.open_group(
+        str(destination),
+        mode="w",
+        zarr_format=3,
+        attributes=dict(original.attrs),
+    )
+    members = sorted(
+        original.members(max_depth=None),
+        key=lambda member: member[0].count("/"),
+    )
+    for path, node in members:
+        if isinstance(node, zarr.Group):
+            copy.create_group(path, attributes=dict(node.attrs))
+            continue
+        rows = (
+            _SMALL_CHUNK_ROWS
+            if node.shape[0] <= _LARGE_ARRAY_ROWS
+            else _LARGE_CHUNK_ROWS
+        )
+        array = copy.create_array(
+            path,
+            shape=node.shape,
+            dtype=node.dtype,
+            chunks=(rows, *(max(1, size) for size in node.shape[1:])),
+            compressors=None,
+            fill_value=node.fill_value,
+            attributes=dict(node.attrs),
+            dimension_names=node.metadata.dimension_names,
+            config={"write_empty_chunks": False},
+        )
+        if node.size:
+            array[...] = node[...]
+    zarr.consolidate_metadata(str(destination))
+    recording = source / RECORDING_FILE
+    if recording.exists():
+        shutil.copy(recording, destination / RECORDING_FILE)
+    return destination
+
+
+def _middle_third(start_us, end_us):
+    third = (end_us - start_us) // 3
+    return start_us + third, start_us + 2 * third
+
+
+def _reads(bundle):
+    """Return what reads of every channel, level, and column of bundle give.
+
+    Each channel is read whole and over the middle third of its span.
+    """
+    values = {"describe": bundle.describe(), "recording": bundle.recording}
+    for key, channel in bundle.continuous.items():
+        values[key, "spans"] = channel.spans()
+        middle = _middle_third(channel.start_us, channel.end_us)
+        for window in [(None, None), middle]:
+            values[key, window, "raw"] = channel.read(*window).values
+            for number in channel.levels:
+                bins = channel.read(*window, level=number)
+                for member in _STATISTICS:
+                    values[key, window, number, member] = getattr(bins, member)
+    for key, channel in bundle.events.items():
+        times = np.asarray(channel.events[:])
+        windows = [(None, None)]
+        if times.size:
+            windows.append(_middle_third(int(times[0]), int(times[-1]) + 1))
+        if channel.waveform_mean is not None:
+            values[key, "waveform_mean"] = channel.waveform_mean.read().values
+        for window in windows:
+            table = channel.read(*window)
+            for column, data in table.columns().items():
+                values[key, window, column] = data
+            if table.waveform is not None:
+                values[key, window, "waveform"] = table.waveform.values
+            for number in channel.count_levels:
+                counts = channel.read_counts(*window, level=number)
+                values[key, window, "counts", number] = counts.count
+    return values
+
+
+def _assert_same_reads(expected, found):
+    assert found.keys() == expected.keys()
+    for name, value in expected.items():
+        if isinstance(value, np.ndarray):
+            np.testing.assert_array_equal(found[name], value, err_msg=str(name))
+        else:
+            assert found[name] == value, name
+
+
+@pytest.mark.parametrize("fixture", ["mixed_bundle", "odd_bundle"])
+@pytest.mark.parametrize(
+    "search_limit",
+    [None, 0],
+    ids=["whole events search", "bisect events search"],
+)
+def test_reads_match_across_chunk_layouts_and_missing_fill_chunks(
+    request, tmp_path, monkeypatch, fixture, search_limit
+):
+    if search_limit is not None:
+        monkeypatch.setattr(
+            read_event, "EVENTS_SEARCH_LIMIT_BYTES", search_limit
+        )
+    source = request.getfixturevalue(fixture)
+    copy = _relayout(source, tmp_path / "relaid")
+    assert zarr.open_group(str(copy), mode="r")["0/raw"].shards is None
+    raw = zarr.open_group(str(source), mode="r")["0/raw"][:]
+    fill_chunks = [
+        start // _SMALL_CHUNK_ROWS
+        for start in range(0, raw.size, _SMALL_CHUNK_ROWS)
+        if np.isnan(raw[start : start + _SMALL_CHUNK_ROWS]).all()
+    ]
+    assert fill_chunks
+    for index in fill_chunks:
+        assert not (copy / "0" / "raw" / "c" / str(index)).exists()
+    _assert_same_reads(_reads(open_bundle(source)), _reads(open_bundle(copy)))
+
+
+def test_reads_fill_a_missing_shard_with_the_fill_value(mixed_bundle):
+    original = open_bundle(mixed_bundle)
+    store = memory_store(mixed_bundle, omit=("0/raw/c/1", "4/1/count/c/0/0"))
+    bundle = open_bundle(store)
+    rows = original.continuous[0].raw.shards[0]
+    expected = original.continuous[0].read().values.copy()
+    expected[rows : 2 * rows] = np.nan
+    np.testing.assert_array_equal(bundle.continuous[0].read().values, expected)
+    for member in _STATISTICS:
+        np.testing.assert_array_equal(
+            getattr(bundle.continuous[0].read(level=1), member),
+            getattr(original.continuous[0].read(level=1), member),
+        )
+    count_rows = original.events[4].count_levels[1].count.shards[0]
+    counts = original.events[4].read_counts(level=1).count.copy()
+    counts[:count_rows] = 0
+    np.testing.assert_array_equal(
+        bundle.events[4].read_counts(level=1).count, counts
+    )

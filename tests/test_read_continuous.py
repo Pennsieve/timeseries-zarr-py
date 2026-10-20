@@ -21,7 +21,6 @@ from timeseries_zarr.constants import (
 from timeseries_zarr.planning import level_bins, level_period_us
 from timeseries_zarr.read_continuous import (
     Bins,
-    ContinuousChannel,
     Level,
     Samples,
     parse_continuous_channel,
@@ -900,80 +899,3 @@ def test_parse_rejects_a_member_of_the_wrong_shape_or_dtype_kind(
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         _hand_parse(nodes)
-
-
-# Synthetic reference bundle
-
-
-def test_synthetic_channel_0_parses_every_field(synthetic_bundle):
-    channel = _channel(synthetic_bundle, 0)
-    assert isinstance(channel, ContinuousChannel)
-    assert repr(channel) == (
-        "ContinuousChannel(key=0, name='EEG-like', rate_hz=1024.0, "
-        "num_samples=614400, levels=5)"
-    )
-    assert (channel.id, channel.unit, channel.offset_us) == (
-        "synth-eeg-01",
-        "uV",
-        0,
-    )
-    assert channel.end_us == 600_000_000
-    assert channel.levels[5].bins == 600
-
-
-@pytest.mark.parametrize(
-    ("start_us", "end_us", "level", "first", "length"),
-    [
-        (0, 600_000_000, 4, 0, 2400),
-        (300_000_000, 330_000_000, 2, 19_200, 1920),
-        (312_000_000, 314_000_000, 0, 319_488, 2048),
-    ],
-)
-def test_synthetic_zoom_windows_pick_a_level_for_1200_bins(
-    synthetic_bundle, start_us, end_us, level, first, length
-):
-    channel = _channel(synthetic_bundle, 0)
-    assert channel.level_for(start_us, end_us, bins=1200) == level
-    result = channel.read(start_us, end_us, level=level)
-    assert (result.first, len(result)) == (first, length)
-    assert result.time_s[0] == start_us / 1e6
-
-
-def test_synthetic_offset_channel_reads_snap_to_whole_bins(synthetic_bundle):
-    channel = _channel(synthetic_bundle, 1)
-    assert channel.offset_us == 500_000
-    assert channel.end_us == 600_500_000
-    bins = channel.read(0, 1_000_000, level=1)
-    assert (bins.first, len(bins)) == (0, 32)
-    assert len(channel.read(0, 500_000, level=1)) == 0
-    assert channel.level_for(0, 1_000_000, bins=33) == 0
-
-
-def test_synthetic_offset_channel_reads_snap_to_whole_samples(
-    synthetic_bundle,
-):
-    channel = _channel(synthetic_bundle, 1)
-    two = channel.read(500_000, 503_907)
-    one = channel.read(500_000, 503_906)
-    assert (two.first, len(two)) == (0, 2)
-    assert (one.first, len(one)) == (0, 1)
-    assert len(channel.read(600_000_000, 700_000_000)) == 128
-
-
-def test_synthetic_gappy_channel_reports_nan_bins_with_counts(
-    synthetic_bundle,
-):
-    bins = _channel(synthetic_bundle, 2).read(level=5)
-    nan_bins = np.flatnonzero(np.isnan(bins.min))
-    assert nan_bins.tolist() == [60, 61, 62, 125, 200]
-    assert bins.count[nan_bins].tolist() == [0, 0, 768, 1023, 614]
-
-
-def test_synthetic_gappy_channel_spans_skip_the_dropouts(synthetic_bundle):
-    channel = _channel(synthetic_bundle, 2)
-    assert channel.spans() == [(0, 120_000_000), (124_000_000, 600_000_000)]
-    assert channel.spans(level=1) == [
-        (0, 120_000_000),
-        (124_500_000, 400_203_125),
-        (401_000_000, 600_000_000),
-    ]

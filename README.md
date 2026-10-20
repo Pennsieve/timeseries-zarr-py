@@ -120,10 +120,6 @@ make check       # ruff check + format check + mypy + pytest
 make pre-commit  # install the git pre-commit hook
 ```
 
-Some tests read the synthetic reference bundle at
-`../timeseries-zarr-paper/testdata/synthetic.tszarr`. Set `TSZ_SYNTHETIC_BUNDLE` to read
-it from another path. The tests skip when the bundle is absent.
-
 [Releasing](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/releasing.md)
 describes how to publish a release.
 
