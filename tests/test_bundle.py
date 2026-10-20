@@ -1,8 +1,12 @@
+from __future__ import annotations
+
 import dataclasses
 import datetime as dt
 import json
 import math
 import re
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -12,6 +16,7 @@ from timeseries_zarr.bundle import (
     assign_indices,
     channel_keys,
     clear_output_path,
+    indexed_channels,
     max_key,
     reference_us,
     write_all_channels,
@@ -21,9 +26,20 @@ from timeseries_zarr.recording import RECORDING_FILE, epoch_us
 from timeseries_zarr.types import RecordingMeta, WriteOpts
 from timeseries_zarr.zarr_io import open_group
 
+if TYPE_CHECKING:
+    from tests.conftest import (
+        ArrayContinuousSource,
+        ArrayEventSource,
+        ArrayMultiChannelSource,
+    )
+
+
+def _channels_of(indexed):
+    return [channel for _, channel in indexed_channels(indexed)]
+
 
 def _write_all(root, indexed, opts=None):
-    reference = reference_us([source for _, source in indexed])
+    reference = reference_us(_channels_of(indexed))
     write_all_channels(
         root,
         indexed,
@@ -45,7 +61,7 @@ def test_assign_indices_empty():
 def test_assign_indices_continuous_then_event(continuous_source):
     c0 = continuous_source(np.zeros(4, dtype=np.float32), id="c0")
     c1 = continuous_source(np.zeros(4, dtype=np.float32), id="c1")
-    # assign_indices does not inspect its sources.
+    # An event source is never inspected.
     u0, u1 = object(), object()
     assert assign_indices([c0, c1], [u0, u1]) == [
         (0, c0),
@@ -63,6 +79,72 @@ def test_assign_indices_only_continuous(continuous_source):
 def test_assign_indices_only_events():
     u0 = object()
     assert assign_indices([], [u0]) == [(0, u0)]
+
+
+def _zeros(
+    continuous_source: type[ArrayContinuousSource],
+    *ids: str,
+    samples: int = 4,
+) -> list[ArrayContinuousSource]:
+    return [
+        continuous_source(np.zeros(samples, np.float32), id=channel_id)
+        for channel_id in ids
+    ]
+
+
+def test_assign_indices_gives_a_multi_channel_source_one_key_per_channel(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    event_source: type[ArrayEventSource],
+) -> None:
+    before, after = _zeros(continuous_source, "before", "after")
+    many = multi_channel_source(_zeros(continuous_source, "m0", "m1", "m2"))
+    marks = event_source([1], id="marks")
+    assert assign_indices([before, many, after], [marks]) == [
+        (0, before),
+        (1, many),
+        (4, after),
+        (5, marks),
+    ]
+
+
+def test_assign_indices_gives_a_multi_channel_source_without_channels_no_key(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    nothing = multi_channel_source([])
+    (after,) = _zeros(continuous_source, "after")
+    assert assign_indices([nothing, after], []) == [(0, nothing), (0, after)]
+
+
+def test_indexed_channels_lists_each_channel_at_its_key(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    event_source: type[ArrayEventSource],
+) -> None:
+    before, after = _zeros(continuous_source, "before", "after")
+    members = _zeros(continuous_source, "m0", "m1", "m2")
+    marks = event_source([1], id="marks")
+    indexed = assign_indices(
+        [before, multi_channel_source(members), after], [marks]
+    )
+    assert indexed_channels(indexed) == [
+        (0, before),
+        (1, members[0]),
+        (2, members[1]),
+        (3, members[2]),
+        (4, after),
+        (5, marks),
+    ]
+
+
+def test_indexed_channels_leaves_a_flat_list_unchanged(
+    continuous_source: type[ArrayContinuousSource],
+    event_source: type[ArrayEventSource],
+) -> None:
+    (single,) = _zeros(continuous_source, "single")
+    flat = [(0, single), (3, event_source([1], id="marks")), (9, single)]
+    assert indexed_channels(flat) == flat
 
 
 def test_write_all_channels_dispatches_by_type(
@@ -104,6 +186,56 @@ def test_write_all_channels_resolves_event_channel_ids_through_the_keys(
     _write_all(root, assign_indices([first, second], [event]))
     channels = open_group(tmp_path / "bundle")["2"]["channels"][:]
     assert channels.tolist() == [[2], [3]]
+
+
+def test_write_all_channels_writes_a_multi_channel_source_at_consecutive_keys(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    solo = np.arange(70, dtype=np.float32)
+    first = np.arange(150, dtype=np.float32) + 1000
+    second = np.arange(90, dtype=np.float32) + 2000
+    many = multi_channel_source(
+        [
+            continuous_source(first, id="m0", start_us=100),
+            continuous_source(second, id="m1", start_us=300),
+        ],
+        window_rows=[7, 13],
+    )
+    root = open_group(tmp_path / "bundle")
+    _write_all(
+        root,
+        assign_indices(
+            [continuous_source(solo, id="solo", start_us=500), many], []
+        ),
+    )
+    group = open_group(tmp_path / "bundle")
+    assert sorted(group.group_keys()) == ["0", "1", "2"]
+    attrs = [dict(group[key].attrs)["tsz"] for key in "012"]
+    assert [item["id"] for item in attrs] == ["solo", "m0", "m1"]
+    assert [item["offset_us"] for item in attrs] == [400, 0, 200]
+    for key, samples in zip("012", (solo, first, second), strict=True):
+        assert np.array_equal(group[key]["raw"][:], samples)
+
+
+def test_write_all_channels_resolves_event_channel_ids_of_multi_channel_source_channels(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    event_source: type[ArrayEventSource],
+) -> None:
+    (solo,) = _zeros(continuous_source, "solo", samples=8)
+    many = multi_channel_source(
+        _zeros(continuous_source, "m0", "m1", samples=8)
+    )
+    marks = event_source(
+        [5, 6], id="marks", channel_ids=[["m1"], ["solo", "m0"]]
+    )
+    root = open_group(tmp_path / "bundle")
+    _write_all(root, assign_indices([solo, many], [marks]))
+    channels = open_group(tmp_path / "bundle")["3"]["channels"][:]
+    assert channels.tolist() == [[4], [3]]
 
 
 def test_write_bundle_writes_a_mixed_bundle(
@@ -382,6 +514,28 @@ def test_reference_us_falls_back_to_events_when_every_channel_is_empty(
     assert reference_us([empty]) is None
 
 
+def test_reference_us_is_the_first_sample_of_a_multi_channel_source_channel(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    many = multi_channel_source(
+        [
+            continuous_source(
+                np.zeros(4, np.float32), id="late", start_us=7_000
+            ),
+            continuous_source(
+                np.zeros(4, np.float32), id="first", start_us=3_000
+            ),
+            continuous_source(
+                np.zeros(0, np.float32), id="empty", start_us=1_000
+            ),
+        ]
+    )
+    channels = _channels_of(assign_indices([many], []))
+    assert reference_us(channels) == 3_000
+    assert reference_us(channels, session_start_us=2_000) == 2_000
+
+
 def test_reference_us_is_the_session_start_without_samples(event_source):
     assert reference_us([event_source([40, 50])], session_start_us=90) == 90
 
@@ -425,6 +579,17 @@ def test_channel_keys_maps_every_id_to_its_index(
     assert channel_keys(indexed) == {"LA1": 0, "LA2": 1, "units": 2, "marks": 3}
 
 
+def test_channel_keys_maps_each_channel_of_a_multi_channel_source(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    event_source: type[ArrayEventSource],
+) -> None:
+    (solo,) = _zeros(continuous_source, "solo")
+    many = multi_channel_source(_zeros(continuous_source, "m0", "m1"))
+    indexed = assign_indices([solo, many], [event_source([1], id="marks")])
+    assert channel_keys(indexed) == {"solo": 0, "m0": 1, "m1": 2, "marks": 3}
+
+
 def test_channel_keys_of_no_channels_is_empty():
     assert channel_keys([]) == {}
 
@@ -455,6 +620,25 @@ def test_channel_keys_rejects_a_continuous_and_an_event_channel_sharing_an_id(
         channel_keys(indexed)
 
 
+def test_channel_keys_rejects_two_channels_of_one_multi_channel_source_sharing_an_id(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    many = multi_channel_source(_zeros(continuous_source, "x", "y", "x"))
+    with pytest.raises(ValueError, match="channels 0 and 2 share the id 'x'"):
+        channel_keys(assign_indices([many], []))
+
+
+def test_channel_keys_rejects_a_multi_channel_source_channel_sharing_an_id_with_a_single_source(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    many = multi_channel_source(_zeros(continuous_source, "a", "b"))
+    (twin,) = _zeros(continuous_source, "b")
+    with pytest.raises(ValueError, match="channels 1 and 2 share the id 'b'"):
+        channel_keys(assign_indices([many, twin], []))
+
+
 def test_max_key_is_the_largest_index(continuous_source):
     sources = [continuous_source(np.zeros(4, np.float32)) for _ in range(5)]
     assert max_key(assign_indices(sources, [])) == 4
@@ -463,6 +647,16 @@ def test_max_key_is_the_largest_index(continuous_source):
 def test_max_key_does_not_assume_contiguous_keys(continuous_source):
     src = continuous_source(np.zeros(4, np.float32))
     assert max_key([(2, src), (9, src), (5, src)]) == 9
+
+
+def test_max_key_counts_every_channel_of_a_multi_channel_source(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    many = multi_channel_source(_zeros(continuous_source, "a", "b", "c", "d"))
+    (solo,) = _zeros(continuous_source, "solo")
+    assert max_key(assign_indices([many], [])) == 3
+    assert max_key(assign_indices([solo, many], [])) == 4
 
 
 def test_max_key_of_no_channels_is_zero():
@@ -1519,3 +1713,165 @@ def test_write_bundle_accepts_sources_that_have_no_provenance_method(
     write_bundle([Bare()], [BareEvents()], output_path=output, opts=_OPTS)
     _assert_provenance_matches(_channel_attrs(output), {"0": None, "1": None})
     assert _channel_attrs(output)["1"]["kind"] == "event"
+
+
+def test_write_bundle_keeps_list_order_across_single_and_multi_channel_sources(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    event_source: type[ArrayEventSource],
+) -> None:
+    first, last = _zeros(continuous_source, "first", "last", samples=8)
+    many = multi_channel_source(
+        _zeros(continuous_source, "m0", "m1", samples=8)
+    )
+    output = tmp_path / "bundle"
+    write_bundle(
+        [first, many, last],
+        [event_source([1], id="marks")],
+        output_path=output,
+        opts=_OPTS,
+    )
+    attrs = _channel_attrs(output)
+    assert {key: item["id"] for key, item in attrs.items()} == {
+        "0": "first",
+        "1": "m0",
+        "2": "m1",
+        "3": "last",
+        "4": "marks",
+    }
+
+
+def test_write_bundle_names_a_multi_channel_source_channel_in_a_unit_error(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    (solo,) = _zeros(continuous_source, "solo", samples=8)
+    many = multi_channel_source(
+        [
+            continuous_source(np.zeros(8, np.float32), id="m0"),
+            continuous_source(np.zeros(8, np.float32), id="m1", unit="volts"),
+        ]
+    )
+    output = tmp_path / "bundle"
+    opts = WriteOpts(voltage_policy="require_uv")
+    with pytest.raises(ValueError, match=r"channel 2 \('m1'\).*'volts'"):
+        write_bundle([solo, many], [], output_path=output, opts=opts)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(("provenance", "reason"), _BAD_PROVENANCE)
+def test_write_bundle_rejects_a_bad_multi_channel_source_provenance_before_writing(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    provenance: object,
+    reason: str,
+) -> None:
+    many = multi_channel_source(
+        [
+            continuous_source(np.zeros(8, np.float32), id="m0"),
+            continuous_source(
+                np.zeros(8, np.float32), id="m1", provenance=provenance
+            ),
+        ]
+    )
+    output = tmp_path / "bundle"
+    with pytest.raises(ValueError, match=rf"channel 1 \('m1'\).*{reason}"):
+        write_bundle([many], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_with_a_multi_channel_source_conforms_to_the_specification_validation_list(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    event_source: type[ArrayEventSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    continuous, events = _mixed_sources(continuous_source, event_source)
+    many = multi_channel_source(continuous, window_rows=[700, 1000])
+    output = tmp_path / "bundle"
+    write_bundle(
+        [many],
+        events,
+        output_path=output,
+        opts=_SPEC_OPTS,
+        recording=_RECORDING,
+    )
+    nodes = _validate_bundle(output)
+    assert sorted(p for p in nodes if p and "/" not in p) == [
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+    ]
+    assert _check_recording(output, nodes) == [_SESSION, _SESSION]
+    _assert_provenance_matches(_channel_attrs(output), _MIXED_PROVENANCE)
+
+
+def _bundle_files(path: Path) -> dict[str, bytes]:
+    return {
+        file.relative_to(path).as_posix(): file.read_bytes()
+        for file in sorted(path.rglob("*"))
+        if file.is_file()
+    }
+
+
+def test_write_bundle_writes_the_same_files_from_a_multi_channel_source_as_from_its_channels(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    event_source: type[ArrayEventSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    channels = [
+        continuous_source(
+            _signal(1000, 1),
+            id="a",
+            rate_hz=256.0,
+            start_us=_SESSION_US + 1_000,
+            provenance=_ACQUIRE,
+        ),
+        continuous_source(
+            _signal(517, 2),
+            id="b",
+            rate_hz=1000.0,
+            start_us=_SESSION_US + 50_000,
+            unit="mV",
+        ),
+        continuous_source(
+            _signal(130, 3),
+            id="c",
+            rate_hz=64.0,
+            start_us=_SESSION_US - 20_000,
+        ),
+    ]
+    marks = event_source(
+        _SESSION_US + np.array([2_000, 1_500_000, 3_000_000]),
+        labels=[0, 1, 0],
+        label_names=["spike", "seizure"],
+        channel_ids=[["a"], ["b", "c"], []],
+        id="marks",
+        provenance=_REVIEW,
+    )
+    per_channel = tmp_path / "per-channel"
+    sweep = tmp_path / "sweep"
+    write_bundle(
+        channels,
+        [marks],
+        output_path=per_channel,
+        opts=_OPTS,
+        recording=_RECORDING,
+    )
+    write_bundle(
+        [multi_channel_source(channels, window_rows=(7, 5, 13))],
+        [marks],
+        output_path=sweep,
+        opts=_OPTS,
+        recording=_RECORDING,
+    )
+    left, right = _bundle_files(per_channel), _bundle_files(sweep)
+    assert len(left) > 30
+    assert left.keys() == right.keys()
+    assert [name for name in left if left[name] != right[name]] == []
