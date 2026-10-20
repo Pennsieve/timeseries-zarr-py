@@ -9,12 +9,14 @@ from timeseries_zarr.fold import (
     split_members,
 )
 from timeseries_zarr.streaming import (
+    Regrouper,
     _rebuffer_and_fold,
     iter_array_blocks,
     iter_member_blocks,
     iter_raw_blocks,
     regroup,
     scale,
+    scale_block,
     tap,
 )
 from timeseries_zarr.types import LevelMembers
@@ -294,6 +296,101 @@ def test_regroup_rejects_non_positive_rows(rows):
         list(regroup([np.arange(4.0)], rows))
 
 
+def _values(blocks: list[np.ndarray]) -> list[list[float]]:
+    return [block.tolist() for block in blocks]
+
+
+def test_regrouper_push_returns_whole_blocks_and_keeps_the_remainder() -> None:
+    regrouper: Regrouper[np.float64] = Regrouper(4)
+    assert regrouper.push(np.arange(3.0)) == []
+    assert _values(regrouper.push(np.arange(3.0, 10.0))) == [
+        [0.0, 1.0, 2.0, 3.0],
+        [4.0, 5.0, 6.0, 7.0],
+    ]
+    assert regrouper.push(np.arange(10.0, 11.0)) == []
+    assert _values(regrouper.push(np.arange(11.0, 12.0))) == [
+        [8.0, 9.0, 10.0, 11.0]
+    ]
+    assert regrouper.flush() is None
+
+
+def test_regrouper_flush_returns_the_remainder_once() -> None:
+    regrouper: Regrouper[np.float64] = Regrouper(4)
+    regrouper.push(np.arange(6.0))
+    tail = regrouper.flush()
+    assert tail is not None
+    assert tail.tolist() == [4.0, 5.0]
+    assert regrouper.flush() is None
+    assert _values(regrouper.push(np.arange(10.0, 14.0))) == [
+        [10.0, 11.0, 12.0, 13.0]
+    ]
+
+
+def test_regrouper_push_of_an_empty_block_returns_nothing() -> None:
+    regrouper: Regrouper[np.float64] = Regrouper(4)
+    assert regrouper.push(np.empty(0)) == []
+    assert regrouper.flush() is None
+    regrouper.push(np.arange(2.0))
+    assert regrouper.push(np.empty(0)) == []
+    tail = regrouper.flush()
+    assert tail is not None
+    assert tail.tolist() == [0.0, 1.0]
+
+
+def test_regrouper_flush_without_rows_is_none() -> None:
+    regrouper: Regrouper[np.float64] = Regrouper(4)
+    assert regrouper.flush() is None
+    regrouper.push(np.arange(8.0))
+    assert regrouper.flush() is None
+
+
+def test_regrouper_carries_rows_in_a_copy() -> None:
+    regrouper: Regrouper[np.float64] = Regrouper(4)
+    pushed = np.arange(6.0)
+    regrouper.push(pushed)
+    pushed[:] = -1.0
+    (completed,) = regrouper.push(np.arange(6.0, 8.0))
+    assert completed.tolist() == [4.0, 5.0, 6.0, 7.0]
+    short = np.array([8.0, 9.0])
+    assert regrouper.push(short) == []
+    short[:] = -1.0
+    tail = regrouper.flush()
+    assert tail is not None
+    assert tail.tolist() == [8.0, 9.0]
+    assert completed.tolist() == [4.0, 5.0, 6.0, 7.0]
+
+
+def test_regrouper_returns_a_whole_block_of_one_push_as_a_view() -> None:
+    regrouper: Regrouper[np.float64] = Regrouper(4)
+    pushed = np.arange(8.0)
+    first, second = regrouper.push(pushed)
+    assert np.shares_memory(first, pushed)
+    assert np.shares_memory(second, pushed)
+
+
+def test_regrouper_keeps_the_trailing_axes_of_rank_two_blocks() -> None:
+    regrouper: Regrouper[np.float32] = Regrouper(4)
+    rows = np.arange(6 * STATISTIC_COLUMNS, dtype=np.float32).reshape(
+        6, STATISTIC_COLUMNS
+    )
+    out = regrouper.push(rows[:3]) + regrouper.push(rows[3:])
+    tail = regrouper.flush()
+    assert tail is not None
+    out.append(tail)
+    assert [block.shape for block in out] == [
+        (4, STATISTIC_COLUMNS),
+        (2, STATISTIC_COLUMNS),
+    ]
+    assert all(block.dtype == np.float32 for block in out)
+    assert np.array_equal(np.concatenate(out, axis=0), rows)
+
+
+@pytest.mark.parametrize("rows", [0, -1])
+def test_regrouper_rejects_non_positive_rows(rows: int) -> None:
+    with pytest.raises(ValueError, match="rows"):
+        Regrouper(rows)
+
+
 def test_tap_passes_each_block_to_the_sink_before_yielding_it():
     events = []
     blocks = [np.arange(2.0), np.arange(2.0, 5.0)]
@@ -410,6 +507,18 @@ def test_scale_yields_the_same_objects_at_factor_one():
     out = list(scale(blocks, 1.0))
     assert len(out) == 2
     assert all(a is b for a, b in zip(out, blocks, strict=True))
+
+
+def test_scale_block_multiplies_in_float32() -> None:
+    block = np.array([1.0, -2.0, 3.5], dtype=np.float32)
+    out = scale_block(block, 1e6)
+    assert out.dtype == np.float32
+    assert np.array_equal(out, block * np.float32(1e6))
+
+
+def test_scale_block_returns_the_same_object_at_factor_one() -> None:
+    block = np.arange(3, dtype=np.float32)
+    assert scale_block(block, 1.0) is block
 
 
 def test_scale_leaves_non_finite_samples_non_finite():
