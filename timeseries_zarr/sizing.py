@@ -8,6 +8,7 @@ from timeseries_zarr.constants import (
     INNER_CHUNK_SAMPLES,
     TARGET_SHARD_BYTES,
 )
+from timeseries_zarr.planning import raw_shape
 from timeseries_zarr.types import ChunkShard
 
 
@@ -59,6 +60,21 @@ def chunk_and_shard(
     )
 
     return ChunkShard(chunk_shape=chunk_shape, shard_shape=shard_shape)
+
+
+def raw_sizing(
+    num_samples: int,
+    inner_len: int = INNER_CHUNK_SAMPLES,
+    target_shard_bytes: int = TARGET_SHARD_BYTES,
+) -> ChunkShard:
+    """Return the chunk and shard shapes of a channel's raw array.
+
+    raw has shape (num_samples,) and holds float32. A channel with no samples
+    takes one-row chunks and shards.
+    """
+    return chunk_and_shard(
+        raw_shape(num_samples), FLOAT32_BYTES, inner_len, target_shard_bytes
+    )
 
 
 def level_sizing(
