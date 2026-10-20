@@ -1,9 +1,11 @@
 import dataclasses
+from pathlib import Path
 
 import numpy as np
 import pytest
 from zarr import Array
 
+from tests.conftest import ArrayContinuousSource
 from timeseries_zarr.constants import (
     COUNT_KEY,
     MEAN_KEY,
@@ -13,11 +15,14 @@ from timeseries_zarr.constants import (
 )
 from timeseries_zarr.fold import fold_raw_block, split_members
 from timeseries_zarr.planning import level_period_us, plan_levels
-from timeseries_zarr.sizing import level_sizing
+from timeseries_zarr.sizing import level_sizing, raw_sizing
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
 from timeseries_zarr.write_continuous import (
+    create_channel_group,
     create_level,
+    create_raw,
     write_continuous_channel,
+    write_levels,
     write_raw,
     write_statistics_blocks,
 )
@@ -128,6 +133,50 @@ def test_write_raw_writes_every_shard_of_an_all_gap_source(
         if f.is_file() and f.name != "zarr.json"
     ]
     assert len(shards) == 3
+
+
+def test_create_channel_group_carries_the_continuous_attributes_and_offset(
+    tmp_path: Path, continuous_source: type[ArrayContinuousSource]
+) -> None:
+    channel = continuous_source(
+        np.arange(64, dtype=np.float32),
+        id="N:ch:xyz",
+        rate_hz=32000.0,
+        start_us=7,
+        name="ch name",
+        unit="volts",
+        provenance={"software": "acquire", "gain": 2},
+    )
+    parent = open_group(tmp_path / "bundle")
+    create_channel_group(parent, 3, channel, reference_us=5, unit="uV")
+    group = open_group(tmp_path / "bundle")["3"]
+    assert dict(group.attrs) == {
+        "tsz": {
+            "kind": "continuous",
+            "name": "ch name",
+            "id": "N:ch:xyz",
+            "rate_hz": 32000.0,
+            "offset_us": 2,
+            "unit": "uV",
+            "provenance": {"software": "acquire", "gain": 2},
+        }
+    }
+    assert list(group.array_keys()) == []
+
+
+def test_create_raw_declares_shape_dtype_and_time_dimension(
+    tmp_path: Path,
+) -> None:
+    group = open_group(tmp_path / "bundle")
+    created = create_raw(group, 26, _sizing(), 5)
+    stored = open_group(tmp_path / "bundle")[RAW_KEY]
+    assert created.shape == (26,)
+    assert stored.shape == (26,)
+    assert stored.dtype == np.float32
+    assert stored.metadata.dimension_names == ("time",)
+    assert (stored.chunks, stored.shards) == ((4,), (8,))
+    assert dict(stored.attrs) == {}
+    assert np.isnan(stored[:]).all()
 
 
 def _level_plan(level=1, bins=20):
@@ -350,6 +399,52 @@ def _close(got, want):
         return True
     atol = 1e-7 * np.max(np.abs(want[finite]))
     return bool(np.allclose(got[finite], want[finite], rtol=1e-5, atol=atol))
+
+
+def test_write_levels_writes_every_planned_level_from_the_stored_raw(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    opts: WriteOpts,
+) -> None:
+    samples = _series(1000)
+    parent = open_group(tmp_path / "bundle")
+    sizing = raw_sizing(1000, opts.inner_len, opts.target_shard_bytes)
+    raw = write_raw(parent, continuous_source(samples), sizing, opts.zstd_level)
+    write_levels(parent, raw, 32000.0, opts)
+    group = open_group(tmp_path / "bundle")
+    plans = plan_levels(1000, 32000.0, opts.max_levels, opts.min_bins)
+    assert len(plans) >= 2
+    assert sorted(group.group_keys()) == sorted(str(p.level) for p in plans)
+    for plan in plans:
+        want = _direct(samples, 4**plan.level)
+        level = group[str(plan.level)]
+        assert dict(level.attrs) == {
+            "tsz": {"period_us": level_period_us(32000.0, plan.level)}
+        }
+        assert np.array_equal(
+            level[MINMAX_KEY][:], want[:, :2].astype(np.float32), equal_nan=True
+        )
+        assert np.array_equal(level[COUNT_KEY][:], want[:, 4])
+        assert _close(level[MEAN_KEY][:], want[:, 2]), plan.level
+        if opts.write_var:
+            assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
+        else:
+            assert VAR_KEY not in list(level.array_keys())
+
+
+def test_write_levels_writes_nothing_for_a_channel_too_short_for_a_level(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    opts: WriteOpts,
+) -> None:
+    samples = np.arange(3, dtype=np.float32)
+    parent = open_group(tmp_path / "bundle")
+    sizing = raw_sizing(3, opts.inner_len, opts.target_shard_bytes)
+    raw = write_raw(parent, continuous_source(samples), sizing, opts.zstd_level)
+    write_levels(parent, raw, 32000.0, opts)
+    group = open_group(tmp_path / "bundle")
+    assert list(group.array_keys()) == [RAW_KEY]
+    assert list(group.group_keys()) == []
 
 
 def _write(tmp_path, source, opts, reference_us=0, name="bundle"):

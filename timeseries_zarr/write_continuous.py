@@ -4,6 +4,10 @@ A channel is the raw samples plus a ladder of level groups above them. Raw is
 written from the source, and every level is folded from the samples below it.
 A level group holds one array per statistic over a shared bin axis. An empty
 input creates the arrays and writes nothing.
+
+write_continuous_channel composes three steps. create_channel_group makes the
+channel group with its attributes, write_raw makes and fills the raw array,
+and write_levels folds the levels from the stored raw array.
 """
 
 from collections.abc import Callable, Iterable, Iterator
@@ -75,6 +79,63 @@ def _write_blocks(
         start += block.shape[0]
 
 
+def create_channel_group(
+    parent: ZarrGroup,
+    key: int,
+    channel: ContinuousChannelSource,
+    *,
+    reference_us: int,
+    unit: str,
+) -> ZarrGroup:
+    """Create the channel group named str(key) with the continuous attributes.
+
+    The group stores unit as given, whatever unit the channel declares. Its
+    offset_us is the distance in microseconds from reference_us, the
+    reference time, to the first sample, negative for a channel that begins
+    before it. The group carries the channel's provenance when the channel has
+    one. Raises ValueError if the rate is not positive or the provenance is
+    not a JSON object of finite values.
+    """
+    return create_group_with_attrs(
+        parent,
+        str(key),
+        continuous_channel_attrs(
+            channel.name,
+            channel.id,
+            channel.rate_hz(),
+            channel.start_us() - reference_us,
+            unit,
+            source_provenance(channel),
+        ),
+    )
+
+
+def create_raw(
+    group: ZarrGroup,
+    num_samples: int,
+    sizing: ChunkShard,
+    zstd_level: int,
+) -> ZarrArray:
+    """Create the raw array under group, with every sample unwritten.
+
+    The array is float32, named "raw", and shaped (num_samples,). Its fill
+    value is NaN, its axis is named "time", and it has no attributes. The
+    channel group carries the sample rate. A num_samples of 0 gives a
+    zero-length array.
+    """
+    return create_array(
+        group,
+        RAW_KEY,
+        raw_shape(num_samples),
+        np.float32,
+        sizing.chunk_shape,
+        sizing.shard_shape,
+        {},
+        zstd_level,
+        dimension_names=(TIME_DIMENSION,),
+    )
+
+
 def write_raw(
     group: ZarrGroup,
     source: ContinuousChannelSource,
@@ -84,25 +145,12 @@ def write_raw(
 ) -> ZarrArray:
     """Create the raw array under group and stream the source's samples into it.
 
-    A rank-1 float32 array named "raw" of shape (num_samples,), with the
-    dimension name "time" and no attributes: the sample period is the
-    channel's rate_hz, which the channel group carries. The samples are
-    multiplied by factor, so a non-finite sample stays a gap and a DC offset
-    stays in. They are read in shard-sized blocks, so every write covers
-    a whole shard. An empty source creates a zero-length array and writes
-    nothing.
+    The array is the one create_raw makes. The samples are multiplied by
+    factor, so a non-finite sample stays a gap and a DC offset stays in. They
+    are read in shard-sized blocks, so every write covers a whole shard. An
+    empty source creates a zero-length array and writes nothing.
     """
-    array = create_array(
-        group,
-        RAW_KEY,
-        raw_shape(source.num_samples()),
-        np.float32,
-        sizing.chunk_shape,
-        sizing.shard_shape,
-        {},
-        zstd_level,
-        dimension_names=(TIME_DIMENSION,),
-    )
+    array = create_raw(group, source.num_samples(), sizing, zstd_level)
     _write_blocks(
         array, scale(iter_raw_blocks(source, sizing.shard_shape[0]), factor)
     )
@@ -280,6 +328,32 @@ def _write_levels_in_one_pass(
         pass
 
 
+def write_levels(
+    group: ZarrGroup,
+    raw: ZarrArray,
+    rate_hz: float,
+    opts: WriteOpts,
+) -> None:
+    """Write the levels of a channel by folding its stored raw samples.
+
+    The levels are planned from the length of raw and from rate_hz, and every
+    array is sized and compressed per opts. Raw too short for level 1 gets no
+    level.
+
+    With opts.write_var false, each level is folded from the stored members of
+    the level below. With it true, every level is folded in one pass from the
+    raw samples through float64 statistics. The variance then stays exact on a
+    channel with a large DC offset.
+    """
+    plans = plan_levels(raw.shape[0], rate_hz, opts.max_levels, opts.min_bins)
+    if not plans:
+        return
+    if opts.write_var:
+        _write_levels_in_one_pass(group, raw, plans, opts)
+    else:
+        _write_levels_by_read_back(group, raw, plans, opts)
+
+
 def write_continuous_channel(
     parent: ZarrGroup,
     key: int,
@@ -290,34 +364,15 @@ def write_continuous_channel(
 ) -> None:
     """Write one continuous channel as the subgroup named str(key).
 
-    The channel group carries the continuous attributes, with offset_us the
-    distance in microseconds from reference_us, the reference time, to the
-    first sample, negative for a channel that begins before it, and the
-    source's provenance when it has one. The raw samples are written first.
-    The levels are planned from the sample count and rate, and every array is
-    sized and compressed per opts. A channel too short for level 1 gets raw
-    and nothing else.
-
-    With opts.write_var false, each level is folded from the stored members of
-    the level below. With it true, every level is folded in one pass from the
-    raw samples through float64 statistics, which keeps the variance exact on a
-    channel with a large DC offset. Raises ValueError if the source's
-    provenance is not a JSON object of finite values, or, under
-    voltage_policy require_uv, if a voltage unit is not "uV".
+    A voltage unit resolves under opts.voltage_policy before the group is
+    created, and the raw samples are scaled to match. A channel too short for
+    level 1 gets raw and nothing else. Raises ValueError if the source's rate
+    is not positive, if its provenance is not a JSON object of finite values,
+    or, under voltage_policy require_uv, if a voltage unit is not "uV".
     """
-    rate_hz = source.rate_hz()
     resolved = resolve_unit(source.unit, opts.voltage_policy)
-    group = create_group_with_attrs(
-        parent,
-        str(key),
-        continuous_channel_attrs(
-            source.name,
-            source.id,
-            rate_hz,
-            source.start_us() - reference_us,
-            resolved.unit,
-            source_provenance(source),
-        ),
+    group = create_channel_group(
+        parent, key, source, reference_us=reference_us, unit=resolved.unit
     )
     raw = write_raw(
         group,
@@ -328,12 +383,4 @@ def write_continuous_channel(
         opts.zstd_level,
         resolved.factor,
     )
-    plans = plan_levels(
-        source.num_samples(), rate_hz, opts.max_levels, opts.min_bins
-    )
-    if not plans:
-        return
-    if opts.write_var:
-        _write_levels_in_one_pass(group, raw, plans, opts)
-    else:
-        _write_levels_by_read_back(group, raw, plans, opts)
+    write_levels(group, raw, source.rate_hz(), opts)
