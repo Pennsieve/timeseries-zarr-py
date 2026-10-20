@@ -9,7 +9,7 @@ compute the time axis. The [specification](./spec.md) defines the format.
 The examples on this page read `example.zarr`, which the code below writes to the
 working directory. It holds five minutes of five channels. Channels 0 and 1 are 5 Hz
 and 10 Hz tones sampled at 1000 Hz on one grid. Channel 2 is a 1 Hz tone sampled at
-256 Hz. It starts 0.5 s after the session start and has a gap from 120.5 s to 125 s.
+256 Hz. It starts 0.5 s after the reference time and has a gap from 120.5 s to 125 s.
 Channel 3 holds six marks with durations, labels, text, and the channels each mark
 applies to. Channel 4 holds the spike times of three units, 70,000 events in all, and
 the mean waveform of each unit. `Tone` and `Events` implement the source protocols
@@ -157,9 +157,9 @@ marks = Events(
 )
 rng = np.random.default_rng(0)
 spike_seconds = np.sort(rng.uniform(0, SECONDS, 70_000))
-units = Events(
-    "units",
-    "units",
+spikes = Events(
+    "spikes",
+    "spikes",
     spike_seconds,
     rng.integers(0, 3, spike_seconds.shape[0]),
     ["unit-0", "unit-1", "unit-2"],
@@ -171,7 +171,7 @@ write_bundle(
         Tone(10),
         Tone(1, rate_hz=256.0, delay_s=0.5, gap_s=(120.0, 124.5)),
     ],
-    [marks, units],
+    [marks, spikes],
     output_path=Path("example.zarr"),
     opts=WriteOpts(),
     recording=RecordingMeta(
@@ -186,7 +186,7 @@ write_bundle(
 `Store`, or a zarr `StorePath`.
 
 A string that holds `://` or an fsspec `::` chain is a URL. Any other string is a local path.
-A relative path resolves against the working directory at the open.
+A relative path resolves against the current working directory.
 
 A remote URL needs the `remote` extra, described in [remote stores](#remote-stores).
 
@@ -209,9 +209,9 @@ for location in [
         print(bundle.location)
 ```
 
-`open_bundle` reads the root `zarr.json` and `recording.json` and no other object.
-The consolidated metadata in the root `zarr.json` describes every channel, level, and array.
-A read method loads samples or events from the store.
+`open_bundle` reads only the root `zarr.json` and `recording.json`.
+The consolidated metadata in the root `zarr.json` describes every channel,
+level, and array. A read method loads samples or events from the store.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -223,41 +223,51 @@ with open_bundle("example.zarr") as bundle:
     print(bundle.recording.subject["id"])
 ```
 
-`bundle.channels` maps each channel key to its channel in key order. `bundle.continuous`
-and `bundle.events` map the key of each channel of one kind to its channel, in key
-order. `bundle.channel` finds a channel by
-name, or by id when no name matches. It raises `KeyError` when neither matches and
-`ValueError` when several channels share the name or the id. `bundle.recording` holds
-the parsed `recording.json` as a `Recording`, or `None` when the bundle has none. Its
-`reference_time` and `session_start_time` are timezone-aware datetimes or `None`, and
-the second reads the `start_time` of the `session` object. A leap second, second 60, reads as the first instant of the next minute. Its
-`subject`, `session`, and `source` are read-only mappings, empty when the
-file omits them. A `Bundle` is a context manager, and `close` closes its store.
+`bundle.channels` maps each channel key to its channel in key order.
+
+`bundle.continuous` and `bundle.events` map the key of each channel of one kind
+to its channel, in key order.
+
+`bundle.channel` finds a channel by name, or by id when no name matches.
+It raises `KeyError` when neither matches and `ValueError` when several
+channels share the name or the id.
+
+`bundle.recording` holds the parsed `recording.json` as a `Recording`,
+or `None` when the bundle has no such file. A `Recording` has `reference_time` and
+`session_start_time`, each a timezone-aware `datetime`, or `None` when the file
+omits it. `session_start_time` is the `start_time` of the `session` object.
+`subject`, `session`, and `source` are read-only mappings and are empty when
+the file omits them.
+
+`Bundle` is a context manager. Use it in a `with` statement, or call `close` to
+close its store.
 
 `open_bundle` raises `ValueError` when the root `zarr.json` carries no consolidated
 metadata. The writer consolidates after the last channel, so a bundle from an
-interrupted write does not open. It also raises `ValueError` when the root `tsz.version`
-has a major version other than 1. Every minor version of major version 1 opens. A
-channel group that does not parse raises `ValueError` naming the channel, for example
-over a missing attribute or a wrong array shape. A channel group of unknown `kind` is
-left out of `channels` with a `UserWarning`. A location without a root `zarr.json`
-raises `FileNotFoundError`, and a location whose root is an array raises `ValueError`.
+interrupted write does not open.
+
+A channel group that does not parse, for example because of a missing attribute or an
+invalid array shape, raises `ValueError` naming the channel. A channel group of unknown
+`kind` is left out of `channels` with a `UserWarning`.
+
+A location without a root `zarr.json` raises `FileNotFoundError`, and a location
+whose root is an array raises `ValueError`.
 
 ## Times
 
-Every window bound is an integer count of microseconds from the reference time, and a
-time before it is negative. The [timeline](./spec.md#timeline) section of the
-specification defines the reference time. A window
-bound, `level`, `bins`, and `gap_us` each take an `int` or a numpy integer. A `float`
-raises `TypeError`. If you hold a time in seconds, convert it with
-`round(seconds * 1e6)`.
+Every window bound is an integer count of microseconds from the reference time,
+and a time before it is negative. The [timeline](./spec.md#timeline) section of
+the specification defines the reference time. A window bound, `level`, `bins`,
+and `gap_us` each take an `int` or a numpy integer. A `float` raises `TypeError`.
 
-A continuous read stores `offset_us`, `first`, and `period_us` in its result. Entry `i`
-of the result starts at `offset_us + (first + i) * period_us` microseconds, and
-`time_us` computes that for every entry. `time_us` is float64. A sample period of
-`1e6 / rate_hz` microseconds is rarely a whole number, and at 256 Hz it is 3906.25
-microseconds. `time_s` is `time_us / 1e6`. Event times keep the stored int64
-microseconds.
+A continuous read stores `offset_us`, `first`, and `period_us` in its result.
+Entry `i` of the result starts at `offset_us + (first + i) * period_us` microseconds,
+and `time_us` computes that for every entry.
+
+`time_us` is float64. A sample period of `1e6 / rate_hz` microseconds
+is rarely a whole number, and at 256 Hz it is 3906.25 microseconds.
+
+Event times are int64 microseconds, as stored.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -270,10 +280,9 @@ with open_bundle("example.zarr") as bundle:
     print(samples.time_s)
 ```
 
-`bundle.datetimes(time_us)` returns the UTC wall-clock time of each time as
-`datetime64[us]`. It rounds each time to the nearest microsecond, with a tie going to
-the even one, and adds it to the `reference_time` of `recording.json`. A NaN gives NaT.
-A bundle whose `recording.json` holds no `reference_time` raises `ValueError`.
+`bundle.datetimes(time_us)` returns each time as a UTC `datetime64[us]`.
+It rounds each time to the nearest microsecond and adds it to the `reference_time`.
+A NaN gives NaT.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -288,32 +297,38 @@ with open_bundle("example.zarr") as bundle:
 
 A `ContinuousChannel` carries `name`, `id`, `unit`, `rate_hz`, `offset_us`, and
 `provenance` from its group attributes. Its `key` is the number that names its group.
-`provenance` is a read-only mapping, or `None` when the group has none. `num_samples` is
-the length of `raw`, and `period_us`, `start_us`, and `end_us` follow from the
-attributes. `end_us` is the end of the last sample, rounded up to a whole
-microsecond. A window from `start_us` to `end_us` holds every sample.
 
-`raw` is the zarr array of samples. `levels` maps each level number, from 1, to a
-`Level`. Its `samples_per_bin` is the number of raw samples a bin of the level folds.
-The [continuous channels](./spec.md#continuous-channels) section of the specification
-defines the samples each bin covers. A `Level` holds the zarr arrays `minmax`, `mean`,
-`var`, and `count`, with `None` for a member the level lacks. Slicing a zarr array, as
-in `channel.raw[1000:2000]`, reads that slice from the store.
+`provenance` is a read-only mapping, or `None` when the group has none.
+`num_samples` is the length of `raw`. `period_us` is the spacing of the raw samples,
+and `start_us` is the time of sample 0. `end_us` is the end of the last sample,
+rounded up to a whole microsecond. A window from `start_us` to `end_us` holds
+every sample.
 
-`read(start_us=None, end_us=None, *, level=None)` returns `Samples` for level `None` or
-0, and `Bins` for a level number. The window is half-open, `[start_us, end_us)`, and a
-`None` bound leaves that side open. The read widens the window outward to whole samples
-or bins. The result holds every entry that overlaps the window, and `first` is the index
-of its first entry. A window that reaches past either end of the channel reads the
-entries that exist, and a window outside the channel gives an empty result. `end_us`
-before `start_us` raises `ValueError`, and so does a level the channel lacks.
+`raw` is the zarr array of samples.
+`levels` maps each level number, from 1, to a `Level`. The `samples_per_bin` of a
+`Level` is the number of raw samples that one bin folds.
 
-`Bins` holds `min` and `max`, the two columns of `minmax`. It also holds `mean`, `var`,
-and `count`, each `None` when the level lacks it.
+The [continuous channels](./spec.md#continuous-channels) section of the
+specification defines the samples each bin covers.
 
-`level_for(start_us=None, end_us=None, *, bins)` returns the coarsest level whose read
-holds at least `bins` bins. It returns 0, for the raw samples, when no level does. It
-counts the bins after the read widens and clamps the window.
+A `Level` holds the zarr arrays `minmax`, `mean`, `var`, and `count`, with
+`None` for a member the level lacks. Slicing a zarr array, for example
+`channel.raw[1000:2000]`, reads that slice from the store.
+
+`read(start_us=None, end_us=None, *, level=None)` returns `Samples` for level
+`None` or 0, and `Bins` for a level number. The window is half-open,
+`[start_us, end_us)`, and a `None` bound leaves that side open.
+The read widens the window outward to whole samples or bins.
+The result holds every entry that overlaps the window, and `first` is the index
+of its first entry. A window that reaches past either end of the channel reads
+the entries that exist, and a window outside the channel gives an empty result.
+
+`Bins` splits `minmax` into `min` and `max`.
+It also holds `mean`, `var`, and `count`, each `None` when the level lacks it.
+
+`level_for(start_us=None, end_us=None, *, bins)` returns the coarsest level at
+which `read` returns at least `bins` bins for the window. It returns 0, for the
+raw samples, when no level returns that many bins.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -333,10 +348,11 @@ with open_bundle("example.zarr") as bundle:
         print(level, type(result).__name__, len(result), result.first)
 ```
 
-Channel 2 of `example.zarr` starts 500000 microseconds after the reference time. In this
-example, the read of a window that starts before the channel begins with bin 0. A window
-that ends at the channel start is empty, and a window that runs past the channel end
-reads the 128 samples that exist.
+Channel 2 of `example.zarr` starts 500,000 microseconds after the reference time.
+A read of a window that starts before the channel returns bins from bin 0.
+A window that ends at the channel start is empty.
+A window that runs past the channel end returns the samples that exist,
+128 in the last read.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -350,16 +366,16 @@ with open_bundle("example.zarr") as bundle:
     print(len(channel.read(300_000_000, 400_000_000)))
 ```
 
-A NaN sample is a gap. The [continuous channels](./spec.md#continuous-channels) section
-of the specification defines how a gap folds into each level, and the reader passes the
-statistics through unchanged.
+A NaN sample is a gap. The [continuous channels](./spec.md#continuous-channels)
+section of the specification defines how a gap folds into each level, and the
+reader passes the statistics through unchanged.
 
-`spans(start_us=None, end_us=None, *, level=None, gap_us=0)` returns the half-open spans
-of the window that hold data, as pairs of integer microseconds. It reads the coarsest
-level when `level` is `None`, or the raw samples on a channel without levels. A bin
-holds data when its `count` is above 0. On a level without `count`, a bin holds data
-when a `minmax` value is finite. A span that starts at most `gap_us` after the previous
-span ends joins it.
+`spans(start_us=None, end_us=None, *, level=None, gap_us=0)` returns the
+half-open spans of the window that hold data, as pairs of integer microseconds.
+It reads the coarsest level when `level` is `None`, or the raw samples
+on a channel without levels. A bin holds data when its `count` is above 0.
+On a level without `count`, a bin holds data when a `minmax` value is finite.
+A span that starts at most `gap_us` after the previous span ends joins it.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -375,11 +391,14 @@ with open_bundle("example.zarr") as bundle:
 
 ## Event channels
 
-An `EventChannel` carries `name`, `id`, `unit`, `label_names`, `max_duration_us`, and
-`provenance` from its group attributes. Its `key` is the number that names its group.
-Each attribute but `name` is `None` when the group omits it, and `provenance` is a
-read-only mapping. `events` is the zarr array of event times. `durations`, `labels`,
-`values`, `text`, and `channels` are zarr arrays, or `None` when the channel lacks them.
+An `EventChannel` carries `name`, `id`, `unit`, `label_names`, `max_duration_us`,
+and `provenance` from its group attributes. Its `key` is the number that names
+its group. Each attribute except `name` is `None` when the group omits it, and
+`provenance` is a read-only mapping.
+
+`events` is the zarr array of event times. `durations`, `labels`, `values`, `text`,
+and `channels` are zarr arrays, or `None` when the channel lacks them.
+
 `columns` names the per-event columns the channel holds, in the order `durations`,
 `labels`, `values`, `text`, `channels`, and `waveforms`.
 
@@ -389,11 +408,11 @@ per event. `time_us` holds the event times. `duration_us`, `label`, `label_name`
 when the channel lacks it or the read left it out. `columns` names the stored columns to
 read, and `None` reads every one. A name the channel lacks raises `ValueError`.
 
-An event without a duration is in the window when `start_us <= time < end_us`. An event
-with a duration is in the window when it starts before `end_us` and ends at or after
-`start_us`. To find the events that begin before the window, the read searches from
-`max_duration_us` before `start_us`. On a channel with `durations` and no
-`max_duration_us`, it searches from the first event.
+An event without a duration is in the window when `start_us <= time < end_us`.
+An event with a duration is in the window when it starts before `end_us` and
+ends at or after `start_us`. To find the events that begin before the window,
+the read searches from `max_duration_us` before `start_us`. On a channel with
+`durations` and no `max_duration_us`, it searches from the first event.
 
 `text` holds the decoded UTF-8 string of each event. `channel_keys` holds the channel
 keys each event applies to, and an empty list means the whole recording. `label_name`
@@ -406,8 +425,8 @@ length of `label_names` raises `ValueError`.
 
 `applies_to(key)` returns a boolean mask of the events that apply to channel `key`. An
 event applies when its `channel_keys` names `key` or is empty. On a channel without a
-`channels` column, every event applies to the whole recording. Its table has
-`whole_recording` set to true, and `applies_to` returns all true. On a table read
+`channels` column, every event applies to the whole recording. A table read from such a
+channel has `whole_recording` set to `True`, and `applies_to` returns all `True`. On a table read
 without `channels` from a channel that has the column, `applies_to` raises `ValueError`.
 
 ```python
@@ -427,30 +446,35 @@ with open_bundle("example.zarr") as bundle:
     print(len(marks.read(260_000_001, 270_000_000)))
 ```
 
-The seizure starts at 200 s and lasts 60 s. It ends at 260 s, so the read from 260 s
-holds it and the read from 1 microsecond later does not.
+The seizure starts at 200 s and lasts 60 s. It ends at 260 s, so the read from
+260 s holds it and the read from 1 microsecond later does not.
 
-`waveform` is a `Waveform` with one snippet row per event of the table. Column number
-`event_sample` of each row holds the sample at the event time, and `time_us` counts
-microseconds from the event time. `time_s` gives the same times in seconds, and `len`
-gives the number of samples in each snippet. `channel.waveforms` and
-`channel.waveform_mean` are `Snippets` that wrap the zarr arrays, and `read()` returns
-every row as a `Waveform`. The rows of `waveform_mean` are labels, and `rows` names what
-a row stands for, `event` or `label`. `write_bundle` writes `waveform_mean` and no
-per-event `waveforms`, so the units of `example.zarr` have no `waveform` column.
+`waveform` is a `Waveform` with one snippet row per event of the table.
+The column at index `event_sample` holds the sample at the event time,
+and `time_us` counts microseconds from the event time. `time_s` gives the same
+times in seconds, and `len` gives the number of samples in each snippet.
 
-`count_levels` maps each count level number, from 1, to a `CountLevel`, which carries
-`period_us` and `offset_us`, the time of its bin 0. The
-[event channels](./spec.md#event-channels) section of the specification defines the
-bins of a count level. `read_counts(start_us=None, end_us=None, *, level)` returns the
-bins that overlap the window as `Counts`. The bins widen the window, so their counts can
-include events outside it. A window past the last bin gives no bins.
+`channel.waveforms` and `channel.waveform_mean` are `Snippets` that wrap the
+zarr arrays, and `read()` returns every row as a `Waveform`.
+
+Each row of `waveform_mean` is the mean snippet of one label. `rows` is `event` for the
+snippets of a table and `label` for `waveform_mean`. `write_bundle` writes
+`waveform_mean` and no per-event `waveforms`, so the `spikes` channel of `example.zarr`
+has no `waveform` column.
+
+`count_levels` maps each count level number, from 1, to a `CountLevel` with
+`period_us` and `offset_us`. `offset_us` is the time of its bin 0. The
+[event channels](./spec.md#event-channels) section of the specification defines
+the bins of a count level. `read_counts(start_us=None, end_us=None, *, level)`
+returns the bins that overlap the window as `Counts`. The bins widen the window,
+so their counts can include events outside it. A window past the last bin returns
+no bins.
 
 `level_for(start_us=None, end_us=None, *, bins)` on an event channel returns the
-coarsest count level whose `read_counts` of the window holds at least `bins` bins, or 0
-for the events. An open `start_us` stands for the first event, and an open `end_us` for
-1 microsecond after the last event. `read_counts` rejects level 0, so when `level_for`
-returns 0, read the events with `read`.
+coarsest count level at which `read_counts` returns at least `bins` bins for the
+window. It returns 0 when no count level does. An open `start_us` stands for the first
+event, and an open `end_us` for 1 microsecond after the last event. `read_counts`
+rejects level 0, so when `level_for` returns 0, use `read` to read the events.
 
 ```python
 import numpy as np
@@ -458,33 +482,32 @@ import numpy as np
 from timeseries_zarr import open_bundle
 
 with open_bundle("example.zarr") as bundle:
-    units = bundle.events[4]
-    table = units.read(100_000_000, 110_000_000)
+    spikes = bundle.events[4]
+    table = spikes.read(100_000_000, 110_000_000)
     print(len(table), np.bincount(table.label), table.waveform)
-    mean = units.waveform_mean.read()
+    mean = spikes.waveform_mean.read()
     print(mean.values.shape, mean.event_sample, mean.time_us[mean.event_sample])
-    level = units.level_for(100_000_000, 110_000_000, bins=100)
+    level = spikes.level_for(100_000_000, 110_000_000, bins=100)
     if level == 0:
-        print(len(units.read(100_000_000, 110_000_000)))
+        print(len(spikes.read(100_000_000, 110_000_000)))
     else:
-        counts = units.read_counts(100_000_000, 110_000_000, level=level)
+        counts = spikes.read_counts(100_000_000, 110_000_000, level=level)
         print(level, counts.first, len(counts), counts.count.sum(axis=0))
 ```
 
 ## Stacking channels
 
-`bundle.stack(keys, start_us=None, end_us=None, *, level=0, member="mean")` reads one
-window of several continuous channels into one array. The channels must share `rate_hz`
-and `offset_us`. Level 0 reads the raw samples, and the `member` of the result is
-`None`. A level of at least 1 reads `member`, which is `min`, `max`, `mean`, `var`, or
-`count`. Every channel must hold that member at that level.
+`bundle.stack(keys, start_us=None, end_us=None, *, level=0, member="mean")` reads
+one window of several continuous channels into one array. The channels must
+share `rate_hz` and `offset_us`. Level 0 reads the raw samples, and the `member`
+of the result is `None`. A level of at least 1 reads `member`, which is
+`min`, `max`, `mean`, `var`, or `count`. Every channel must hold that member
+at that level.
 
-`Stack.values` has one row per key, in the order of `keys`. The rows span every entry
-that overlaps the window on any channel. A row holds NaN past the end of its channel, or
-0 when `member` is `count`. `names` and `units` follow the order of `keys`. An unknown
-key raises `KeyError`. A repeated key or the key of an event channel raises
-`ValueError`. So does a channel that differs in `rate_hz` or `offset_us`, or one that
-lacks the level or member.
+`Stack.values` has one row per key, in the order of `keys`. The rows span every
+entry that overlaps the window on any channel. A row holds NaN past the end of
+its channel, or 0 when `member` is `count`. `names` and `units` follow the order
+of `keys`.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -499,14 +522,15 @@ with open_bundle("example.zarr") as bundle:
 
 ## Conversions and extras
 
-Every result has `columns()`, which returns its columns as a dict of numpy arrays in
-column order. It needs no extra. `to_dataframe` and `to_series` need the pandas extra,
-and `to_xarray` needs the xarray extra. Install them with
-`pip install 'timeseries-zarr[pandas]'` or `pip install 'timeseries-zarr[xarray]'`. The
-xarray extra also installs pandas.
+Every result has `columns()`, which returns its columns as a dict of numpy arrays
+in column order. It requires no extra.
 
-A conversion imports pandas or xarray when it runs. When the package is missing, it
-raises `ImportError` with a message that names the extra:
+`to_dataframe` and `to_series` require the pandas extra, and `to_xarray` requires
+the xarray extra. Install them with `pip install 'timeseries-zarr[pandas]'` or
+`pip install 'timeseries-zarr[xarray]'`. The xarray extra also installs pandas.
+
+A conversion imports pandas or xarray when it runs. When the package is missing,
+it raises `ImportError` with a message that names the extra:
 `pandas is not installed. Install the pandas extra: pip install 'timeseries-zarr[pandas]'`.
 
 | Result | pandas | xarray |
@@ -543,17 +567,24 @@ event sources that `write_bundle` takes. `keys` names the channels to keep, and 
 keeps every channel. `recording_meta(bundle)` returns the `RecordingMeta` that rewrites
 `recording.json`, or `None` when the bundle has no `recording.json`.
 
-A writer source gives wall-clock times, and `bundle_sources` adds `epoch_us` to every
-stored time. `epoch_us` defaults to `reference_time` in microseconds since the Unix
-epoch, or to 0 when the bundle has no `reference_time`. `recording_meta` carries
-`reference_time`, and the writer uses it as it is, so a rewrite keeps every offset and
-event time, and a channel the copy keeps or adds that begins before it has a negative
-offset. A rewrite without a `RecordingMeta` places the reference time of the copy at
+A writer source gives times in microseconds since the Unix epoch.
+
+`bundle_sources` adds `epoch_us` to every stored time.
+
+`epoch_us` defaults to `reference_time` in microseconds since the Unix
+epoch, or to 0 when the bundle has no `reference_time`.
+
+When `recording_meta` carries `reference_time`, the writer keeps it as given.
+The copy then keeps every offset and event time.
+A kept or added channel that begins before the reference time gets a negative offset.
+
+A rewrite without a `RecordingMeta` places the reference time of the copy at
 the first kept sample, and every stored time shifts by the same amount.
 
 `recording_meta` also carries `session.start_time` as `session_start_time`, and the
-writer puts it back. A bundle without `reference_time` gives a `RecordingMeta` whose
-`wall_clock` is false, so its copy has no `reference_time` either.
+writer puts it back. A bundle without `reference_time` gives a `RecordingMeta` with
+`wall_clock=False`, which marks times that count from an unknown instant. The copy
+then has no `reference_time` either.
 
 The writer numbers the kept channels from 0, continuous channels first. A channel
 without an id takes its key, as a decimal string, as its id. `bundle_sources` raises
@@ -604,27 +635,33 @@ with open_bundle("subset.zarr") as subset:
 
 ## Remote stores
 
-The `remote` extra installs fsspec, s3fs, and aiohttp:
-`pip install 'timeseries-zarr[remote]'`. With it, `open_bundle` takes an fsspec URL such
-as `https://`, `s3://`, or `memory://`, or a chain such as
-`simplecache::s3://bucket/recording.tszarr`. `storage_options` passes options to the
-filesystem, as in
-`open_bundle("s3://bucket/recording.tszarr", storage_options={"anon": True})`. Without
-fsspec, a remote URL raises `ImportError` with a message that names the extra. A
-`memory://` URL reads the fsspec memory filesystem only when fsspec is installed.
+The `remote` extra installs fsspec, s3fs, and aiohttp.
+Install the extra with `pip install 'timeseries-zarr[remote]'`.
+
+With the extra installed, `open_bundle` takes an fsspec URL such as
+`https://`, `s3://`, or `memory://`, or a chain such as
+`simplecache::s3://bucket/recording.tszarr`.
+
+`storage_options` passes options to the filesystem, as in
+`open_bundle("s3://bucket/recording.tszarr", storage_options={"anon": True})`.
+
+Without fsspec, a remote URL raises `ImportError` with a message that names the extra.
+
+A `memory://` URL reads the fsspec memory filesystem only when fsspec is installed.
 Without fsspec, zarr opens the URL as an in-process store of its own, and `open_bundle`
-raises `FileNotFoundError` when that store holds no bundle. `storage_options` works only
-with a remote URL. With a local path, a store, or a memory URL, `open_bundle` raises
-`TypeError` for it.
+raises `FileNotFoundError` when that store holds no bundle.
+
+`storage_options` works only with a remote URL. With a local path, a store,
+or a memory URL, `open_bundle` raises `TypeError` for it.
+
+For a `memory://` bundle, `bundle.location` gives the URL with three slashes, as in
+`memory:///demo/example.zarr`. That URL reopens the bundle.
+To pass options to the memory filesystem, build an `FsspecStore` and open the
+store.
 
 An HTTP server must honor `Range` requests. The reader fetches byte ranges of each
-shard. Over a server that ignores the `Range` header, `open_bundle` succeeds. A read
-that needs only some of the inner chunks of a shard then raises `ValueError`.
-
-A `memory://` URL names the in-process memory filesystem of fsspec. `bundle.location`
-gives that URL with three slashes, as in `memory:///demo/example.zarr`, and the URL
-reopens the bundle. To pass options to the memory filesystem, build an `FsspecStore` and
-open the store.
+shard. Over a server that ignores the `Range` header, `open_bundle` succeeds.
+A read that needs only some of the inner chunks of a shard then raises `ValueError`.
 
 ```python
 import fsspec
