@@ -5,12 +5,15 @@ reaches back into an earlier one.
 
 ## Input adapters
 
-`protocols.py` declares `ContinuousChannelSource` and `EventChannelSource`. A continuous
-source exposes one channel's metadata and windowed sample reads. An event source
-exposes its metadata, its event times, and the optional columns it provides. Its
-`columns()` method names them, and the writer calls a column's reader only for a column
-named there. Either kind of source may also define `provenance()`, which the protocols
-leave optional.
+`protocols.py` declares `ContinuousChannelSource`, `MultiChannelSource`, and
+`EventChannelSource`. A continuous source exposes one channel's metadata and windowed
+sample reads. A multi-channel source exposes the metadata of every channel through
+`channels()` and yields one window, with one block per channel, from `iter_windows()`.
+`ContinuousChannelMetadata` declares the metadata that a continuous source and each
+channel of a multi-channel source share. An event source exposes its metadata, its event
+times, and the optional columns it provides. Its `columns()` method names them, and the
+writer calls a column's reader only for a column named there. Every channel may also
+define `provenance()`, which the protocols leave optional.
 
 Everything downstream depends on the protocols. An adapter for an input format lives in
 its own package and implements them. The NWB adapter is
@@ -43,8 +46,9 @@ arrays a level stores and assembles one from them. See [the format spec](./spec.
 for the exact rules and the NaN behavior.
 
 `streaming.py` drives the folds one block at a time. It buffers across block boundaries,
-so a run of 4 that straddles two blocks folds correctly. It also re-cuts a stream into
-whole shards. Memory stays bounded however long the recording is.
+so a run of 4 that straddles two blocks folds correctly. `regroup` re-cuts an iterator of
+blocks into whole shards, and `Regrouper` re-cuts blocks that arrive one push at a time.
+Memory stays bounded however long the recording is.
 
 ## Write path
 
@@ -54,13 +58,19 @@ folds from the stored members of the level below. With `write_var` on, every lev
 from the raw samples in one pass through float64 statistics. That keeps the variance
 exact on a channel with a large DC offset.
 
+`write_continuous_channels` writes every channel of a multi-channel source. It creates
+each channel group and its `raw` array, then makes one pass over the windows of the
+source. Each channel has a `Regrouper`, so every write to `raw` covers a whole shard
+whatever the length of the blocks. After the pass, the writer folds the levels of each
+channel from its stored `raw` array.
+
 `write_event.py` writes one event channel: the `events` array, each optional column the
 source names, and the count levels of a dense channel. Event times are stored from the
 reference time.
 
-Both writers read shard-sized blocks. Every write then covers a whole shard. A narrower
-write makes the sharding codec read the shard back, re-encode every inner chunk, and
-rewrite it. That costs about 10x the store traffic on a 16-chunk shard.
+Both writers cover a whole shard with every write. A narrower write makes the sharding
+codec read the shard back, re-encode every inner chunk, and rewrite it. That costs about
+10x the store traffic on a 16-chunk shard.
 
 `zarr_io.py` is the only module that imports `zarr`. Other modules handle zarr groups
 and arrays through the `ZarrGroup` and `ZarrArray` aliases.
@@ -71,11 +81,12 @@ datetimes.
 
 ## Orchestration
 
-`bundle.py` runs the whole job. It assigns each channel a key and finds the reference
-time, the earlier of the session start and the first sample. It maps channel ids to keys. Event
-channels use that map to name the channels they apply to. It checks each channel's unit
-and provenance before it clears `output_path`. It then writes each channel, consolidates
-the metadata, and writes `recording.json`.
+`bundle.py` runs the whole job. It assigns each channel a key and gives a multi-channel
+source consecutive keys, one for each channel, in channel order. It finds the reference
+time, the earlier of the session start and the first sample, and maps channel ids to
+keys. Event channels use that map to name the channels they apply to. It checks each
+channel's unit and provenance before it clears `output_path`. It then writes each
+channel, consolidates the metadata, and writes `recording.json`.
 
 A converter calls `write_bundle` with its sources, a `WriteOpts`, and an optional
 `RecordingMeta`.
