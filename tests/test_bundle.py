@@ -637,7 +637,9 @@ def _check_continuous(nodes, key, attrs):
     levels = sorted(int(c) for c in _children(nodes, key) if c.isdigit())
     assert levels == list(range(1, len(levels) + 1))
     for k in levels:
-        period = nodes[f"{key}/{k}"]["attributes"]["tsz"]["period_us"]
+        level_attrs = nodes[f"{key}/{k}"]["attributes"]["tsz"]
+        period = level_attrs["period_us"]
+        assert "offset_us" not in level_attrs
         assert math.isclose(period, 4**k * 1e6 / rate, rel_tol=1e-12)
         members = _children(nodes, f"{key}/{k}")
         assert (
