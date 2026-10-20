@@ -50,16 +50,17 @@ def reference_us(
     Every offset and event time counts from it. declared_us, when given, is
     the reference time as it is, so a rewrite keeps a bundle's reference time.
     Otherwise it is the earliest of the session start, when given, and the
-    first sample of every continuous source, so no sample precedes it.
-    Without either, it is the first event of the event sources that have
-    one, and without any of those it is None.
+    first sample of every continuous source that holds samples, so no sample
+    precedes it. A continuous source without samples has no first sample and
+    does not count. Without either, it is the first event of the event
+    sources that have one, and without any of those it is None.
     """
     if declared_us is not None:
         return declared_us
     starts = [
         source.start_us()
         for source in sources
-        if not isinstance(source, EventChannelSource)
+        if not isinstance(source, EventChannelSource) and source.num_samples()
     ]
     if session_start_us is not None:
         starts.append(session_start_us)
