@@ -4,6 +4,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+from tests.conftest import ArrayContinuousSource, ArrayMultiChannelSource
 from timeseries_zarr.protocols import (
     ContinuousChannelMetadata,
     ContinuousChannelSource,
@@ -290,6 +291,53 @@ def test_a_multi_channel_source_is_neither_a_continuous_nor_an_event_source() ->
     fake = type("Fake", (), _multi_members())()
     assert not isinstance(fake, ContinuousChannelSource)
     assert not isinstance(fake, EventChannelSource)
+
+
+def test_array_multi_channel_source_satisfies_the_protocol(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    source = multi_channel_source([continuous_source(np.zeros(4))])
+    assert isinstance(source, MultiChannelSource)
+    assert all(
+        isinstance(channel, ContinuousChannelMetadata)
+        for channel in source.channels()
+    )
+
+
+def test_array_multi_channel_source_windows_concatenate_to_each_channel(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    samples = [
+        np.arange(20, dtype=np.float32),
+        np.arange(7, dtype=np.float32) + 100,
+    ]
+    source = multi_channel_source(
+        [continuous_source(each) for each in samples], window_rows=[6, 3]
+    )
+    windows = list(source.iter_windows())
+    assert [len(window) for window in windows] == [2] * len(windows)
+    for index, expected in enumerate(samples):
+        joined = np.concatenate([window[index] for window in windows])
+        assert joined.dtype == np.float32
+        assert np.array_equal(joined, expected)
+
+
+def test_array_multi_channel_source_gives_an_empty_block_past_a_channels_end(
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    source = multi_channel_source(
+        [
+            continuous_source(np.arange(10)),
+            continuous_source(np.arange(3)),
+        ],
+        window_rows=4,
+    )
+    windows = list(source.iter_windows())
+    assert [window[0].shape[0] for window in windows] == [4, 4, 2]
+    assert [window[1].shape[0] for window in windows] == [3, 0, 0]
 
 
 def test_a_source_without_provenance_still_satisfies_both_protocols():

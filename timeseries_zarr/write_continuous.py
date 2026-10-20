@@ -8,9 +8,13 @@ input creates the arrays and writes nothing.
 write_continuous_channel composes three steps. create_channel_group makes the
 channel group with its attributes, write_raw makes and fills the raw array,
 and write_levels folds the levels from the stored raw array.
+write_continuous_channels writes every channel of a multi-channel source. It
+fills the raw arrays of all channels in one sweep over the source and then
+folds the levels of each channel.
 """
 
 from collections.abc import Callable, Iterable, Iterator
+from dataclasses import dataclass
 from typing import cast
 
 import numpy as np
@@ -36,17 +40,20 @@ from timeseries_zarr.planning import plan_levels, raw_shape
 from timeseries_zarr.protocols import (
     ContinuousChannelMetadata,
     ContinuousChannelSource,
+    MultiChannelSource,
     source_provenance,
 )
 from timeseries_zarr.sizing import level_sizing, member_sizing, raw_sizing
 from timeseries_zarr.streaming import (
     BlockReadableArray,
+    Regrouper,
     _rebuffer_and_fold,
     iter_array_blocks,
     iter_member_blocks,
     iter_raw_blocks,
     regroup,
     scale,
+    scale_block,
     tap,
 )
 from timeseries_zarr.types import (
@@ -385,3 +392,130 @@ def write_continuous_channel(
         resolved.factor,
     )
     write_levels(group, raw, source.rate_hz(), opts)
+
+
+@dataclass(slots=True)
+class _RawSink:
+    """Collect one channel's blocks of a sweep and write them to its raw array."""
+
+    key: int
+    channel: ContinuousChannelMetadata
+    group: ZarrGroup
+    raw: ZarrArray
+    factor: float
+    regrouper: Regrouper[np.float32]
+    num_samples: int
+    received: int = 0
+    written: int = 0
+
+    def _label(self) -> str:
+        return f"channel {self.key} ({self.channel.id!r})"
+
+    def _write(self, block: npt.NDArray[np.float32]) -> None:
+        write_region(self.raw, self.written, block)
+        self.written += block.shape[0]
+
+    def push(self, block: npt.ArrayLike) -> None:
+        """Write each whole shard that the samples of block complete.
+
+        The samples are cast to float32 and multiplied by factor. Samples
+        that do not fill a shard wait for the next push. Raises ValueError,
+        before it writes any sample of block, if block is not rank 1 or if the
+        channel has received more samples than it declares.
+        """
+        samples = np.asarray(block, dtype=np.float32)
+        if samples.ndim != 1:
+            raise ValueError(
+                f"{self._label()} gives a block of rank {samples.ndim}; "
+                "each block must be a rank-1 array"
+            )
+        self.received += samples.shape[0]
+        if self.received > self.num_samples:
+            raise ValueError(
+                f"{self._label()} yields at least {self.received} samples "
+                f"and declares {self.num_samples}; its blocks must total "
+                f"{self.num_samples}"
+            )
+        for shard in self.regrouper.push(scale_block(samples, self.factor)):
+            self._write(shard)
+
+    def finish(self) -> None:
+        """Write the samples that wait for a shard to fill.
+
+        Raises ValueError if the channel received fewer samples than it
+        declares.
+        """
+        tail = self.regrouper.flush()
+        if tail is not None:
+            self._write(tail)
+        if self.received != self.num_samples:
+            raise ValueError(
+                f"{self._label()} yields {self.received} samples and "
+                f"declares {self.num_samples}; its blocks must total "
+                f"{self.num_samples}"
+            )
+
+
+def write_continuous_channels(
+    parent: ZarrGroup,
+    first_key: int,
+    source: MultiChannelSource,
+    *,
+    reference_us: int,
+    opts: WriteOpts,
+) -> None:
+    """Write the channels of source as the subgroups named from str(first_key).
+
+    The channels take consecutive keys in channel order, and each channel
+    group is created as write_continuous_channel creates it. One pass over the
+    windows of source fills the raw array of every channel, a shard at a time.
+    The levels of each channel are then folded from its stored raw samples.
+    Memory holds one shard of raw per channel and the current window. A source
+    without channels writes nothing, and iter_windows is not called.
+
+    Raises ValueError for a rate that is not positive, for provenance that is
+    not a JSON object of finite values, and under voltage_policy require_uv
+    for a voltage unit that is not "uV". Raises ValueError also for a window
+    that does not hold one block per channel, for a block that is not rank 1,
+    and for a channel whose blocks do not total its num_samples. Each of these
+    errors comes before the first level is folded. A failure leaves the
+    groups written so far in place.
+    """
+    channels = list(source.channels())
+    if not channels:
+        return
+    sinks: list[_RawSink] = []
+    for key, channel in enumerate(channels, start=first_key):
+        resolved = resolve_unit(channel.unit, opts.voltage_policy)
+        group = create_channel_group(
+            parent, key, channel, reference_us=reference_us, unit=resolved.unit
+        )
+        num_samples = channel.num_samples()
+        sizing = raw_sizing(
+            num_samples, opts.inner_len, opts.target_shard_bytes
+        )
+        raw = create_raw(group, num_samples, sizing, opts.zstd_level)
+        sinks.append(
+            _RawSink(
+                key,
+                channel,
+                group,
+                raw,
+                resolved.factor,
+                Regrouper(sizing.shard_shape[0]),
+                num_samples,
+            )
+        )
+    for index, window in enumerate(source.iter_windows()):
+        if len(window) != len(sinks):
+            raise ValueError(
+                f"window {index} holds {len(window)} blocks and the source "
+                f"has {len(sinks)} channels; a window must hold one block "
+                "for each channel"
+            )
+        for sink, block in zip(sinks, window, strict=True):
+            sink.push(block)
+    for sink in sinks:
+        sink.finish()
+    for sink in sinks:
+        write_levels(sink.group, sink.raw, sink.channel.rate_hz(), opts)

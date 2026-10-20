@@ -92,6 +92,46 @@ def continuous_source():
     return ArrayContinuousSource
 
 
+class ArrayMultiChannelSource:
+    """In-memory MultiChannelSource over ArrayContinuousSource channels.
+
+    Each window holds window_rows samples of every channel. window_rows is one
+    int for all channels or one int per channel. A channel at its end gives an
+    empty block, and the windows stop when every channel is at its end.
+    """
+
+    def __init__(self, sources, window_rows=8):
+        self._sources = list(sources)
+        if isinstance(window_rows, int):
+            window_rows = [window_rows] * len(self._sources)
+        self._window_rows = list(window_rows)
+
+    def channels(self):
+        return self._sources
+
+    def iter_windows(self):
+        positions = [0] * len(self._sources)
+        while any(
+            position < source.num_samples()
+            for position, source in zip(positions, self._sources, strict=True)
+        ):
+            window = []
+            for index, source in enumerate(self._sources):
+                start = positions[index]
+                stop = min(
+                    start + self._window_rows[index], source.num_samples()
+                )
+                window.append(source.read_samples(start, stop))
+                positions[index] = stop
+            yield window
+
+
+@pytest.fixture
+def multi_channel_source():
+    """Return the ArrayMultiChannelSource factory."""
+    return ArrayMultiChannelSource
+
+
 class ArrayEventSource:
     """In-memory EventChannelSource backed by arrays.
 
