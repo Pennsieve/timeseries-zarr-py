@@ -54,7 +54,7 @@ class ContinuousChannelSource(Protocol):
         ...
 
     def start_us(self) -> int:
-        """Return the wall-clock microseconds of sample index 0."""
+        """Return the microseconds since the Unix epoch of sample index 0."""
         ...
 
     def num_samples(self) -> int:
@@ -72,8 +72,8 @@ class EventChannelSource(Protocol):
 
     Every channel has event times. Each other column is optional, and columns
     names the ones this source provides: the writer calls a column's reader
-    only for a column named there. Times are wall-clock microseconds, and the
-    writer places them relative to the reference time.
+    only for a column named there. Times are microseconds since the Unix
+    epoch, and the writer places them relative to the reference time.
     """
 
     @property
@@ -119,9 +119,10 @@ class EventChannelSource(Protocol):
         ...
 
     def read_events(self, start: int, stop: int) -> npt.NDArray[np.int64]:
-        """Return the [start, stop) window of wall-clock microsecond times.
+        """Return the [start, stop) window of event times.
 
-        The times are non-decreasing across the whole channel.
+        Each time is in microseconds since the Unix epoch. The times are
+        non-decreasing across the whole channel.
         """
         ...
 

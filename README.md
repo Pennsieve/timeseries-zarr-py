@@ -72,7 +72,7 @@ each time as an offset from the reference time, the earlier of the session start
 declare and the first sample. A channel or event before it has a negative time.
 
 Passing a `RecordingMeta` as `recording` adds a `recording.json`. It holds
-`reference_time` as a wall-clock time and the subject, session, and source details
+`reference_time` as a datetime and the subject, session, and source details
 you give. `session_start_time` is the acquisition time, written as
 `session.start_time`; it places no data. Pass `reference_time` to keep a bundle's own
 t = 0 when you write it again. Both must be timezone-aware `datetime` values. Set

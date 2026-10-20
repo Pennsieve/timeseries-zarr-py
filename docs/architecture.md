@@ -66,8 +66,8 @@ rewrite it. That costs about 10x the store traffic on a 16-chunk shard.
 and arrays through the `ZarrGroup` and `ZarrArray` aliases.
 
 `attrs.py` builds the attribute dicts. The format keeps them all under one `tsz` key.
-`recording.py` writes `recording.json`, the one plain file that holds identity and the
-wall-clock times.
+`recording.py` writes `recording.json`, the one plain file that holds identity and
+datetimes.
 
 ## Orchestration
 

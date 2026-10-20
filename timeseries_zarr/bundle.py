@@ -45,7 +45,7 @@ def reference_us(
     session_start_us: int | None = None,
     declared_us: int | None = None,
 ) -> int | None:
-    """Return the reference time in wall-clock microseconds since the epoch.
+    """Return the reference time in microseconds since the Unix epoch.
 
     Every offset and event time counts from it. declared_us, when given, is
     the reference time as it is, so a rewrite keeps a bundle's reference time.
@@ -199,7 +199,7 @@ def write_bundle(
     The root group carries the format version. Every channel is written into
     a fresh root group at output_path, the metadata of every node is
     consolidated into the root, and then recording.json is written when
-    recording is given, so identity and the wall-clock times never enter the
+    recording is given, so identity and the datetimes never enter the
     root object. A bundle an earlier run left at output_path is replaced.
     Every time counts from the reference time: recording.reference_time when
     it is given, else the earlier of the session start and the first sample,

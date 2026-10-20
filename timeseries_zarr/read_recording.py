@@ -28,11 +28,11 @@ _JSON_TYPE_NAMES: Mapping[type, str] = {
 
 @dataclass(frozen=True, slots=True)
 class Recording:
-    """Identity and wall-clock times read from recording.json.
+    """Identity and datetimes read from recording.json.
 
     reference_time is the reference time, t = 0 of every time in the bundle,
-    as a wall-clock instant. session_start_time is the start_time of the
-    session object, the instant acquisition began. Each carries the UTC
+    as a datetime. session_start_time is the start_time of the session
+    object, the instant acquisition began. Each carries the UTC
     offset the file gives it and is None when the file omits it. subject,
     session, and source are producer-defined objects, read-only after parsing
     and empty when the file omits them. session keeps its start_time entry.

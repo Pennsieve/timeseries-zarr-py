@@ -239,7 +239,7 @@ class Bundle:
         return _table(rows)
 
     def datetimes(self, time_us: npt.ArrayLike) -> npt.NDArray[np.datetime64]:
-        """Return the UTC wall-clock time of each time in time_us.
+        """Return each time in time_us as a UTC datetime64[us].
 
         time_us counts microseconds from the reference time, and a fraction
         rounds to the nearest microsecond. A time halfway between two
@@ -257,7 +257,7 @@ class Bundle:
         if reference is None:
             raise ValueError(
                 f"{RECORDING_FILE} holds no reference_time; "
-                "wall-clock times are unavailable"
+                "datetimes are unavailable"
             )
         try:
             utc = reference.astimezone(UTC)

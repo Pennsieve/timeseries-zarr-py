@@ -1,4 +1,4 @@
-"""The bundle's recording.json: identity and wall-clock time in one plain file."""
+"""The bundle's recording.json, which holds identity and datetimes."""
 
 import json
 from datetime import UTC, datetime, timedelta
@@ -66,9 +66,8 @@ def recording_document(
 ) -> dict[str, object]:
     """Return the recording.json content of a bundle.
 
-    reference_time is reference_us, the reference time in wall-clock
-    microseconds since the Unix epoch, as an RFC 3339 string with microsecond
-    precision. It takes the UTC offset of meta.reference_time, else of
+    reference_time is reference_us, the reference time in microseconds since
+    the Unix epoch, as an RFC 3339 string with microsecond precision. It takes the UTC offset of meta.reference_time, else of
     meta.session_start_time, else UTC. reference_time is left out when
     reference_us is None, a bundle with no sample and no event, or when
     meta.wall_clock is False. session is meta.session with

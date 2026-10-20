@@ -49,7 +49,7 @@ _MIXED_KINDS = {
     4: "event",
 }
 _NO_REFERENCE = (
-    "recording.json holds no reference_time; wall-clock times are unavailable"
+    "recording.json holds no reference_time; datetimes are unavailable"
 )
 _EACH_LOCATION_KIND = pytest.mark.parametrize(
     "make_location",
@@ -540,7 +540,7 @@ def test_datetimes_counts_from_the_reference_time_when_it_precedes_the_session_s
     assert bundle.datetimes([0])[0] == np.datetime64("2024-03-14T14:14:58")
 
 
-def test_datetimes_places_the_event_times_on_the_wall_clock(mixed):
+def test_datetimes_returns_the_event_times_as_utc_datetimes(mixed):
     table = mixed.channel("curated marks").read()
     assert mixed.datetimes(table.time_us[:2]).tolist() == [
         np.datetime64("2024-03-14T14:15:01", "us").item(),
