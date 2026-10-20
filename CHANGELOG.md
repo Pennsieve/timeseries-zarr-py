@@ -8,5 +8,7 @@ Notable changes to this project. The format follows
 
 Writes TS-Zarr 1.0 bundles from continuous and event channel sources.
 
+Writes every channel of a `MultiChannelSource` in one pass over its windows.
+
 Reads TS-Zarr 1.0 bundles, with extras for pandas, xarray, and remote stores. Requires
 zarr 3.2.1 or later.

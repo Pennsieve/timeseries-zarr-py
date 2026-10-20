@@ -22,7 +22,10 @@ maximum number of levels of time resolution, and writes the bundle to disk.
 
 Each source implements `ContinuousChannelSource` or `EventChannelSource`, which
 [`timeseries_zarr.protocols`](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/timeseries_zarr/protocols.py)
-defines.
+defines. A source that decodes every channel from one stream, such as an EDF file,
+implements
+[`MultiChannelSource`](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/writing.md#multi-channel-sources)
+in place of `ContinuousChannelSource` and yields one window of every channel at a time.
 
 This example writes a single channel holding a minute of a 10 Hz sine sampled at 1000 Hz:
 
@@ -81,7 +84,7 @@ t = 0 when you write it again. Both must be timezone-aware `datetime` values. Se
 [recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#recording-metadata)
 section of the specification lists what the file can hold.
 
-[Write options](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/writing.md)
+[Write options](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/writing.md#write-options)
 lists the `WriteOpts` fields and their defaults.
 
 ### Reading
