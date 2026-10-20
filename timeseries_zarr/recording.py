@@ -39,13 +39,24 @@ def session_start_us(meta: RecordingMeta) -> int | None:
     return epoch_us(meta.session_start_time)
 
 
+def _require_wall_clock(meta: RecordingMeta) -> None:
+    """Raise ValueError if meta sets reference_time with wall_clock False."""
+    if meta.reference_time is not None and not meta.wall_clock:
+        raise ValueError(
+            "reference_time needs wall_clock=True; leave it unset when the "
+            "source times do not count from the Unix epoch"
+        )
+
+
 def reference_time_us(meta: RecordingMeta) -> int | None:
     """Return the reference time in microseconds since the Unix epoch, or None.
 
-    Raises ValueError if meta.reference_time has no UTC offset.
+    Raises ValueError if meta.reference_time has no UTC offset, or if it is
+    set while meta.wall_clock is False.
     """
     if meta.reference_time is None:
         return None
+    _require_wall_clock(meta)
     _require_offset(meta.reference_time, "reference_time")
     return epoch_us(meta.reference_time)
 
@@ -64,8 +75,10 @@ def recording_document(
     meta.session_start_time first, as given, under start_time. subject,
     session, and source follow reference_time in that order, each only when
     it holds something. Raises ValueError if a time of meta has no UTC
-    offset or meta.session already holds a start_time key.
+    offset, meta.reference_time is set while meta.wall_clock is False, or
+    meta.session already holds a start_time key.
     """
+    _require_wall_clock(meta)
     session_start = meta.session_start_time
     if session_start is not None:
         _require_offset(session_start, "session_start_time")
