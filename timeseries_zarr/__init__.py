@@ -8,8 +8,10 @@ from timeseries_zarr.columns import (
 )
 from timeseries_zarr.constants import MAX_LABELS, MAX_LEVELS, UNIT_TO_UV
 from timeseries_zarr.protocols import (
+    ContinuousChannelMetadata,
     ContinuousChannelSource,
     EventChannelSource,
+    MultiChannelSource,
 )
 from timeseries_zarr.read_bundle import Bundle, Channel, open_bundle
 from timeseries_zarr.read_continuous import (
@@ -50,6 +52,7 @@ __all__ = [
     "Bundle",
     "Channel",
     "ContinuousChannel",
+    "ContinuousChannelMetadata",
     "ContinuousChannelSource",
     "CountLevel",
     "Counts",
@@ -58,6 +61,7 @@ __all__ = [
     "EventColumn",
     "EventTable",
     "Level",
+    "MultiChannelSource",
     "Recording",
     "RecordingMeta",
     "Samples",
