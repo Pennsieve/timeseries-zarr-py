@@ -79,6 +79,23 @@ def test_recording_document_without_a_reference_has_no_reference_time():
     assert doc["session"] == {"start_time": "2024-03-14T09:15:00.000000+00:00"}
 
 
+def test_recording_document_rejects_a_reference_time_without_wall_clock_times():
+    declared = datetime(2024, 3, 14, 9, 15, tzinfo=UTC)
+    meta = _meta(reference_time=declared, wall_clock=False)
+    with pytest.raises(
+        ValueError, match="reference_time needs wall_clock=True"
+    ):
+        recording_document(meta, _NOON_UTC_US)
+
+
+def test_reference_time_us_rejects_a_reference_time_without_wall_clock_times():
+    declared = datetime(2024, 3, 14, 9, 15, tzinfo=UTC)
+    with pytest.raises(
+        ValueError, match="reference_time needs wall_clock=True"
+    ):
+        reference_time_us(_meta(reference_time=declared, wall_clock=False))
+
+
 def test_recording_document_without_wall_clock_times_has_no_reference_time():
     doc = recording_document(_meta(wall_clock=False), _NOON_UTC_US)
     assert list(doc) == ["session"]

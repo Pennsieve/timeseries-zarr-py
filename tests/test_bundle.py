@@ -1029,6 +1029,41 @@ def test_write_bundle_without_wall_clock_times_writes_no_reference_time(
     assert nodes["0"]["attributes"]["tsz"]["offset_us"] == 0
 
 
+def test_write_bundle_without_wall_clock_times_ignores_the_session_start(
+    tmp_path, event_source
+):
+    undated = RecordingMeta(session_start_time=_SESSION, wall_clock=False)
+    output = tmp_path / "bundle"
+    write_bundle(
+        [],
+        [event_source([40, 50])],
+        output_path=output,
+        opts=_OPTS,
+        recording=undated,
+    )
+    document = json.loads((output / RECORDING_FILE).read_text("utf-8"))
+    assert "reference_time" not in document
+    assert open_group(output)["0"]["events"][:].tolist() == [0, 10]
+
+
+def test_write_bundle_rejects_a_reference_time_without_wall_clock_times(
+    tmp_path, continuous_source
+):
+    mixed_up = RecordingMeta(reference_time=_SESSION, wall_clock=False)
+    cont = continuous_source(np.zeros(8, np.float32), id="c0")
+    with pytest.raises(
+        ValueError, match="reference_time needs wall_clock=True"
+    ):
+        write_bundle(
+            [cont],
+            [],
+            output_path=tmp_path / "bundle",
+            opts=_OPTS,
+            recording=mixed_up,
+        )
+    assert not (tmp_path / "bundle").exists()
+
+
 def test_write_bundle_keeps_identity_and_the_date_out_of_every_zarr_node(
     tmp_path, continuous_source, event_source
 ):

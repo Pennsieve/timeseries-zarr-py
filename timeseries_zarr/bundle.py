@@ -205,10 +205,13 @@ def write_bundle(
     it is given, else the earlier of the session start and the first sample,
     as reference_us resolves it. A channel or event before it has a negative
     time. recording.json holds the reference time as reference_time and the
-    session start as session.start_time. Sizing and compression follow opts.
+    session start as session.start_time. With recording.wall_clock False the
+    source times do not count from the Unix epoch, so the session start does
+    not place the reference time. Sizing and compression follow opts.
     Raises ValueError if two channels share an id, a time of recording has no
-    UTC offset, recording.session holds a start_time key, a voltage unit is
-    not "uV" under voltage_policy require_uv, a
+    UTC offset, recording sets reference_time with wall_clock False,
+    recording.session holds a start_time key, a voltage unit is not "uV"
+    under voltage_policy require_uv, a
     channel's provenance is not a JSON object of finite values, or
     output_path is not absent, empty, or a bundle, before anything is
     written. A failed write leaves a partial bundle with no consolidated
@@ -220,8 +223,11 @@ def write_bundle(
         reference = reference_us(sources)
         document = None
     else:
+        session_start = (
+            session_start_us(recording) if recording.wall_clock else None
+        )
         reference = reference_us(
-            sources, session_start_us(recording), reference_time_us(recording)
+            sources, session_start, reference_time_us(recording)
         )
         document = recording_document(recording, reference)
     keys = channel_keys(indexed)

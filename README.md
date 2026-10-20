@@ -76,8 +76,8 @@ Passing a `RecordingMeta` as `recording` adds a `recording.json`. It holds
 you give. `session_start_time` is the acquisition time, written as
 `session.start_time`; it places no data. Pass `reference_time` to keep a bundle's own
 t = 0 when you write it again. Both must be timezone-aware `datetime` values. Set
-`wall_clock=False` when your times do not count from the Unix epoch, and
-`recording.json` then holds no `reference_time`. The
+`wall_clock=False` when your times do not count from the Unix epoch, and leave
+`reference_time` unset; `recording.json` then holds no `reference_time`. The
 [recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#recording-metadata)
 section of the specification lists what the file can hold.
 

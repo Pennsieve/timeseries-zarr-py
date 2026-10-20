@@ -88,8 +88,9 @@ class RecordingMeta:
     carry a UTC offset. The three objects are producer-defined and default
     to empty. wall_clock states whether the source times are wall-clock
     times, microseconds since the Unix epoch. When it is False, the times
-    count from an unknown instant and recording.json holds no
-    reference_time.
+    count from an unknown instant, the session start does not place the
+    reference time, recording.json holds no reference_time, and
+    reference_time must be None.
     """
 
     session_start_time: datetime | None = None
