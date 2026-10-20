@@ -4,11 +4,16 @@
 for direct slicing, and its `read` methods return results that hold numpy arrays and
 compute the time axis. The [specification](./spec.md) defines the format.
 
-## Example bundles
+## Example bundle
 
-The examples on this page open two bundles from the working directory:
-- `synthetic.tszarr` holds three continuous channels and three event channels
-- `tones.zarr`, produced by the code below, holds two continuous channels on one grid and a session start
+The examples on this page read `example.zarr`, which the code below writes to the
+working directory. It holds five minutes of five channels. Channels 0 and 1 are 5 Hz
+and 10 Hz tones sampled at 1000 Hz on one grid. Channel 2 is a 1 Hz tone sampled at
+256 Hz. It starts 0.5 s after the session start and has a gap from 120.5 s to 125 s.
+Channel 3 holds six marks with durations, labels, text, and the channels each mark
+applies to. Channel 4 holds the spike times of three units, 70,000 events in all, and
+the mean waveform of each unit. `Tone` and `Events` implement the source protocols
+that `write_bundle` reads.
 
 ```python
 from datetime import UTC, datetime, timedelta, timezone
@@ -16,28 +21,43 @@ from pathlib import Path
 
 import numpy as np
 
-from timeseries_zarr import RecordingMeta, WriteOpts, write_bundle
+from timeseries_zarr import RecordingMeta, WriteOpts, text_width, write_bundle
 
 SESSION_START = datetime(
     2024, 3, 14, 9, 15, tzinfo=timezone(timedelta(hours=-5))
 )
-UNIX_EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+SESSION_START_US = (
+    SESSION_START - datetime(1970, 1, 1, tzinfo=UTC)
+) // timedelta(microseconds=1)
+SECONDS = 300
+
+
+def wall_clock_us(seconds):
+    return SESSION_START_US + np.round(np.asarray(seconds) * 1e6).astype(
+        np.int64
+    )
 
 
 class Tone:
     unit = "uV"
 
-    def __init__(self, hertz):
+    def __init__(self, hertz, rate_hz=1000.0, delay_s=0.0, gap_s=None):
         self.id = f"tone-{hertz}"
         self.name = f"{hertz} Hz"
-        seconds = np.arange(60_000) / 1000.0
-        self.samples = np.sin(2 * np.pi * hertz * seconds).astype(np.float32)
+        self._rate_hz = rate_hz
+        self._start_us = int(wall_clock_us(delay_s))
+        seconds = np.arange(round(SECONDS * rate_hz)) / rate_hz
+        samples = 100.0 * np.sin(2 * np.pi * hertz * seconds)
+        self.samples = samples.astype(np.float32)
+        if gap_s is not None:
+            first, last = (round(edge * rate_hz) for edge in gap_s)
+            self.samples[first:last] = np.nan
 
     def rate_hz(self):
-        return 1000.0
+        return self._rate_hz
 
     def start_us(self):
-        return (SESSION_START - UNIX_EPOCH) // timedelta(microseconds=1)
+        return self._start_us
 
     def num_samples(self):
         return self.samples.shape[0]
@@ -46,12 +66,117 @@ class Tone:
         return self.samples[start:stop]
 
 
+class Events:
+    unit = None
+
+    def __init__(self, id, name, seconds, labels, label_names, **columns):
+        self.id = id
+        self.name = name
+        self.times = wall_clock_us(seconds)
+        self.labels = np.asarray(labels, dtype=np.uint16)
+        self.names = label_names
+        self.durations = columns.get("durations")
+        self.text = columns.get("text")
+        self.channel_ids = columns.get("channel_ids")
+        self.mean = columns.get("waveform_mean")
+
+    def num_events(self):
+        return self.times.shape[0]
+
+    def columns(self):
+        present = {
+            "labels": self.labels,
+            "durations": self.durations,
+            "text": self.text,
+            "channels": self.channel_ids,
+            "waveform_mean": self.mean,
+        }
+        return frozenset(
+            name for name, value in present.items() if value is not None
+        )
+
+    def label_names(self):
+        return self.names
+
+    def num_labels(self):
+        return len(self.names)
+
+    def max_duration_us(self):
+        if self.durations is None:
+            return None
+        return int(max(self.durations))
+
+    def text_width(self):
+        return 0 if self.text is None else text_width(self.text)
+
+    def read_events(self, start, stop):
+        return self.times[start:stop]
+
+    def read_durations(self, start, stop):
+        return np.asarray(self.durations[start:stop], dtype=np.int64)
+
+    def read_labels(self, start, stop):
+        return self.labels[start:stop]
+
+    def read_text(self, start, stop):
+        return self.text[start:stop]
+
+    def read_channel_ids(self, start, stop):
+        return self.channel_ids[start:stop]
+
+    def waveform_mean(self):
+        return self.mean
+
+    def waveform_period_us(self):
+        return 1e6 / 32_000
+
+
+marks = Events(
+    "marks",
+    "curated marks",
+    [10.0, 45.0, 120.5, 200.0, 250.0, 290.0],
+    [1, 1, 2, 0, 1, 2],
+    ["seizure", "spike", "note"],
+    durations=[0, 0, 4_500_000, 60_000_000, 0, 0],
+    text=[
+        "interictal spike",
+        "interictal spike",
+        "acquisition dropout",
+        "electrographic seizure",
+        "interictal spike",
+        "electrode check",
+    ],
+    channel_ids=[
+        ["tone-5"],
+        ["tone-5"],
+        ["tone-1"],
+        [],
+        ["tone-5"],
+        ["tone-1"],
+    ],
+)
+rng = np.random.default_rng(0)
+spike_seconds = np.sort(rng.uniform(0, SECONDS, 70_000))
+units = Events(
+    "units",
+    "units",
+    spike_seconds,
+    rng.integers(0, 3, spike_seconds.shape[0]),
+    ["unit-0", "unit-1", "unit-2"],
+    waveform_mean=rng.standard_normal((3, 32)).astype(np.float32),
+)
 write_bundle(
-    [Tone(5), Tone(10)],
-    [],
-    output_path=Path("tones.zarr"),
+    [
+        Tone(5),
+        Tone(10),
+        Tone(1, rate_hz=256.0, delay_s=0.5, gap_s=(120.0, 124.5)),
+    ],
+    [marks, units],
+    output_path=Path("example.zarr"),
     opts=WriteOpts(),
-    recording=RecordingMeta(session_start_time=SESSION_START),
+    recording=RecordingMeta(
+        session_start_time=SESSION_START, subject={"id": "sub-01"}
+    ),
 )
 ```
 
@@ -72,9 +197,9 @@ from zarr.storage import LocalStore, StorePath
 
 from timeseries_zarr import open_bundle
 
-path = Path("tones.zarr").absolute()
+path = Path("example.zarr").absolute()
 for location in [
-    "tones.zarr",
+    "example.zarr",
     path,
     path.as_uri(),
     LocalStore(path, read_only=True),
@@ -91,10 +216,10 @@ A read method loads samples or events from the store.
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
+with open_bundle("example.zarr") as bundle:
     print(bundle.version)
     print(bundle.describe())
-    print(bundle.channel("gappy"))
+    print(bundle.channel("1 Hz"))
     print(bundle.recording.subject["id"])
 ```
 
@@ -130,16 +255,16 @@ raises `TypeError`. If you hold a time in seconds, convert it with
 A continuous read stores `offset_us`, `first`, and `period_us` in its result. Entry `i`
 of the result starts at `offset_us + (first + i) * period_us` microseconds, and
 `time_us` computes that for every entry. `time_us` is float64. A sample period of
-`1e6 / rate_hz` microseconds is rarely a whole number, and at 1024 Hz it is 976.5625
+`1e6 / rate_hz` microseconds is rarely a whole number, and at 256 Hz it is 3906.25
 microseconds. `time_s` is `time_us / 1e6`. Event times keep the stored int64
 microseconds.
 
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
-    channel = bundle.continuous[0]
-    samples = channel.read(round(312.0 * 1e6), round(312.003 * 1e6))
+with open_bundle("example.zarr") as bundle:
+    channel = bundle.continuous[2]
+    samples = channel.read(round(100.0 * 1e6), round(100.01 * 1e6))
     print(samples.first, samples.period_us)
     print(samples.time_us)
     print(samples.time_s)
@@ -148,13 +273,12 @@ with open_bundle("synthetic.tszarr") as bundle:
 `bundle.datetimes(time_us)` returns the UTC wall-clock time of each time as
 `datetime64[us]`. It rounds each time to the nearest microsecond, with a tie going to
 the even one, and adds it to the `reference_time` of `recording.json`. A NaN gives NaT.
-A bundle whose `recording.json` holds no `reference_time` raises `ValueError`, and
-`synthetic.tszarr` is such a bundle.
+A bundle whose `recording.json` holds no `reference_time` raises `ValueError`.
 
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("tones.zarr") as bundle:
+with open_bundle("example.zarr") as bundle:
     print(bundle.recording.reference_time)
     samples = bundle.continuous[0].read(1_500_000, 1_503_000)
     print(bundle.datetimes(samples.time_us))
@@ -194,21 +318,22 @@ counts the bins after the read widens and clamps the window.
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
+with open_bundle("example.zarr") as bundle:
     channel = bundle.continuous[0]
     print(channel)
     print({number: level.bins for number, level in channel.levels.items()})
     for start_us, end_us in [
-        (0, 600_000_000),
-        (300_000_000, 330_000_000),
-        (312_000_000, 314_000_000),
+        (0, 300_000_000),
+        (100_000_000, 130_000_000),
+        (100_000_000, 106_000_000),
+        (100_000_000, 101_000_000),
     ]:
         level = channel.level_for(start_us, end_us, bins=1200)
         result = channel.read(start_us, end_us, level=level)
         print(level, type(result).__name__, len(result), result.first)
 ```
 
-Channel 1 of `synthetic.tszarr` starts 500000 microseconds after the reference time. In this
+Channel 2 of `example.zarr` starts 500000 microseconds after the reference time. In this
 example, the read of a window that starts before the channel begins with bin 0. A window
 that ends at the channel start is empty, and a window that runs past the channel end
 reads the 128 samples that exist.
@@ -216,13 +341,13 @@ reads the 128 samples that exist.
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
-    channel = bundle.continuous[1]
+with open_bundle("example.zarr") as bundle:
+    channel = bundle.continuous[2]
     print(channel.offset_us, channel.end_us)
     bins = channel.read(0, 1_000_000, level=1)
     print(bins.first, len(bins), bins.time_us[0])
     print(len(channel.read(0, 500_000, level=1)))
-    print(len(channel.read(600_000_000, 700_000_000)))
+    print(len(channel.read(300_000_000, 400_000_000)))
 ```
 
 A NaN sample is a gap. The [continuous channels](./spec.md#continuous-channels) section
@@ -239,13 +364,13 @@ span ends joins it.
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
+with open_bundle("example.zarr") as bundle:
     channel = bundle.continuous[2]
-    bins = channel.read(118_000_000, 128_000_000, level=5)
+    bins = channel.read(118_000_000, 128_000_000, level=3)
     print(bins.mean)
     print(bins.count)
     print(channel.spans())
-    print(channel.spans(level=1, gap_us=1_000_000))
+    print(channel.spans(level=1, gap_us=5_000_000))
 ```
 
 ## Event channels
@@ -288,8 +413,8 @@ without `channels` from a channel that has the column, `applies_to` raises `Valu
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
-    marks = bundle.events[4]
+with open_bundle("example.zarr") as bundle:
+    marks = bundle.events[3]
     print(marks.columns, marks.label_names, marks.max_duration_us)
     table = marks.read(100_000_000, 300_000_000)
     print(table.time_us)
@@ -298,12 +423,12 @@ with open_bundle("synthetic.tszarr") as bundle:
     print(table.text[-1])
     print(table.channel_keys)
     print(table.applies_to(2))
-    print(len(marks.read(312_000_000, 320_000_000)))
-    print(len(marks.read(312_000_001, 320_000_000)))
+    print(len(marks.read(260_000_000, 270_000_000)))
+    print(len(marks.read(260_000_001, 270_000_000)))
 ```
 
-The last event in the window starts at 222 s and lasts 90 s. It ends at 312 s, so the
-read from 312 s holds it and the read from 1 microsecond later does not.
+The seizure starts at 200 s and lasts 60 s. It ends at 260 s, so the read from 260 s
+holds it and the read from 1 microsecond later does not.
 
 `waveform` is a `Waveform` with one snippet row per event of the table. Column number
 `event_sample` of each row holds the sample at the event time, and `time_us` counts
@@ -311,7 +436,8 @@ microseconds from the event time. `time_s` gives the same times in seconds, and 
 gives the number of samples in each snippet. `channel.waveforms` and
 `channel.waveform_mean` are `Snippets` that wrap the zarr arrays, and `read()` returns
 every row as a `Waveform`. The rows of `waveform_mean` are labels, and `rows` names what
-a row stands for, `event` or `label`.
+a row stands for, `event` or `label`. `write_bundle` writes `waveform_mean` and no
+per-event `waveforms`, so the units of `example.zarr` have no `waveform` column.
 
 `count_levels` maps each count level number, from 1, to a `CountLevel`, which carries
 `period_us` and `offset_us`, the time of its bin 0. The
@@ -331,17 +457,17 @@ import numpy as np
 
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
-    units = bundle.events[3]
-    table = units.read(300_000_000, 330_000_000)
-    print(len(table), np.bincount(table.label), table.waveform.values.shape)
+with open_bundle("example.zarr") as bundle:
+    units = bundle.events[4]
+    table = units.read(100_000_000, 110_000_000)
+    print(len(table), np.bincount(table.label), table.waveform)
     mean = units.waveform_mean.read()
     print(mean.values.shape, mean.event_sample, mean.time_us[mean.event_sample])
-    level = units.level_for(300_000_000, 330_000_000, bins=100)
+    level = units.level_for(100_000_000, 110_000_000, bins=100)
     if level == 0:
-        print(len(units.read(300_000_000, 330_000_000)))
+        print(len(units.read(100_000_000, 110_000_000)))
     else:
-        counts = units.read_counts(300_000_000, 330_000_000, level=level)
+        counts = units.read_counts(100_000_000, 110_000_000, level=level)
         print(level, counts.first, len(counts), counts.count.sum(axis=0))
 ```
 
@@ -363,7 +489,7 @@ lacks the level or member.
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("tones.zarr") as bundle:
+with open_bundle("example.zarr") as bundle:
     stack = bundle.stack([0, 1], 0, 10_000_000, level=1, member="mean")
     print(stack.keys, stack.names, stack.values.shape, stack.period_us)
     raw = bundle.stack([0, 1], 0, 3_000)
@@ -399,14 +525,14 @@ holds a unit is `units`, which xarray plotting puts in the axis label.
 ```python
 from timeseries_zarr import open_bundle
 
-with open_bundle("synthetic.tszarr") as bundle:
+with open_bundle("example.zarr") as bundle:
     channel = bundle.continuous[2]
-    bins = channel.read(0, 20_000_000, level=4)
+    bins = channel.read(0, 20_000_000, level=3)
     print(list(bins.columns()))
     print(bins.to_dataframe().head())
-    samples = channel.read(0, 10_000)
+    samples = channel.read(1_000_000, 1_020_000)
     print(samples.to_xarray(name=channel.name, unit=channel.unit))
-    print(bundle.events[4].read(columns=["labels"]).to_dataframe())
+    print(bundle.events[3].read(columns=["labels"]).to_dataframe())
 ```
 
 ## Rewriting a bundle
@@ -458,9 +584,9 @@ from timeseries_zarr import (
     write_bundle,
 )
 
-with open_bundle("synthetic.tszarr") as bundle:
+with open_bundle("example.zarr") as bundle:
     continuous, events = bundle_sources(
-        bundle, [1, 4], drop_columns={"channels"}
+        bundle, [2, 3], drop_columns={"channels"}
     )
     write_bundle(
         continuous,
@@ -496,7 +622,7 @@ shard. Over a server that ignores the `Range` header, `open_bundle` succeeds. A 
 that needs only some of the inner chunks of a shard then raises `ValueError`.
 
 A `memory://` URL names the in-process memory filesystem of fsspec. `bundle.location`
-gives that URL with three slashes, as in `memory:///demo/tones.zarr`, and the URL
+gives that URL with three slashes, as in `memory:///demo/example.zarr`, and the URL
 reopens the bundle. To pass options to the memory filesystem, build an `FsspecStore` and
 open the store.
 
@@ -507,14 +633,14 @@ from zarr.storage import FsspecStore
 from timeseries_zarr import open_bundle
 
 fsspec.filesystem("memory").put(
-    "tones.zarr/", "/demo/tones.zarr", recursive=True
+    "example.zarr/", "/demo/example.zarr", recursive=True
 )
 
-with open_bundle("memory://demo/tones.zarr") as bundle:
+with open_bundle("memory://demo/example.zarr") as bundle:
     print(bundle.location)
 
 store = FsspecStore.from_url(
-    "memory://demo/tones.zarr",
+    "memory://demo/example.zarr",
     storage_options={"skip_instance_cache": True},
     read_only=True,
 )

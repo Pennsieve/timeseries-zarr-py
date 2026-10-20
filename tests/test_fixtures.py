@@ -9,7 +9,6 @@ from zarr.buffer import default_buffer_prototype
 from zarr.core.sync import sync
 from zarr.storage import MemoryStore, StorePath
 
-from tests import conftest
 from tests.conftest import (
     MEMORY_PREFIX,
     ODD_COUNT_PERIOD_US,
@@ -24,8 +23,6 @@ from tests.conftest import (
     ODD_TEXT_WIDTH,
     ODD_TIE,
     ODD_WAVEFORM_PERIOD_US,
-    SYNTHETIC_BUNDLE_ENV,
-    find_synthetic_bundle,
     memory_store,
 )
 from tests.test_bundle import (
@@ -493,35 +490,3 @@ def test_odd_bundle_channel_12_holds_durations_without_a_bound(odd_bundle):
     assert channel["events"][:].tolist() == list(ODD_INTERVAL_EVENTS)
     assert channel["durations"][:].tolist() == list(ODD_INTERVAL_DURATIONS)
     assert "max_duration_us" not in _tsz(channel)
-
-
-def test_synthetic_bundle_opens_as_a_version_1_bundle(synthetic_bundle):
-    root = _open(synthetic_bundle)
-    assert _tsz(root)["version"].startswith("1.")
-    assert _tsz(root["0"])["kind"] == "continuous"
-
-
-def test_find_synthetic_bundle_reads_the_path_from_the_environment(
-    monkeypatch, mixed_bundle, tmp_path
-):
-    monkeypatch.setenv(SYNTHETIC_BUNDLE_ENV, str(mixed_bundle))
-    monkeypatch.setattr(
-        conftest, "DEFAULT_SYNTHETIC_BUNDLE", tmp_path / "absent"
-    )
-    assert find_synthetic_bundle() == mixed_bundle
-
-
-def test_find_synthetic_bundle_uses_the_default_when_the_variable_is_empty(
-    monkeypatch, mixed_bundle
-):
-    monkeypatch.setenv(SYNTHETIC_BUNDLE_ENV, "")
-    monkeypatch.setattr(conftest, "DEFAULT_SYNTHETIC_BUNDLE", mixed_bundle)
-    assert find_synthetic_bundle() == mixed_bundle
-
-
-def test_find_synthetic_bundle_skips_when_the_path_is_absent(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setenv(SYNTHETIC_BUNDLE_ENV, str(tmp_path / "absent"))
-    with pytest.raises(pytest.skip.Exception, match="no synthetic bundle"):
-        find_synthetic_bundle()

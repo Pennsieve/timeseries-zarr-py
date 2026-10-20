@@ -1,8 +1,5 @@
 """Shared pytest fixtures, the in-memory sources, and the test bundles."""
 
-import os
-from pathlib import Path
-
 import numpy as np
 import pytest
 from zarr.buffer import default_buffer_prototype
@@ -245,19 +242,19 @@ MEMORY_PREFIX = "sub/bundle"
 """Prefix of the second copy of the mixed bundle in memory_bundle."""
 
 
-def memory_store(path, prefixes=("",)):
+def memory_store(path, prefixes=("",), omit=()):
     """Return a read-only MemoryStore holding every file under path.
 
     The store holds each file once under each prefix. The empty prefix is the
-    store root.
+    store root. A file whose path below path is in omit stays out.
     """
     buffer = default_buffer_prototype().buffer
     files = {}
     for file in sorted(path.rglob("*")):
-        if not file.is_file():
+        name = file.relative_to(path).as_posix()
+        if not file.is_file() or name in omit:
             continue
         data = buffer.from_bytes(file.read_bytes())
-        name = file.relative_to(path).as_posix()
         for prefix in prefixes:
             files[f"{prefix}/{name}" if prefix else name] = data
     return MemoryStore(files, read_only=True)
@@ -515,31 +512,6 @@ def write_odd_bundle(path):
     return path
 
 
-SYNTHETIC_BUNDLE_ENV = "TSZ_SYNTHETIC_BUNDLE"
-"""Environment variable naming the synthetic reference bundle."""
-
-DEFAULT_SYNTHETIC_BUNDLE = (
-    Path(__file__).resolve().parent.parent.parent
-    / "timeseries-zarr-paper"
-    / "testdata"
-    / "synthetic.tszarr"
-)
-"""Where the paper repository beside this one keeps the synthetic bundle."""
-
-
-def find_synthetic_bundle():
-    """Return the synthetic reference bundle, or skip the test without one.
-
-    SYNTHETIC_BUNDLE_ENV overrides DEFAULT_SYNTHETIC_BUNDLE when it is set
-    and not empty.
-    """
-    given = os.environ.get(SYNTHETIC_BUNDLE_ENV)
-    path = Path(given) if given else DEFAULT_SYNTHETIC_BUNDLE
-    if not path.is_dir():
-        pytest.skip(f"no synthetic bundle at {path}")
-    return path
-
-
 @pytest.fixture(scope="session")
 def mixed_bundle(tmp_path_factory):
     """Return the default mixed bundle, written once per session.
@@ -576,9 +548,3 @@ def memory_bundle(mixed_bundle):
 def odd_bundle(tmp_path_factory):
     """Return the bundle write_odd_bundle writes, written once per session."""
     return write_odd_bundle(tmp_path_factory.mktemp("odd") / "bundle")
-
-
-@pytest.fixture(scope="session")
-def synthetic_bundle():
-    """Return the synthetic reference bundle, or skip without it."""
-    return find_synthetic_bundle()
