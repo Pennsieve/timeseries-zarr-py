@@ -201,10 +201,10 @@ A dense event channel MAY hold count levels, numbered `1` through `J` with no ga
 Level 1 has a producer-chosen `period_us`, and `period_us` quadruples at each level
 after it. Level 1 SHOULD lie on the ladder `1000 * 4^j` microseconds (1 ms, 4 ms,
 16 ms, ..., 1.024 s, 4.096 s, ...). Event channels in any bundle then share bin
-grids. Each level carries `offset_us`, the time of its bin 0 from the reference time,
-a multiple of its `period_us` at or before the first event. Bin `i` covers the times
-`[offset_us + i * period_us, offset_us + (i + 1) * period_us)`, and a level's bins
-cover every event of the channel. An event with a duration is counted in the bin of
+grids. Bin `i` covers the times
+`[offset_us + i * period_us, offset_us + (i + 1) * period_us)`, where `offset_us` is
+the time of the level's bin 0 (see [Level metadata](#level-metadata)), and a level's
+bins cover every event of the channel. An event with a duration is counted in the bin of
 its onset only. The count of a bin at level `k + 1` is the sum of the level-`k` bins
 it covers. A rate view from any level is exact. A producer SHOULD
 write count levels for channels with more than about 64,000 events and SHOULD choose
@@ -326,14 +326,17 @@ person (see Recording metadata).
 ### Level metadata
 
 Each level group's `tsz` object, in continuous channels and in event channels alike,
-holds the bin width.
+holds the bin width. A count level also holds the time of its bin 0.
 
 | key | requirement | type | description |
 |---|---|---|---|
 | `period_us` | MUST | number | Width of one bin in microseconds. |
+| `offset_us` | MUST for count levels, MUST NOT for continuous levels | integer | Time of bin 0 in microseconds from the reference time. May be negative. |
 
 For level `k` of a continuous channel, `period_us` MUST equal `4^k * 1e6 / rate_hz`.
-For count levels, `period_us` of level `k + 1` MUST equal four times that of level `k`.
+For count levels, `period_us` of level `k + 1` MUST equal four times that of level `k`,
+and `offset_us` MUST be an integer multiple of `period_us` and at most the time of the
+channel's first event.
 
 ```json
 {
@@ -341,6 +344,18 @@ For count levels, `period_us` of level `k + 1` MUST equal four times that of lev
   "node_type": "group",
   "attributes": {
     "tsz": {"period_us": 2000.0}
+  }
+}
+```
+
+A count level whose events begin 32 ms before the reference time:
+
+```json
+{
+  "zarr_format": 3,
+  "node_type": "group",
+  "attributes": {
+    "tsz": {"period_us": 16000.0, "offset_us": -32000}
   }
 }
 ```
@@ -471,7 +486,8 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - Every child group of the root is a channel group with a valid `kind` and the
   attributes that `kind` requires.
 - Level groups are named `1` through `K`, or `1` through `J` for count levels, with
-  no gaps, and each carries `period_us`. A count level also carries `offset_us`.
+  no gaps, and each carries `period_us`. A count level also carries `offset_us`, and a
+  continuous level does not.
   Continuous levels satisfy `period_us = 4^k * 1e6 / rate_hz`. Count levels satisfy
   `period_us(k + 1) = 4 * period_us(k)`.
 - Every channel holds the arrays its tables require: `raw` for a continuous channel,
