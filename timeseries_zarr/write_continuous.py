@@ -34,6 +34,7 @@ from timeseries_zarr.fold import (
 )
 from timeseries_zarr.planning import plan_levels, raw_shape
 from timeseries_zarr.protocols import (
+    ContinuousChannelMetadata,
     ContinuousChannelSource,
     source_provenance,
 )
@@ -82,7 +83,7 @@ def _write_blocks(
 def create_channel_group(
     parent: ZarrGroup,
     key: int,
-    channel: ContinuousChannelSource,
+    channel: ContinuousChannelMetadata,
     *,
     reference_us: int,
     unit: str,

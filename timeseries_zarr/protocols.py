@@ -1,5 +1,6 @@
 """Typed source protocols the writer consumes for channel data."""
 
+from collections.abc import Iterator, Sequence
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -31,8 +32,8 @@ def source_provenance(source: object) -> dict[str, object] | None:
 
 
 @runtime_checkable
-class ContinuousChannelSource(Protocol):
-    """A continuous channel the writer reads raw samples from."""
+class ContinuousChannelMetadata(Protocol):
+    """The identity, unit, rate, start, and length of a continuous channel."""
 
     @property
     def id(self) -> str:
@@ -46,7 +47,7 @@ class ContinuousChannelSource(Protocol):
 
     @property
     def unit(self) -> str:
-        """Unit of the samples read_samples returns, for example "uV"."""
+        """Unit of the channel's samples, for example "uV"."""
         ...
 
     def rate_hz(self) -> float:
@@ -61,8 +62,44 @@ class ContinuousChannelSource(Protocol):
         """Return the total number of raw samples in the channel."""
         ...
 
+
+@runtime_checkable
+class ContinuousChannelSource(ContinuousChannelMetadata, Protocol):
+    """A continuous channel the writer reads raw samples from."""
+
     def read_samples(self, start: int, stop: int) -> npt.NDArray[np.float32]:
         """Return the half-open [start, stop) sample window as float32."""
+        ...
+
+
+@runtime_checkable
+class MultiChannelSource(Protocol):
+    """Continuous channels the writer reads together, one window at a time.
+
+    A source over a format that stores every channel in one stream implements
+    this protocol. The source decodes the stream once per write.
+
+    channels returns the channels in channel order, the same on every call. A
+    source must return a stored list. The writer calls channels more than once
+    per write.
+
+    iter_windows yields one window at a time, and the writer calls it once per
+    write. A window is a sequence with one rank-1 float32 block per channel, in
+    channel order. The blocks of one window may differ in length, and a block
+    may be empty. A channel whose samples end before the others gives an empty
+    block in each later window. For each channel, the blocks concatenate to
+    its samples, and their lengths total num_samples. The columns of a (rows,
+    channels) array are the blocks of a window.
+
+    Each channel may define provenance as ProvenanceSource declares it.
+    """
+
+    def channels(self) -> Sequence[ContinuousChannelMetadata]:
+        """Return the channels in channel order."""
+        ...
+
+    def iter_windows(self) -> Iterator[Sequence[npt.NDArray[np.float32]]]:
+        """Yield each window as a sequence of one block per channel."""
         ...
 
 

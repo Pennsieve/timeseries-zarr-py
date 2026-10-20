@@ -1,9 +1,14 @@
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 import pytest
 
 from timeseries_zarr.protocols import (
+    ContinuousChannelMetadata,
     ContinuousChannelSource,
     EventChannelSource,
+    MultiChannelSource,
     ProvenanceSource,
     source_provenance,
 )
@@ -234,6 +239,57 @@ def test_array_event_source_reads_windows_of_each_column(event_source):
 def test_array_event_source_without_waveform_mean_raises_on_read(event_source):
     with pytest.raises(ValueError, match="waveform_mean"):
         event_source([1]).waveform_mean()
+
+
+def _multi_members() -> dict[str, Callable[[Any], object]]:
+    """Return every member of a conforming multi-channel source, by name."""
+    return {
+        "channels": lambda self: [FakeContinuous()],
+        "iter_windows": lambda self: iter([[np.zeros(4, dtype=np.float32)]]),
+    }
+
+
+def test_conforming_multi_channel_instance_is_recognized() -> None:
+    assert isinstance(type("Fake", (), _multi_members())(), MultiChannelSource)
+
+
+@pytest.mark.parametrize("missing", sorted(_multi_members()))
+def test_multi_channel_source_missing_any_member_is_not_recognized(
+    missing: str,
+) -> None:
+    members = {k: v for k, v in _multi_members().items() if k != missing}
+    assert not isinstance(type("Partial", (), members)(), MultiChannelSource)
+
+
+def test_a_channel_without_read_samples_is_metadata_and_not_a_source() -> None:
+    class MetadataOnly:
+        id = "ch-0"
+        name = "Channel 0"
+        unit = "uV"
+
+        def rate_hz(self) -> float:
+            return 32000.0
+
+        def start_us(self) -> int:
+            return 0
+
+        def num_samples(self) -> int:
+            return 4
+
+    assert isinstance(MetadataOnly(), ContinuousChannelMetadata)
+    assert not isinstance(MetadataOnly(), ContinuousChannelSource)
+
+
+def test_a_continuous_source_is_also_channel_metadata() -> None:
+    assert isinstance(FakeContinuous(), ContinuousChannelMetadata)
+
+
+def test_a_multi_channel_source_is_neither_a_continuous_nor_an_event_source() -> (
+    None
+):
+    fake = type("Fake", (), _multi_members())()
+    assert not isinstance(fake, ContinuousChannelSource)
+    assert not isinstance(fake, EventChannelSource)
 
 
 def test_a_source_without_provenance_still_satisfies_both_protocols():
