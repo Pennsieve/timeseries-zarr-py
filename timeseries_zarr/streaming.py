@@ -94,6 +94,66 @@ def iter_array_blocks(
         yield array[start:stop]
 
 
+class Regrouper[T: np.generic]:
+    """Re-cut pushed blocks into blocks of exactly rows rows.
+
+    Blocks of any size and rank join along axis 0, so the concatenation of
+    everything returned equals the concatenation of everything pushed. Rows
+    that wait for a later push sit in a buffer of rows rows. Raises ValueError
+    if rows is not positive.
+    """
+
+    def __init__(self, rows: int) -> None:
+        """Create a regrouper for blocks of rows rows."""
+        if rows <= 0:
+            raise ValueError("rows must be positive")
+        self._rows = rows
+        self._carry: npt.NDArray[T] | None = None
+        self._filled = 0
+
+    def push(self, block: npt.NDArray[T]) -> list[npt.NDArray[T]]:
+        """Return the whole blocks that the pushed rows complete, in order.
+
+        A block with no rows adds nothing. A block cut from the pushed rows
+        alone is a view of the pushed array. Rows that wait for a later push
+        are copied.
+        """
+        rows = self._rows
+        count = block.shape[0]
+        complete: list[npt.NDArray[T]] = []
+        position = 0
+        carry = self._carry
+        if carry is not None:
+            position = min(count, rows - self._filled)
+            carry[self._filled : self._filled + position] = block[:position]
+            self._filled += position
+            if self._filled == rows:
+                complete.append(carry)
+                self._carry = None
+                self._filled = 0
+        while count - position >= rows:
+            complete.append(block[position : position + rows])
+            position += rows
+        if position < count:
+            self._carry = np.empty((rows, *block.shape[1:]), dtype=block.dtype)
+            self._filled = count - position
+            self._carry[: self._filled] = block[position:]
+        return complete
+
+    def flush(self) -> npt.NDArray[T] | None:
+        """Return the rows left over, or None when no rows wait.
+
+        The returned block is never empty. The regrouper holds no rows
+        afterward.
+        """
+        if self._carry is None:
+            return None
+        tail = self._carry[: self._filled]
+        self._carry = None
+        self._filled = 0
+        return tail
+
+
 def regroup[T: np.generic](
     blocks: Iterable[npt.NDArray[T]], rows: int
 ) -> Iterator[npt.NDArray[T]]:
@@ -106,32 +166,12 @@ def regroup[T: np.generic](
     yields nothing. Fewer than rows rows carry from one input block to the
     next. Raises ValueError if rows is not positive.
     """
-    if rows <= 0:
-        raise ValueError("rows must be positive")
-    pending: list[npt.NDArray[T]] = []
-    pending_rows = 0
+    regrouper: Regrouper[T] = Regrouper(rows)
     for block in blocks:
-        if not block.shape[0]:
-            continue
-        pending.append(block)
-        pending_rows += block.shape[0]
-        if pending_rows < rows:
-            continue
-        merged = (
-            pending[0] if len(pending) == 1 else np.concatenate(pending, axis=0)
-        )
-        whole = merged.shape[0] // rows * rows
-        # Copy the carry before yielding, so it neither keeps the merged block
-        # alive nor changes if the caller reuses an input array between pulls.
-        remainder = merged[whole:].copy()
-        for start in range(0, whole, rows):
-            yield merged[start : start + rows]
-        pending = [remainder] if remainder.shape[0] else []
-        pending_rows = remainder.shape[0]
-    if pending_rows:
-        yield (
-            pending[0] if len(pending) == 1 else np.concatenate(pending, axis=0)
-        )
+        yield from regrouper.push(block)
+    tail = regrouper.flush()
+    if tail is not None:
+        yield tail
 
 
 def tap[T: np.generic](
@@ -149,6 +189,18 @@ def tap[T: np.generic](
         yield block
 
 
+def scale_block(
+    block: npt.NDArray[np.float32], factor: float
+) -> npt.NDArray[np.float32]:
+    """Return block multiplied by factor, in float32.
+
+    A factor of 1.0 returns block itself. NaN and infinity stay non-finite.
+    """
+    if factor == 1.0:
+        return block
+    return block * np.float32(factor)
+
+
 def scale(
     blocks: Iterable[npt.NDArray[np.float32]], factor: float
 ) -> Iterator[npt.NDArray[np.float32]]:
@@ -157,12 +209,8 @@ def scale(
     A factor of 1.0 yields the input blocks themselves. NaN and infinity stay
     non-finite.
     """
-    if factor == 1.0:
-        yield from blocks
-        return
-    multiplier = np.float32(factor)
     for block in blocks:
-        yield block * multiplier
+        yield scale_block(block, factor)
 
 
 def iter_member_blocks(
