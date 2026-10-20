@@ -762,7 +762,7 @@ def test_a_kept_event_channel_before_the_first_sample_goes_negative(
     assert int(copy.channels[1].events[0]) == first_spike - 500_000 < 0
 
 
-def test_an_epoch_us_override_shifts_every_wall_clock_time(mixed):
+def test_an_epoch_us_override_shifts_every_time(mixed):
     continuous, events = bundle_sources(mixed, epoch_us=1_000)
     assert [source.start_us() for source in continuous] == [1_000, 501_000]
     stored = mixed.channels[3].events[:2]

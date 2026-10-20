@@ -98,10 +98,11 @@ def write_events_array(
     """Create the events array under group and stream the event times into it.
 
     A rank-1 int64 array named "events" with the dimension name "event" and no
-    attributes. Each time is the source's wall-clock microseconds minus
-    reference_us, the reference time, so the stored times count from it and
-    an event before it is negative. Equal times are allowed. Raises ValueError
-    if the times decrease, within a block or across a block boundary.
+    attributes. Each time is the source time minus reference_us, the
+    reference time, both in microseconds since the Unix epoch. The stored
+    times count from the reference time, and an event before it is negative.
+    Equal times are allowed. Raises ValueError if the times decrease, within a
+    block or across a block boundary.
     """
     array = create_array(
         group,

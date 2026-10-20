@@ -31,7 +31,7 @@ only, and comments MUST NOT be included in JSON objects.
 
 Dtypes are written with their Zarr v3 names: `float32`, `float64`, `int64`,
 `uint16`, `uint32`, `uint8`. Every time value in a Zarr node is a count of
-microseconds, and every key that holds one ends in `_us`. The wall-clock times in
+microseconds, and every key that holds one ends in `_us`. The datetimes in
 `recording.json` are RFC 3339 strings. A *channel key* is the name of a channel
 group: a decimal integer without leading zeros. Keys are opaque, their order carries
 no meaning, and they need not be contiguous.
@@ -46,7 +46,7 @@ GCS.
 Zarr arrays hold every value a reader renders: samples, per-bin statistics, event
 times, and per-event columns, including annotation text. Zarr attributes hold the
 metadata that describes them. The one plain file, `recording.json`, holds the
-recording's identity and wall-clock times, which no reader needs in order to render.
+recording's identity and its datetimes, which no reader needs in order to render.
 
 ### Bundles
 
@@ -55,7 +55,7 @@ recording's identity and wall-clock times, which no reader needs in order to ren
 |-- zarr.json                # Root group metadata: the "tsz" attributes (see below)
 |                            # and Zarr consolidated metadata for every descendant.
 |-- recording.json           # Optional. Plain JSON, not a Zarr node: identity and
-|                            # wall-clock times. Delete it to de-identify.
+|                            # datetimes. Delete it to de-identify.
 |-- 0                        # One group per channel, named by its channel key.
 |   `-- ...                  # A continuous channel; see the next section.
 |-- 1
@@ -231,7 +231,7 @@ negative. A producer places the reference time at the earlier of the acquisition
 start and the first sample when it first writes a recording, and keeps it when it
 writes the recording again, so a channel added later may begin before it. Sample and
 event times are `int64` microseconds. Periods are `float64` microseconds.
-`reference_time` in `recording.json` gives the reference time as a wall-clock time,
+`reference_time` in `recording.json` gives the reference time as a datetime,
 when it is known, and no other object holds one. No array carries a time axis; a
 reader computes times from `offset_us`, `rate_hz`, and `period_us`.
 
@@ -385,14 +385,14 @@ The `waveforms` and `waveform_mean` arrays each carry a `tsz` object.
 ### Recording metadata
 
 A bundle MAY hold a plain JSON file `recording.json` at its root. It is the one place
-for structured identity and for wall-clock time. It is UTF-8 JSON with the following
+for structured identity and for datetimes. It is UTF-8 JSON with the following
 keys.
 
 | key | requirement | type | description |
 |---|---|---|---|
-| `reference_time` | MAY | string | The reference time, t = 0 of every time in the bundle, as a wall-clock time, RFC 3339 with a UTC offset. A reader adds a time in the bundle to it to get a wall-clock time. |
+| `reference_time` | MAY | string | The reference time, t = 0 of every time in the bundle, as a datetime, RFC 3339 with a UTC offset. A reader adds a time in the bundle to it to get a datetime. |
 | `subject` | MAY | object | Who was recorded. Content is producer-defined. |
-| `session` | MAY | object | The recording session. `start_time`, when present, is the wall-clock time acquisition began, RFC 3339 with a UTC offset. Other content is producer-defined. |
+| `session` | MAY | object | The recording session. `start_time`, when present, is the datetime acquisition began, RFC 3339 with a UTC offset. Other content is producer-defined. |
 | `source` | MAY | object | Acquisition system and converting software. Content is producer-defined. |
 
 `session.start_time` describes the session and places no data. In the usual case it
@@ -400,7 +400,7 @@ equals `reference_time`. It is later when the first sample precedes the acquisit
 start, and it differs when a recording written again keeps its earlier reference
 time.
 
-Producers MUST keep identity and wall-clock time out of every other object: channel
+Producers MUST keep identity and every datetime out of every other object: channel
 `name`, `id`, and `provenance` MUST NOT identify a person, and no other key holds a
 date. Identity may then appear in two places only, `recording.json` at its fixed path
 and the `text` columns of event channels, which the root `zarr.json` enumerates.

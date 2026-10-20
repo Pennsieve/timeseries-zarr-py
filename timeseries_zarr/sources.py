@@ -1,8 +1,8 @@
 """Writer sources that read the channels of an open bundle.
 
-A source gives the writer wall-clock times in microseconds since the Unix
-epoch. It adds epoch_us, the wall-clock time of the reference time, to every
-time the bundle stores.
+A source gives the writer times in microseconds since the Unix epoch. It adds
+epoch_us, the reference time in the same unit, to every time the bundle
+stores.
 """
 
 import copy
@@ -91,15 +91,15 @@ def _carried_columns(
 class BundleContinuousSource:
     """A continuous channel of an open bundle as a writer source.
 
-    epoch_us is the wall-clock time of the reference time in microseconds
-    since the Unix epoch. Sample 0 starts at epoch_us plus the offset_us of
-    the channel. Raises TypeError if epoch_us is not an integer.
+    epoch_us is the reference time in microseconds since the Unix epoch.
+    Sample 0 starts at epoch_us plus the offset_us of the channel. Raises
+    TypeError if epoch_us is not an integer.
     """
 
     __slots__ = ("_channel", "_epoch_us")
 
     def __init__(self, channel: ContinuousChannel, *, epoch_us: int) -> None:
-        """Wrap channel with the wall-clock time of its reference time."""
+        """Wrap channel with its reference time."""
         self._channel = channel
         self._epoch_us = integer_argument(epoch_us, "epoch_us")
 
@@ -127,7 +127,7 @@ class BundleContinuousSource:
         return self._channel.rate_hz
 
     def start_us(self) -> int:
-        """Return the wall-clock microseconds of sample 0."""
+        """Return the microseconds since the Unix epoch of sample 0."""
         return self._epoch_us + self._channel.offset_us
 
     def num_samples(self) -> int:
@@ -144,10 +144,9 @@ class BundleEventSource:
     """An event channel of an open bundle as a writer source.
 
     ids maps the key of each channel the writer receives to its id.
-    epoch_us is the wall-clock time of the reference time in microseconds
-    since the Unix epoch. columns names the optional columns to carry, and
-    None names every one. The source carries a named column when the channel
-    holds it, except a text column of width 0, and waveform_mean when it
+    epoch_us is the reference time in microseconds since the Unix epoch.
+    columns names the optional columns to carry, and None names every one.
+    The source carries a named column when the channel holds it, except a text column of width 0, and waveform_mean when it
     carries no labels. The source never carries values, waveforms, or the
     event_sample of waveform_mean.
 
@@ -272,7 +271,10 @@ class BundleEventSource:
         return self._array(TEXT_KEY).shape[1]
 
     def read_events(self, start: int, stop: int) -> npt.NDArray[np.int64]:
-        """Return the wall-clock times of events start through stop - 1."""
+        """Return the times of events start through stop - 1.
+
+        Each time is in microseconds since the Unix epoch.
+        """
         times = read_rows(self._channel.events, start, stop)
         return np.asarray(times, dtype=np.int64) + self._epoch_us
 
@@ -447,11 +449,9 @@ def bundle_sources(
     """Return writer sources for channels of bundle, each list in key order.
 
     keys names the channels to keep, and None keeps every channel. epoch_us
-    is the wall-clock time of the reference time. None takes the
-    reference_time of recording.json in microseconds since the Unix epoch, or
-    0 without one.
-    drop_columns names the event columns that
-    no event source carries. Each event source maps the key of every kept
+    is the reference time in microseconds since the Unix epoch. None takes
+    the reference_time of recording.json, or 0 without one. drop_columns
+    names the event columns that no event source carries. Each event source maps the key of every kept
     channel to its id. A key whose channel has no id maps to the key as a
     decimal string. An event that names a channel outside keys then makes
     read_channel_ids raise ValueError during write_bundle, unless

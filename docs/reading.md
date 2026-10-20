@@ -32,7 +32,7 @@ SESSION_START_US = (
 SECONDS = 300
 
 
-def wall_clock_us(seconds):
+def unix_us(seconds):
     return SESSION_START_US + np.round(np.asarray(seconds) * 1e6).astype(
         np.int64
     )
@@ -45,7 +45,7 @@ class Tone:
         self.id = f"tone-{hertz}"
         self.name = f"{hertz} Hz"
         self._rate_hz = rate_hz
-        self._start_us = int(wall_clock_us(delay_s))
+        self._start_us = int(unix_us(delay_s))
         seconds = np.arange(round(SECONDS * rate_hz)) / rate_hz
         samples = 100.0 * np.sin(2 * np.pi * hertz * seconds)
         self.samples = samples.astype(np.float32)
@@ -72,7 +72,7 @@ class Events:
     def __init__(self, id, name, seconds, labels, label_names, **columns):
         self.id = id
         self.name = name
-        self.times = wall_clock_us(seconds)
+        self.times = unix_us(seconds)
         self.labels = np.asarray(labels, dtype=np.uint16)
         self.names = label_names
         self.durations = columns.get("durations")

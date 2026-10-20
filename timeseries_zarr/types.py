@@ -76,9 +76,9 @@ class ResolvedUnit:
 
 @dataclass(frozen=True, slots=True)
 class RecordingMeta:
-    """Identity and wall-clock times of a recording, for recording.json.
+    """Identity and datetimes of a recording, for recording.json.
 
-    session_start_time is the wall-clock instant acquisition began. It is
+    session_start_time is the datetime acquisition began. It is
     written as the start_time of the session object and places no data.
     reference_time is the instant every time in the bundle counts from.
     When it is given, the writer uses it as it is, so a rewrite keeps a
@@ -86,11 +86,10 @@ class RecordingMeta:
     negative offset. When it is None, the writer places the reference time
     at the earlier of the session start and the first sample. Each time must
     carry a UTC offset. The three objects are producer-defined and default
-    to empty. wall_clock states whether the source times are wall-clock
-    times, microseconds since the Unix epoch. When it is False, the times
-    count from an unknown instant, the session start does not place the
-    reference time, recording.json holds no reference_time, and
-    reference_time must be None.
+    to empty. wall_clock states whether the source times are microseconds
+    since the Unix epoch. When it is False, the times count from an unknown
+    instant, the session start does not place the reference time,
+    recording.json holds no reference_time, and reference_time must be None.
     """
 
     session_start_time: datetime | None = None
