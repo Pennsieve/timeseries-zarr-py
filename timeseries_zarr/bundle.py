@@ -6,7 +6,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.attrs import check_provenance, root_attrs
@@ -54,13 +53,13 @@ class _ListedSource:
         """Return the channels listed when the source was wrapped."""
         return self.listed
 
-    def iter_windows(self) -> Iterator[Sequence[npt.NDArray[np.float32]]]:
+    def iter_windows(self) -> Iterator[Sequence[npt.ArrayLike]]:
         """Yield the windows of the wrapped source."""
         return self.source.iter_windows()
 
 
 def _require(source: object, protocol: type, label: str) -> None:
-    """Raise ValueError naming the missing members unless source implements protocol."""
+    """Raise ValueError naming the missing members unless source meets protocol."""
     if isinstance(source, protocol):
         return
     identifier = getattr(source, "id", None)
@@ -68,9 +67,8 @@ def _require(source: object, protocol: type, label: str) -> None:
         f"{label} ({identifier!r})" if isinstance(identifier, str) else label
     )
     missing = ", ".join(missing_members(source, protocol))
-    raise ValueError(
-        f"{where} does not implement {protocol.__name__}; missing {missing}"
-    )
+    detail = f"; missing {missing}" if missing else ""
+    raise ValueError(f"{where} does not implement {protocol.__name__}{detail}")
 
 
 def check_sources(
@@ -80,13 +78,15 @@ def check_sources(
     """Raise ValueError unless every source implements the protocol of its list.
 
     An entry of events must implement EventChannelSource. An entry of
-    continuous must implement ContinuousChannelSource or MultiChannelSource,
-    and a source that has channels or iter_windows is held to
-    MultiChannelSource. Each channel a multi-channel source lists must
+    continuous must implement ContinuousChannelSource or MultiChannelSource.
+    A source that implements neither is named under MultiChannelSource when it
+    has channels or iter_windows, and under ContinuousChannelSource
+    otherwise. Each channel a multi-channel source lists must
     implement ContinuousChannelMetadata. The error names the position, the id
     when the source has one, and the missing members.
     """
-    for position, source in enumerate(continuous):
+    sources: Sequence[object] = continuous
+    for position, source in enumerate(sources):
         label = f"continuous[{position}]"
         if isinstance(source, MultiChannelSource):
             for number, channel in enumerate(source.channels()):
@@ -95,6 +95,8 @@ def check_sources(
                     ContinuousChannelMetadata,
                     f"{label}.channels()[{number}]",
                 )
+        elif isinstance(source, ContinuousChannelSource):
+            continue
         elif hasattr(source, "channels") or hasattr(source, "iter_windows"):
             _require(source, MultiChannelSource, label)
         else:
