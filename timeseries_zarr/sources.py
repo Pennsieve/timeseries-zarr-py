@@ -53,8 +53,13 @@ def _provenance(
 def _event_columns(names: Iterable[str], argument: str) -> set[EventColumn]:
     """Return the event columns that names holds.
 
-    argument names the argument in an error message. Raises TypeError if
-    names is a string and ValueError if it holds a name outside EventColumn.
+    Args:
+        names: Column names to check.
+        argument: Name of the caller's argument, for the error message.
+
+    Raises:
+        TypeError: If names is a string.
+        ValueError: If names holds a name outside EventColumn.
     """
     check_not_string(names, argument)
     given = list(names)
@@ -91,15 +96,21 @@ def _carried_columns(
 class BundleContinuousSource:
     """A continuous channel of an open bundle as a writer source.
 
-    epoch_us is the reference time in microseconds since the Unix epoch.
-    Sample 0 starts at epoch_us plus the offset_us of the channel. Raises
-    TypeError if epoch_us is not an integer.
+    Sample 0 starts at epoch_us plus the offset_us of the channel.
     """
 
     __slots__ = ("_channel", "_epoch_us")
 
     def __init__(self, channel: ContinuousChannel, *, epoch_us: int) -> None:
-        """Wrap channel with its reference time."""
+        """Wrap channel with its reference time.
+
+        Args:
+            channel: The continuous channel to read.
+            epoch_us: Reference time in microseconds since the Unix epoch.
+
+        Raises:
+            TypeError: If epoch_us is not an integer.
+        """
         self._channel = channel
         self._epoch_us = integer_argument(epoch_us, "epoch_us")
 
@@ -135,7 +146,12 @@ class BundleContinuousSource:
         return self._channel.num_samples
 
     def read_samples(self, start: int, stop: int) -> npt.NDArray[np.float32]:
-        """Return raw samples start through stop - 1 as float32."""
+        """Return raw samples start through stop - 1 as float32.
+
+        Args:
+            start: Index of the first sample.
+            stop: Index after the last sample.
+        """
         samples = read_rows(self._channel.raw, start, stop)
         return np.asarray(samples, dtype=np.float32)
 
@@ -143,15 +159,9 @@ class BundleContinuousSource:
 class BundleEventSource:
     """An event channel of an open bundle as a writer source.
 
-    ids maps the key of each channel the writer receives to its id.
-    epoch_us is the reference time in microseconds since the Unix epoch.
-    columns names the optional columns to carry, and None names every one.
-    The source carries a named column when the channel holds it, except a text column of width 0, and waveform_mean when it
-    carries no labels. The source never carries values, waveforms, or the
-    event_sample of waveform_mean.
-
-    Raises TypeError if epoch_us is not an integer or columns is a string.
-    Raises ValueError if columns names a column outside EventColumn.
+    The source carries a named column when the channel holds it, except a text
+    column of width 0, and waveform_mean when it carries no labels. The source
+    never carries values, waveforms, or the event_sample of waveform_mean.
     """
 
     __slots__ = (
@@ -172,7 +182,18 @@ class BundleEventSource:
         epoch_us: int,
         columns: Iterable[str] | None = None,
     ) -> None:
-        """Wrap channel with the ids of the bundle and its reference time."""
+        """Wrap channel with the ids of the bundle and its reference time.
+
+        Args:
+            channel: The event channel to read.
+            ids: Id of each channel the writer receives, by channel key.
+            epoch_us: Reference time in microseconds since the Unix epoch.
+            columns: Optional columns to carry. None names every one.
+
+        Raises:
+            TypeError: If epoch_us is not an integer or columns is a string.
+            ValueError: If columns names a column outside EventColumn.
+        """
         wanted = (
             set(_EVENT_COLUMNS)
             if columns is None
@@ -274,6 +295,10 @@ class BundleEventSource:
         """Return the times of events start through stop - 1.
 
         Each time is in microseconds since the Unix epoch.
+
+        Args:
+            start: Index of the first event.
+            stop: Index after the last event.
         """
         times = read_rows(self._channel.events, start, stop)
         return np.asarray(times, dtype=np.int64) + self._epoch_us
@@ -281,7 +306,12 @@ class BundleEventSource:
     def read_durations(self, start: int, stop: int) -> npt.NDArray[np.int64]:
         """Return the durations of events start through stop - 1.
 
-        Raises ValueError if the channel has no durations.
+        Args:
+            start: Index of the first event.
+            stop: Index after the last event.
+
+        Raises:
+            ValueError: If the channel has no durations.
         """
         rows = read_rows(self._array(DURATIONS_KEY), start, stop)
         return np.asarray(rows, dtype=np.int64)
@@ -289,8 +319,13 @@ class BundleEventSource:
     def read_labels(self, start: int, stop: int) -> npt.NDArray[np.uint16]:
         """Return the labels of events start through stop - 1.
 
-        Raises ValueError if the channel has no labels, or if a label is
-        below 0 or at least MAX_LABELS.
+        Args:
+            start: Index of the first event.
+            stop: Index after the last event.
+
+        Raises:
+            ValueError: If the channel has no labels, or if a label is below 0
+                or at least MAX_LABELS.
         """
         rows = read_rows(self._array(LABELS_KEY), start, stop)
         check_label_range(f"channel {self._channel.key}", rows, MAX_LABELS)
@@ -299,8 +334,13 @@ class BundleEventSource:
     def read_text(self, start: int, stop: int) -> list[str]:
         """Return the decoded texts of events start through stop - 1.
 
-        Raises ValueError if the channel has no text or the text of an event
-        is not valid UTF-8.
+        Args:
+            start: Index of the first event.
+            stop: Index after the last event.
+
+        Raises:
+            ValueError: If the channel has no text or the text of an event is
+                not valid UTF-8.
         """
         rows = read_rows(self._array(TEXT_KEY), start, stop)
         return decode_event_text(
@@ -312,9 +352,15 @@ class BundleEventSource:
     def read_channel_ids(self, start: int, stop: int) -> list[list[str]]:
         """Return the channel ids each event start through stop - 1 names.
 
-        An empty list means the event applies to the whole recording. Raises
-        ValueError if the channel has no channels column or an event names a
-        channel key that ids lacks.
+        An empty list means the event applies to the whole recording.
+
+        Args:
+            start: Index of the first event.
+            stop: Index after the last event.
+
+        Raises:
+            ValueError: If the channel has no channels column or an event
+                names a channel key that ids lacks.
         """
         rows = read_rows(self._array(CHANNELS_KEY), start, stop)
         id_lists = []
@@ -332,7 +378,8 @@ class BundleEventSource:
     def waveform_mean(self) -> npt.NDArray[np.float32]:
         """Return the mean snippet of each label, shaped (labels, samples).
 
-        Raises ValueError if the channel has no waveform_mean.
+        Raises:
+            ValueError: If the channel has no waveform_mean.
         """
         values = self._snippets().read().values
         return np.asarray(values, dtype=np.float32)
@@ -340,14 +387,16 @@ class BundleEventSource:
     def waveform_period_us(self) -> float:
         """Return the microseconds between adjacent snippet samples.
 
-        Raises ValueError if the channel has no waveform_mean.
+        Raises:
+            ValueError: If the channel has no waveform_mean.
         """
         return self._snippets().period_us
 
     def _array(self, name: str) -> ZarrArray:
         """Return the array of the per-event column called name.
 
-        Raises ValueError if the channel has no such column.
+        Raises:
+            ValueError: If the channel has no such column.
         """
         array = self._arrays[name]
         if array is None:
@@ -357,7 +406,8 @@ class BundleEventSource:
     def _snippets(self) -> Snippets:
         """Return the waveform_mean of the channel.
 
-        Raises ValueError if the channel has none.
+        Raises:
+            ValueError: If the channel has none.
         """
         snippets = self._channel.waveform_mean
         if snippets is None:
@@ -380,6 +430,9 @@ def bundle_epoch_us(bundle: Bundle) -> int:
 
     The reference time is the reference_time of recording.json, and the
     arithmetic is exact in integers. A bundle without that time gives 0.
+
+    Args:
+        bundle: The open bundle.
     """
     recording = bundle.recording
     reference = None if recording is None else recording.reference_time
@@ -389,14 +442,19 @@ def bundle_epoch_us(bundle: Bundle) -> int:
 def recording_meta(bundle: Bundle) -> RecordingMeta | None:
     """Return the recording input that rewrites the recording.json of bundle.
 
-    A bundle without recording.json gives None. The result holds the
-    reference time and the session start of recording.json, and subject,
-    session, and source as deep copies in plain dicts. The writer uses the
-    reference time as it is, so a rewrite keeps every offset and a channel
-    that begins before it gets a negative offset. session leaves out
-    start_time, which the writer puts back from session_start_time.
-    wall_clock is whether recording.json holds a reference_time, so a
-    rewrite of a bundle without one stays without one.
+    The result holds the reference time and the session start of
+    recording.json, and subject, session, and source as deep copies in plain
+    dicts. The writer uses the reference time as it is, so a rewrite keeps
+    every offset and a channel that begins before it gets a negative offset.
+    session leaves out start_time, which the writer puts back from
+    session_start_time. wall_clock is whether recording.json holds a
+    reference_time, so a rewrite of a bundle without one stays without one.
+
+    Args:
+        bundle: The open bundle.
+
+    Returns:
+        The recording input, or None for a bundle without recording.json.
     """
     recording = bundle.recording
     if recording is None:
@@ -418,9 +476,15 @@ def channel_ids(
 ) -> dict[int, str]:
     """Return the id of each channel of bundle that keys names, in key order.
 
-    None names every channel, and the result leaves out a key the bundle
-    lacks. A channel without an id gets its key as a decimal string. Raises
-    ValueError if two of those channels share an id.
+    A channel without an id gets its key as a decimal string.
+
+    Args:
+        bundle: The open bundle.
+        keys: Channel keys to include. None names every channel, and a key the
+            bundle lacks is left out of the result.
+
+    Raises:
+        ValueError: If two of the included channels share an id.
     """
     chosen = None if keys is None else set(keys)
     ids: dict[int, str] = {}
@@ -448,20 +512,27 @@ def bundle_sources(
 ) -> tuple[list[BundleContinuousSource], list[BundleEventSource]]:
     """Return writer sources for channels of bundle, each list in key order.
 
-    keys names the channels to keep, and None keeps every channel. epoch_us
-    is the reference time in microseconds since the Unix epoch. None takes
-    the reference_time of recording.json, or 0 without one. drop_columns
-    names the event columns that no event source carries. Each event source maps the key of every kept
-    channel to its id. A key whose channel has no id maps to the key as a
-    decimal string. An event that names a channel outside keys then makes
-    read_channel_ids raise ValueError during write_bundle, unless
-    drop_columns holds channels. The output_path of write_bundle must differ
-    from the location of bundle.
+    Each event source maps the key of every kept channel to its id. A key
+    whose channel has no id maps to the key as a decimal string. An event that
+    names a channel outside keys then makes read_channel_ids raise ValueError
+    during write_bundle, unless drop_columns holds channels. The output_path
+    of write_bundle must differ from the location of bundle.
 
-    Raises KeyError if keys names a channel the bundle lacks. Raises
-    TypeError if epoch_us is not an integer or drop_columns is a string.
-    Raises ValueError if drop_columns names a column outside EventColumn or
-    two kept channels share an id.
+    Args:
+        bundle: The open bundle.
+        keys: Channel keys to keep. None keeps every channel.
+        epoch_us: Reference time in microseconds since the Unix epoch. None
+            takes the reference_time of recording.json, or 0 without one.
+        drop_columns: Event columns that no event source carries.
+
+    Returns:
+        The continuous sources and the event sources, each list in key order.
+
+    Raises:
+        KeyError: If keys names a channel the bundle lacks.
+        TypeError: If epoch_us is not an integer or drop_columns is a string.
+        ValueError: If drop_columns names a column outside EventColumn or two
+            kept channels share an id.
     """
     wanted = set(_EVENT_COLUMNS) - _event_columns(drop_columns, "drop_columns")
     chosen = set(bundle.channels)

@@ -13,8 +13,18 @@ def resolve_unit(unit: str, policy: VoltagePolicy) -> ResolvedUnit:
     A unit whose lowercase form is a key of UNIT_TO_UV is a voltage unit.
     Under convert it resolves to that key's factor and "uV". Under require_uv
     it must be exactly "uV" and resolves to factor 1.0. Any other unit
-    resolves to factor 1.0 and itself. Raises ValueError under require_uv
-    for a voltage unit spelled other than "uV".
+    resolves to factor 1.0 and itself.
+
+    Args:
+        unit: Unit string the channel declares.
+        policy: How to treat a voltage unit.
+
+    Returns:
+        The factor that scales samples to the stored unit, and the stored unit.
+
+    Raises:
+        ValueError: The policy is require_uv and unit is a voltage unit
+            spelled other than "uV".
     """
     factor = UNIT_TO_UV.get(unit.lower())
     if factor is None:

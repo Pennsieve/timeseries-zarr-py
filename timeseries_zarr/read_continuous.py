@@ -68,8 +68,14 @@ _RAW_EXPECTATION = "a rank-1 floating-point array"
 class Samples:
     """Raw samples of a continuous channel in a window.
 
-    values[i] is sample first + i, at offset_us + (first + i) * period_us
+    Sample first + i is values[i], at offset_us + (first + i) * period_us
     microseconds from the reference time. A NaN value is a gap.
+
+    Attributes:
+        offset_us: The time of sample 0 of the channel in microseconds.
+        first: The index of the first sample in the window.
+        period_us: The spacing of the samples in microseconds.
+        values: The sample values.
     """
 
     offset_us: int
@@ -96,13 +102,22 @@ class Samples:
         return {TIME_COLUMN: self.time_us, VALUES_COLUMN: self.values}
 
     def to_series(self, *, name: str | None = None) -> "pd.Series":
-        """Return the samples as a pandas Series indexed by time_us."""
+        """Return the samples as a pandas Series indexed by time_us.
+
+        Args:
+            name: The name of the series.
+        """
         return samples_to_series(self, name=name)
 
     def to_xarray(
         self, *, name: str | None = None, unit: str | None = None
     ) -> "xr.DataArray":
-        """Return the samples as an xarray DataArray along time_us."""
+        """Return the samples as an xarray DataArray along time_us.
+
+        Args:
+            name: The name of the array.
+            unit: The unit to record on the array.
+        """
         return samples_to_xarray(self, name=name, unit=unit)
 
 
@@ -111,10 +126,21 @@ class Bins:
     """Statistics of the bins of one level in a window.
 
     Entry i describes bin first + i, which starts at offset_us + (first + i)
-    * period_us microseconds from the reference time. min and max are the two
-    columns of minmax. mean, var, and count are None when the level does not
-    hold them. A bin with a non-finite sample has NaN statistics, and count
-    holds the number of its finite samples.
+    * period_us microseconds from the reference time. A bin with a non-finite
+    sample has NaN statistics, and count holds the number of its finite
+    samples.
+
+    Attributes:
+        level: The level number.
+        offset_us: The time of sample 0 of the channel in microseconds.
+        first: The index of the first bin in the window.
+        period_us: The bin width in microseconds.
+        min: The minimum of each bin, the first column of minmax.
+        max: The maximum of each bin, the second column of minmax.
+        mean: The mean of each bin. None when the level does not hold it.
+        var: The variance of each bin. None when the level does not hold it.
+        count: The count of finite samples in each bin. None when the level
+            does not hold it.
     """
 
     level: int
@@ -174,10 +200,15 @@ class Bins:
 class Level:
     """One level of a continuous channel.
 
-    period_us is the bin width in microseconds that the level group states.
-    Each bin folds samples_per_bin raw samples, and the last bin may fold
-    fewer. minmax is a zarr array of shape (bins, 2). mean, var, and count
-    are rank-1 zarr arrays, or None when the level does not hold them.
+    Attributes:
+        number: The level number, counted from 1.
+        period_us: The bin width in microseconds that the level group states.
+        samples_per_bin: The raw samples that each bin folds. The last bin
+            may fold fewer.
+        minmax: The zarr array of shape (bins, 2).
+        mean: A rank-1 zarr array, or None when the level does not hold it.
+        var: A rank-1 zarr array, or None when the level does not hold it.
+        count: A rank-1 zarr array, or None when the level does not hold it.
     """
 
     number: int
@@ -198,11 +229,17 @@ class Level:
 class ContinuousChannel:
     """A continuous channel of a bundle.
 
-    key is the name of the channel group. rate_hz is the sample rate in
-    hertz. offset_us is the time of sample 0 in microseconds from the bundle
-    start. id and provenance are None when the group omits them. raw is the
-    zarr array of samples. levels maps each level number to its Level in
-    level order.
+    Attributes:
+        key: The name of the channel group.
+        name: The channel name.
+        id: The channel id. None when the group omits it.
+        unit: The unit of the samples.
+        rate_hz: The sample rate in hertz.
+        offset_us: The time of sample 0 in microseconds from the reference
+            time.
+        provenance: The provenance object. None when the group omits it.
+        raw: The zarr array of samples.
+        levels: Maps each level number to its Level, in level order.
     """
 
     key: int
@@ -280,11 +317,22 @@ class ContinuousChannel:
     ) -> Samples | Bins:
         """Return the raw samples or the bins of a level in a window.
 
-        The window is [start_us, end_us), and a None bound leaves that side
-        open. Level 0 and None read the raw samples. The result holds every
-        sample or bin that overlaps the window. Raises TypeError if a bound
-        or level is not an integer. Raises ValueError if end_us is before
-        start_us or the channel has no such level.
+        The result holds every sample or bin that overlaps the window.
+
+        Args:
+            start_us: The inclusive start of the window in microseconds from
+                the reference time. None leaves the start open.
+            end_us: The exclusive end of the window. None leaves the end
+                open.
+            level: The level to read. 0 and None read the raw samples.
+
+        Returns:
+            Samples for level 0 or None, otherwise Bins.
+
+        Raises:
+            TypeError: If a bound or level is not an integer.
+            ValueError: If end_us is before start_us or the channel has no
+                such level.
         """
         number = self._level_number(level)
         start, end = window_bounds(start_us, end_us)
@@ -319,11 +367,22 @@ class ContinuousChannel:
     ) -> int:
         """Return the coarsest level at which a window holds bins bins.
 
-        The window is [start_us, end_us), and each count is the length of
-        the read at that level. The result is 0, for the raw samples, when
-        no level holds enough. Raises TypeError if a bound or bins is not an
-        integer. Raises ValueError if end_us is before start_us or bins is
-        below 1.
+        Each count is the length of the read at that level.
+
+        Args:
+            start_us: The inclusive start of the window in microseconds from
+                the reference time. None leaves the start open.
+            end_us: The exclusive end of the window. None leaves the end
+                open.
+            bins: The number of entries wanted, at least 1.
+
+        Returns:
+            The level number, or 0 for the raw samples when no level holds
+            enough.
+
+        Raises:
+            TypeError: If a bound or bins is not an integer.
+            ValueError: If end_us is before start_us or bins is below 1.
         """
         wanted = integer_argument(bins, "bins")
         start, end = window_bounds(start_us, end_us)
@@ -343,18 +402,30 @@ class ContinuousChannel:
     ) -> list[tuple[int, int]]:
         """Return the half-open time spans in a window that hold data.
 
-        level None reads the coarsest level, or the raw samples when the
-        channel has no levels. Level 0 reads the raw samples. A bin holds
-        data when its count is above 0, or on a level without count when a
-        minmax value is finite. A sample holds data when it is finite. Each
-        span runs from the floor of its first bin start to the ceiling of
-        its last bin end, in microseconds. It stays within the window and
-        within the start_us and end_us of the channel. A span that starts at
-        most gap_us after the previous span ends joins it.
+        A bin holds data when its count is above 0, or on a level without
+        count when a minmax value is finite. A sample holds data when it is
+        finite. Each span runs from the floor of its first bin start to the
+        ceiling of its last bin end, in microseconds. It stays within the
+        window and within the start_us and end_us of the channel.
 
-        Raises TypeError if a bound, level, or gap_us is not an integer.
-        Raises ValueError if end_us is before start_us, gap_us is below 0,
-        or the channel has no such level.
+        Args:
+            start_us: The inclusive start of the window in microseconds from
+                the reference time. None leaves the start open.
+            end_us: The exclusive end of the window. None leaves the end
+                open.
+            level: The level to read. None reads the coarsest level, or the
+                raw samples when the channel has no levels. 0 reads the raw
+                samples.
+            gap_us: A span that starts at most this many microseconds after
+                the previous span ends joins it.
+
+        Returns:
+            The (start, end) pairs in time order.
+
+        Raises:
+            TypeError: If a bound, level, or gap_us is not an integer.
+            ValueError: If end_us is before start_us, gap_us is below 0, or
+                the channel has no such level.
         """
         gap = _gap_us(gap_us)
         if level is None:
@@ -379,8 +450,9 @@ class ContinuousChannel:
     def _level_number(self, level: SupportsIndex | None) -> int:
         """Return the number of the level to read, 0 for the raw samples.
 
-        Raises TypeError if level is not an integer or None. Raises
-        ValueError if the channel has no such level.
+        Raises:
+            TypeError: If level is not an integer or None.
+            ValueError: If the channel has no such level.
         """
         if level is None:
             return 0
@@ -443,8 +515,9 @@ def _read_member(
 def _gap_us(gap_us: SupportsIndex) -> int:
     """Return gap_us as an int.
 
-    Raises TypeError if gap_us is not an integer and ValueError if it is
-    below 0.
+    Raises:
+        TypeError: If gap_us is not an integer.
+        ValueError: If gap_us is below 0.
     """
     gap = integer_argument(gap_us, "gap_us", "an integer count of microseconds")
     if gap < 0:
@@ -455,7 +528,8 @@ def _gap_us(gap_us: SupportsIndex) -> int:
 def _parse_raw(where: str, arrays: Mapping[str, ZarrArray]) -> ZarrArray:
     """Return the raw array of a channel.
 
-    Raises ValueError unless raw is a rank-1 floating-point array.
+    Raises:
+        ValueError: Unless raw is a rank-1 floating-point array.
     """
     raw = arrays.get(RAW_KEY)
     if (
@@ -478,8 +552,9 @@ def _parse_member(
 ) -> ZarrArray | None:
     """Return member name of level number, or None when the level lacks it.
 
-    Raises ValueError unless the member has the given shape and an integer
-    dtype when integer is true, or a floating-point dtype otherwise.
+    Raises:
+        ValueError: Unless the member has the given shape and an integer
+            dtype when integer is true, or a floating-point dtype otherwise.
     """
     array = arrays.get(f"{number}/{name}")
     if array is None:
@@ -508,8 +583,9 @@ def _parse_level(
 ) -> Level:
     """Return one level of channel key.
 
-    Raises ValueError if period_us does not match rate_hz, if minmax is
-    missing, or if a member has the wrong shape or dtype kind.
+    Raises:
+        ValueError: If period_us does not match rate_hz, if minmax is
+            missing, or if a member has the wrong shape or dtype kind.
     """
     where = f"channel {key} level {number}"
     period_us = parse_level_attrs(group.attrs, where)
@@ -550,8 +626,9 @@ def _level_numbers(
 ) -> list[int]:
     """Return the level numbers of a channel in level order.
 
-    Raises ValueError if a child array has a level name or if the levels
-    are not numbered from 1 without a gap.
+    Raises:
+        ValueError: If a child array has a level name or if the levels are
+            not numbered from 1 without a gap.
     """
     check_level_arrays(where, "level", MINMAX_KEY, arrays)
     return check_level_numbers(where, "levels", groups)
@@ -565,14 +642,21 @@ def parse_continuous_channel(
 ) -> ContinuousChannel:
     """Return the continuous channel that channel group key describes.
 
-    attributes are the attributes of the channel group. groups and arrays
-    hold its descendants keyed by the path below the group, such as 1 and
-    1/minmax. The parser ignores unknown nodes and unknown tsz keys.
+    The parser ignores unknown nodes and unknown tsz keys.
 
-    Raises ValueError naming the channel, and the level at fault. A missing
-    required key or array raises, as does an array of the wrong shape or
-    dtype kind. So does a gap in the level numbers, a level stored as an
-    array, or a level whose period_us does not match rate_hz.
+    Args:
+        key: The name of the channel group.
+        attributes: The attributes of the channel group.
+        groups: The descendant groups, keyed by the path below the group,
+            such as 1.
+        arrays: The descendant arrays, keyed by the path below the group,
+            such as 1/minmax.
+
+    Raises:
+        ValueError: If a required key or array is missing, an array has the
+            wrong shape or dtype kind, the level numbers have a gap, a level
+            is stored as an array, or a level's period_us does not match
+            rate_hz. The message names the channel and the level at fault.
     """
     where = f"channel {key}"
     fields = parse_continuous_attrs(attributes, where)

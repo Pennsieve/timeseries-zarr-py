@@ -25,9 +25,14 @@ from timeseries_zarr.zarr_io import ZarrArray
 def bin_period(rate_hz: float, samples_per_bin: int) -> Fraction:
     """Return the exact microseconds that one entry of a grid spans.
 
-    samples_per_bin is 1 for raw samples and 4^k for level k. Raises
-    ValueError if rate_hz is not positive and finite or samples_per_bin is
-    below 1.
+    Args:
+        rate_hz: The sample rate in hertz.
+        samples_per_bin: The samples in one entry. It is 1 for raw samples
+            and 4^k for level k.
+
+    Raises:
+        ValueError: If rate_hz is not positive and finite or samples_per_bin
+            is below 1.
     """
     if not (math.isfinite(rate_hz) and rate_hz > 0):
         raise ValueError(
@@ -45,8 +50,14 @@ def bin_period(rate_hz: float, samples_per_bin: int) -> Fraction:
 def duration_us(count: int, rate_hz: float) -> int:
     """Return the microseconds that count samples at rate_hz span, rounded up.
 
-    A window of this length from the first sample holds every sample. Raises
-    ValueError if rate_hz is not positive and finite.
+    A window of this length from the first sample holds every sample.
+
+    Args:
+        count: The number of samples.
+        rate_hz: The sample rate in hertz.
+
+    Raises:
+        ValueError: If rate_hz is not positive and finite.
     """
     return math.ceil(count * bin_period(rate_hz, 1))
 
@@ -56,8 +67,13 @@ def integer_argument(
 ) -> int:
     """Return value as an int.
 
-    name and expectation begin the error message. Raises TypeError if value
-    is not an integer.
+    Args:
+        value: The argument to check.
+        name: The name of the argument, which begins the error message.
+        expectation: The phrase that follows name in the error message.
+
+    Raises:
+        TypeError: If value is not an integer.
     """
     try:
         return operator.index(cast("SupportsIndex", value))
@@ -70,7 +86,8 @@ def integer_argument(
 def _window_bound(value: SupportsIndex | None, name: str) -> int | None:
     """Return value as an int, or None for an open bound.
 
-    Raises TypeError if value is not an integer.
+    Raises:
+        TypeError: If value is not an integer.
     """
     if value is None:
         return None
@@ -82,8 +99,13 @@ def window_bounds(
 ) -> tuple[int | None, int | None]:
     """Return the bounds of a window as ints, None for an open side.
 
-    Raises TypeError if a bound is not an integer and ValueError if end_us
-    is before start_us.
+    Args:
+        start_us: The start of the window, or None for an open side.
+        end_us: The end of the window, or None for an open side.
+
+    Raises:
+        TypeError: If a bound is not an integer.
+        ValueError: If end_us is before start_us.
     """
     start = _window_bound(start_us, "start_us")
     end = _window_bound(end_us, "end_us")
@@ -104,12 +126,21 @@ def index_range(
 ) -> tuple[int, int]:
     """Return the half-open index range of the grid entries in a time window.
 
-    The window is [start_us, end_us) in microseconds from the reference time,
-    and a None bound leaves that side open. The grid holds length entries of
-    period microseconds from offset_us. Every entry that overlaps the window
-    is in the range, and an entry that starts at end_us is not. Equal bounds
-    and a window outside the grid give an empty range. Raises TypeError if a
-    bound is not an integer and ValueError if end_us is before start_us.
+    Every entry that overlaps the window is in the range, and an entry that
+    starts at end_us is not. Equal bounds and a window outside the grid give
+    an empty range.
+
+    Args:
+        start_us: The start of the window in microseconds from the reference
+            time. None leaves that side open.
+        end_us: The end of the window, exclusive. None leaves that side open.
+        offset_us: The time of entry 0 of the grid.
+        period: The microseconds one entry spans.
+        length: The number of entries in the grid.
+
+    Raises:
+        TypeError: If a bound is not an integer.
+        ValueError: If end_us is before start_us.
     """
     start, end = window_bounds(start_us, end_us)
     first = 0
@@ -130,6 +161,12 @@ def time_axis(
 
     Each time derives from its own index and carries no rounding error
     accumulated along the axis.
+
+    Args:
+        first: The index of the first entry.
+        count: The number of entries.
+        offset_us: The time of entry 0 of the grid.
+        period_us: The microseconds one entry spans.
     """
     indices = np.arange(first, first + count, dtype=np.float64)
     return offset_us + indices * period_us
@@ -152,9 +189,15 @@ def check_level_numbers(
     """Return the level numbers that names spell, in ascending order.
 
     A level number is a number of at least 1 that canonical_number reads
-    from a name. The result leaves out every other name. where and noun
-    begin the error message. Raises ValueError unless the numbers run from 1
-    with no gap.
+    from a name. The result leaves out every other name.
+
+    Args:
+        where: The location, which begins the error message.
+        noun: The name of a level in the error message.
+        names: The node names to read.
+
+    Raises:
+        ValueError: Unless the numbers run from 1 with no gap.
     """
     numbers = sorted(
         number
@@ -174,9 +217,16 @@ def check_level_arrays(
 ) -> None:
     """Raise ValueError if one of the array names spells a level number.
 
-    names are the paths of the arrays below a channel group. A level is a
-    group that holds the array member. where and noun begin the error
-    message.
+    A level is a group that holds the array member.
+
+    Args:
+        where: The location, which begins the error message.
+        noun: The name of a level in the error message.
+        member: The name of the array a level holds.
+        names: The paths of the arrays below a channel group.
+
+    Raises:
+        ValueError: If a name spells a level number.
     """
     for name in names:
         number = canonical_number(name)
@@ -192,8 +242,11 @@ def array_error(
 ) -> ValueError:
     """Return the error for a missing array or one of the wrong layout.
 
-    where and name begin the message, and expectation is the phrase that
-    names a valid array.
+    Args:
+        where: The location, which begins the message.
+        name: The name of the array, which follows where.
+        expectation: The phrase that names a valid array.
+        array: The array found, or None when it is missing.
     """
     if array is None:
         return ValueError(
@@ -213,7 +266,14 @@ def check_label_range(
 ) -> None:
     """Raise ValueError unless every label is at least 0 and below limit.
 
-    where begins the error message, and limit_phrase follows limit in it.
+    Args:
+        where: The location, which begins the error message.
+        labels: The labels to check.
+        limit: The exclusive upper bound.
+        limit_phrase: Text that follows limit in the error message.
+
+    Raises:
+        ValueError: If a label is below 0 or at least limit.
     """
     if not labels.size:
         return
@@ -231,7 +291,13 @@ def check_label_range(
 def check_not_string(names: object, argument: str) -> None:
     """Raise TypeError if names is a string.
 
-    names is the value of argument, which takes a collection of column names.
+    Args:
+        names: The value of argument, which takes a collection of column
+            names.
+        argument: The name of the argument in the error message.
+
+    Raises:
+        TypeError: If names is a string.
     """
     if isinstance(names, str):
         raise TypeError(
@@ -243,9 +309,16 @@ def check_not_string(names: object, argument: str) -> None:
 def select_level(counts: Mapping[int, int], bins: int) -> int:
     """Return the coarsest level whose window holds at least bins entries.
 
-    counts maps a level number to the entries a window holds at that level.
-    The result is 0 when no level holds enough. Raises ValueError if bins is
-    below 1.
+    Args:
+        counts: A level number mapped to the entries a window holds at that
+            level.
+        bins: The entries a window must hold.
+
+    Returns:
+        The level number, or 0 when no level holds enough.
+
+    Raises:
+        ValueError: If bins is below 1.
     """
     if bins < 1:
         raise ValueError(f"bins must be at least 1, got {bins!r}")
@@ -266,11 +339,19 @@ def merge_spans(
 ) -> list[tuple[int, int]]:
     """Return the time spans that the populated entries of a grid cover.
 
-    populated[i] marks grid entry first + i. Each run of populated entries
-    becomes one half-open span, widened outward to whole microseconds and
-    clamped to [low_us, high_us). The result omits a span that clamps to
-    nothing. A span that starts at most gap_us after the previous span ends
-    extends the previous span.
+    Each run of populated entries becomes one half-open span, widened outward
+    to whole microseconds and clamped to [low_us, high_us). The result omits a
+    span that clamps to nothing. A span that starts at most gap_us after the
+    previous span ends extends the previous span.
+
+    Args:
+        populated: Marks of grid entries. Element i marks entry first + i.
+        first: The grid index of populated[0].
+        offset_us: The time of entry 0 of the grid.
+        period: The microseconds one entry spans.
+        low_us: The inclusive lower clamp.
+        high_us: The exclusive upper clamp.
+        gap_us: The widest gap that merges two spans.
     """
     padded = np.concatenate(([False], populated, [False])).astype(np.int8)
     edges = np.flatnonzero(np.diff(padded))

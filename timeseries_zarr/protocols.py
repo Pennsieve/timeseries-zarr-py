@@ -11,11 +11,18 @@ from timeseries_zarr.types import EventColumn
 
 
 def missing_members(source: object, protocol: type) -> list[str]:
-    """Return the sorted names of the members of protocol that source lacks.
+    """Return the sorted names of the protocol members that source lacks.
 
     A name is missing under the same test isinstance applies to a runtime
     checkable protocol. A method set to None counts as missing, so a source
     that fails isinstance has at least one.
+
+    Args:
+        source: Object to inspect.
+        protocol: Runtime checkable protocol class that lists the members.
+
+    Returns:
+        The missing member names in sorted order, empty when none is missing.
     """
     # Python 3.12 has no typing.get_protocol_members.
     members: frozenset[str] = getattr(protocol, "__protocol_attrs__")  # noqa: B009
@@ -50,7 +57,7 @@ class ProvenanceSource(Protocol):
 
 
 def source_provenance(source: object) -> dict[str, object] | None:
-    """Return the provenance of source, or None when it has no provenance method."""
+    """Return the provenance of source, or None without a provenance method."""
     if isinstance(source, ProvenanceSource):
         return source.provenance()
     return None
@@ -102,9 +109,7 @@ class MultiChannelSource(Protocol):
     """Continuous channels the writer reads together, one window at a time.
 
     A source over a format that stores every channel in one stream implements
-    this protocol.
-
-    channels returns the channels in channel order. iter_windows yields one
+    this protocol. channels returns the channels in channel order. iter_windows yields one
     window at a time, and the writer calls it once per write. A window is a
     sequence with one rank-1 block per channel, in channel order. The writer
     casts each block to float32, so a strided column view or an int16 block
@@ -128,7 +133,7 @@ class MultiChannelSource(Protocol):
 
 @runtime_checkable
 class EventChannelSource(Protocol):
-    """An event channel the writer reads event times and optional columns from.
+    """An event channel the writer reads event times and columns from.
 
     Every channel has event times. Each other column is optional, and columns
     names the ones this source provides: the writer calls a column's reader
@@ -164,7 +169,7 @@ class EventChannelSource(Protocol):
         ...
 
     def num_labels(self) -> int:
-        """Return the number of label categories, or 0 without a labels column."""
+        """Return the number of label categories, or 0 without labels."""
         ...
 
     def max_duration_us(self) -> int | None:
@@ -199,14 +204,14 @@ class EventChannelSource(Protocol):
         ...
 
     def read_channel_ids(self, start: int, stop: int) -> list[list[str]]:
-        """Return the ids of the channels each event in [start, stop) applies to.
+        """Return the channel ids that each event in [start, stop) applies to.
 
         An empty list means the event applies to the whole recording.
         """
         ...
 
     def waveform_mean(self) -> npt.NDArray[np.float32]:
-        """Return the mean snippet of each label category, shaped (labels, samples)."""
+        """Return the mean snippet of each label, shaped (labels, samples)."""
         ...
 
     def waveform_period_us(self) -> float:

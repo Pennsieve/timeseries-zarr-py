@@ -8,6 +8,10 @@ def missing_extra_message(package: str, extra: str) -> str:
     """Return the error message for package when it is not installed.
 
     The message names the pip command that installs extra.
+
+    Args:
+        package: Name of the missing package.
+        extra: Name of the extra that installs it.
     """
     return (
         f"{package} is not installed. Install the {extra} extra: "
@@ -18,9 +22,14 @@ def missing_extra_message(package: str, extra: str) -> str:
 def require(package: str, extra: str) -> ModuleType:
     """Import package and return the module.
 
-    Raises ImportError with the message of missing_extra_message, and with
-    name set to package, if package is not installed. If a module that
-    package imports is missing, its ModuleNotFoundError propagates.
+    Args:
+        package: Name of the package to import.
+        extra: Name of the extra that installs it.
+
+    Raises:
+        ImportError: package is not installed. The message comes from
+            missing_extra_message, and name is package. If a module that
+            package imports is missing, its ModuleNotFoundError propagates.
     """
     try:
         return importlib.import_module(package)

@@ -53,7 +53,9 @@ def samples_to_series(
 ) -> "pd.Series":
     """Return the samples as a Series indexed by time_us.
 
-    name names the Series.
+    Args:
+        samples: The samples to convert.
+        name: The name of the Series.
     """
     pandas = require(_PANDAS, _PANDAS)
     columns = samples.columns()
@@ -71,7 +73,12 @@ def samples_to_xarray(
     """Return the samples as a DataArray along time_us.
 
     The attributes hold period_us and offset_us, units when unit is given,
-    and long_name when name is given. name also names the DataArray.
+    and long_name when name is given.
+
+    Args:
+        samples: The samples to convert.
+        name: The name of the DataArray.
+        unit: The unit of the samples.
     """
     xarray = require(_XARRAY, _XARRAY)
     columns = samples.columns()
@@ -134,7 +141,9 @@ def counts_to_dataframe(counts: "Counts") -> "pd.DataFrame":
 
     It holds one column per label. A label_names entry names each column,
     and without label_names the label index as a decimal string names it.
-    Raises ValueError if two label_names are equal or one is time_us.
+
+    Raises:
+        ValueError: If two label_names are equal or one is time_us.
     """
     pandas = require(_PANDAS, _PANDAS)
     return _time_frame(pandas, counts.columns())
@@ -144,8 +153,10 @@ def counts_to_xarray(counts: "Counts") -> "xr.DataArray":
     """Return the counts as a DataArray of dimensions time_us and label.
 
     The label coordinate holds label_names, or each label index as a decimal
-    string when label_names is None. Raises ValueError if two label_names
-    are equal or one is time_us.
+    string when label_names is None.
+
+    Raises:
+        ValueError: If two label_names are equal or one is time_us.
     """
     xarray = require(_XARRAY, _XARRAY)
     columns = counts.columns()

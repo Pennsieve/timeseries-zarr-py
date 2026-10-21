@@ -15,7 +15,7 @@ type ChannelKind = Literal["continuous", "event"]
 type VoltagePolicy = Literal["convert", "require_uv"]
 """How the writer treats the unit of a continuous channel.
 
-convert scales a recognized volts-family unit to microvolts. require_uv
+"convert" scales a recognized volts-family unit to microvolts. "require_uv"
 raises unless such a unit is exactly "uV".
 """
 
@@ -29,11 +29,15 @@ type EventColumn = Literal[
 class LevelPlan:
     """Resolved size and time resolution of one pyramid level of a channel.
 
-    bins is the number of entries along the level's time axis. period_us is
-    the microseconds that one entry spans, widening 4x with each coarser
-    level. offset_us is the time of entry 0 from the reference time. It is 0
-    for a level of a continuous channel, whose entries count from the
-    channel's own offset, and a multiple of period_us for a count level.
+    Attributes:
+        level: The level number, counted from 1.
+        bins: The number of entries along the level's time axis.
+        period_us: The microseconds that one entry spans. It widens 4x with
+            each coarser level.
+        offset_us: The time of entry 0 from the reference time. It is 0 for a
+            level of a continuous channel, whose entries count from the
+            channel's own offset, and a multiple of period_us for a count
+            level.
     """
 
     level: int
@@ -51,9 +55,13 @@ class LevelPlan:
 class LevelMembers[T]:
     """Handles to the member arrays of one pyramid level.
 
-    minmax is the (bins, 2) envelope, mean and count are (bins,), and var is
-    None on a level written without it. T is whatever array handle the caller
-    works with.
+    The type parameter T is whatever array handle the caller works with.
+
+    Attributes:
+        minmax: The (bins, 2) envelope.
+        mean: The (bins,) mean.
+        var: The (bins,) variance. None on a level written without it.
+        count: The (bins,) count of finite samples.
     """
 
     minmax: T
@@ -66,8 +74,9 @@ class LevelMembers[T]:
 class ResolvedUnit:
     """Scale factor and stored unit string of one continuous channel.
 
-    factor multiplies the source samples. unit is the string the channel
-    group declares.
+    Attributes:
+        factor: The multiplier applied to the source samples.
+        unit: The unit string the channel group declares.
     """
 
     factor: float
@@ -78,18 +87,24 @@ class ResolvedUnit:
 class RecordingMeta:
     """Identity and datetimes of a recording, for recording.json.
 
-    session_start_time is the datetime acquisition began. It is
-    written as the start_time of the session object and places no data.
-    reference_time is the instant every time in the bundle counts from.
-    When it is given, the writer uses it as it is, so a rewrite keeps a
-    bundle's reference time and a channel that begins before it gets a
-    negative offset. When it is None, the writer places the reference time
-    at the earlier of the session start and the first sample. Each time must
-    carry a UTC offset. The three objects are producer-defined and default
-    to empty. wall_clock states whether the source times are microseconds
-    since the Unix epoch. When it is False, the times count from an unknown
-    instant, the session start does not place the reference time,
-    recording.json holds no reference_time, and reference_time must be None.
+    Each time must carry a UTC offset.
+
+    Attributes:
+        session_start_time: The datetime acquisition began. The writer stores
+            it as the start_time of the session object. It places no data.
+        reference_time: The instant every time in the bundle counts from.
+            When given, the writer uses it as it is, so a rewrite keeps a
+            bundle's reference time and a channel that begins before it gets
+            a negative offset. When None, the writer places it at the
+            earlier of the session start and the first sample.
+        subject: Producer-defined subject object.
+        session: Producer-defined session object.
+        source: Producer-defined source object.
+        wall_clock: Whether the source times are microseconds since the Unix
+            epoch. When False, the times count from an unknown instant, the
+            session start does not place the reference time,
+            recording.json holds no reference_time, and reference_time must
+            be None.
     """
 
     session_start_time: datetime | None = None
@@ -104,8 +119,10 @@ class RecordingMeta:
 class ChunkShard:
     """Inner-chunk and outer-shard shapes for one Zarr array.
 
-    chunk_shape is the inner (compressed) chunk; shard_shape is the outer shard
-    that groups whole chunks under the ZEP2 sharding codec.
+    Attributes:
+        chunk_shape: The inner (compressed) chunk.
+        shard_shape: The outer shard that groups whole chunks under the ZEP2
+            sharding codec.
     """
 
     chunk_shape: tuple[int, ...]
@@ -116,14 +133,21 @@ class ChunkShard:
 class WriteOpts:
     """Tunable settings shared by the channel writers.
 
-    max_levels and min_bins bound the pyramid; inner_len and
-    target_shard_bytes size the inner chunk and the outer shard. A max_levels
-    of 0 writes the raw samples and event arrays with no levels. write_var
-    adds the var member to every level. voltage_policy sets how a continuous
-    channel with a volts-family unit reaches microvolts. Raises ValueError if
-    max_levels is outside 0 through MAX_LEVELS, if min_bins, inner_len, or
-    target_shard_bytes is below 1, or if write_var is true with a max_levels
-    of 0.
+    Attributes:
+        zstd_level: The Zstandard compression level.
+        max_levels: The most levels to write, 0 through MAX_LEVELS. A value of
+            0 writes the raw samples and event arrays with no levels.
+        min_bins: The fewest bins a level may hold, at least 1.
+        inner_len: The inner chunk length in rows, at least 1.
+        target_shard_bytes: The target size of an outer shard in bytes, at
+            least 1.
+        write_var: Whether to add the var member to every level. Requires
+            max_levels of 1 or more.
+        voltage_policy: How a continuous channel with a volts-family unit
+            reaches microvolts.
+
+    Raises:
+        ValueError: If a setting lies outside its range, as stated above.
     """
 
     zstd_level: int = 5

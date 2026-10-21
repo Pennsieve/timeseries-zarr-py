@@ -21,17 +21,32 @@ def _require_offset(instant: datetime, name: str) -> None:
 def epoch_us(instant: datetime) -> int:
     """Return instant in microseconds since the Unix epoch.
 
-    The arithmetic is exact in integers. Raises ValueError if instant has no
-    UTC offset.
+    The arithmetic is exact in integers.
+
+    Args:
+        instant: A datetime that carries a UTC offset.
+
+    Returns:
+        Whole microseconds since 1970-01-01T00:00:00Z.
+
+    Raises:
+        ValueError: If instant has no UTC offset.
     """
     _require_offset(instant, "instant")
     return (instant - _EPOCH) // timedelta(microseconds=1)
 
 
 def session_start_us(meta: RecordingMeta) -> int | None:
-    """Return the session start in microseconds since the Unix epoch, or None.
+    """Return the session start in microseconds since the Unix epoch.
 
-    Raises ValueError if meta.session_start_time has no UTC offset.
+    Args:
+        meta: The recording metadata.
+
+    Returns:
+        The microseconds, or None when meta.session_start_time is None.
+
+    Raises:
+        ValueError: If meta.session_start_time has no UTC offset.
     """
     if meta.session_start_time is None:
         return None
@@ -49,10 +64,17 @@ def _require_wall_clock(meta: RecordingMeta) -> None:
 
 
 def reference_time_us(meta: RecordingMeta) -> int | None:
-    """Return the reference time in microseconds since the Unix epoch, or None.
+    """Return the reference time in microseconds since the Unix epoch.
 
-    Raises ValueError if meta.reference_time has no UTC offset, or if it is
-    set while meta.wall_clock is False.
+    Args:
+        meta: The recording metadata.
+
+    Returns:
+        The microseconds, or None when meta.reference_time is None.
+
+    Raises:
+        ValueError: If meta.reference_time has no UTC offset, or if it is set
+            while meta.wall_clock is False.
     """
     if meta.reference_time is None:
         return None
@@ -66,16 +88,26 @@ def recording_document(
 ) -> dict[str, object]:
     """Return the recording.json content of a bundle.
 
-    reference_time is reference_us, the reference time in microseconds since
-    the Unix epoch, as an RFC 3339 string with microsecond precision. It takes the UTC offset of meta.reference_time, else of
-    meta.session_start_time, else UTC. reference_time is left out when
-    reference_us is None, a bundle with no sample and no event, or when
-    meta.wall_clock is False. session is meta.session with
-    meta.session_start_time first, as given, under start_time. subject,
-    session, and source follow reference_time in that order, each only when
-    it holds something. Raises ValueError if a time of meta has no UTC
-    offset, meta.reference_time is set while meta.wall_clock is False, or
-    meta.session already holds a start_time key.
+    The reference_time entry is an RFC 3339 string with microsecond precision.
+    It takes the UTC offset of meta.reference_time, else of
+    meta.session_start_time, else UTC. The session entry is meta.session with
+    meta.session_start_time first, as given, under start_time. The entries
+    subject, session, and source follow reference_time in that order, each
+    only when it holds something.
+
+    Args:
+        meta: The recording metadata.
+        reference_us: The reference time in microseconds since the Unix
+            epoch. None means a bundle with no sample and no event.
+
+    Returns:
+        The document. It has no reference_time entry when reference_us is
+        None or meta.wall_clock is False.
+
+    Raises:
+        ValueError: If a time of meta has no UTC offset, if
+            meta.reference_time is set while meta.wall_clock is False, or if
+            meta.session already holds a start_time key.
     """
     _require_wall_clock(meta)
     session_start = meta.session_start_time
@@ -117,8 +149,13 @@ def write_recording_json(bundle_dir: Path, document: dict[str, object]) -> None:
     The file is UTF-8 JSON indented by one space and ends with one newline, so
     an editor or a text tool can change it. It is not a Zarr node and never
     enters the consolidated metadata. An existing file is overwritten.
-    bundle_dir must exist. Raises TypeError if a value in document is not JSON
-    serializable.
+
+    Args:
+        bundle_dir: An existing directory.
+        document: The content to write.
+
+    Raises:
+        TypeError: If a value in document is not JSON serializable.
     """
     text = json.dumps(document, indent=1, ensure_ascii=False)
     (bundle_dir / RECORDING_FILE).write_text(text + "\n", encoding="utf-8")

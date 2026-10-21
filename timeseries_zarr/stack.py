@@ -39,12 +39,21 @@ _MEMBERS: Final[tuple[BinMember, ...]] = get_args(BinMember.__value__)
 class Stack:
     """Windows of several continuous channels on one shared grid.
 
-    values has one row per channel in the order of keys. Entry j of a row
-    is sample or bin first + j, which starts at offset_us + (first + j) *
-    period_us microseconds from the reference time. names and units hold the
-    name and unit of each channel in the order of keys. Level 0 holds raw
-    samples, and member is then None. A row holds NaN past the end of its
-    channel, or 0 when member is count.
+    Entry j of a row is sample or bin first + j, which starts at offset_us +
+    (first + j) * period_us microseconds from the reference time. A row holds
+    NaN past the end of its channel, or 0 when member is count.
+
+    Attributes:
+        keys: The channel keys, one for each row of values.
+        names: The channel names, in the order of keys.
+        units: The channel units, in the order of keys.
+        level: The level of the entries. Level 0 holds raw samples.
+        member: The statistic each entry holds. None at level 0.
+        offset_us: The time of sample or bin 0, in microseconds from the
+            reference time.
+        first: The index of the first entry of each row.
+        period_us: The duration of one entry in microseconds.
+        values: One row for each channel, in the order of keys.
     """
 
     keys: tuple[int, ...]
@@ -97,6 +106,10 @@ def _check_member(number: int, member: BinMember | None) -> None:
     """Raise ValueError unless member suits level number.
 
     Level 0 takes None, and every other level takes a name in _MEMBERS.
+
+    Args:
+        number: The level.
+        member: The statistic to read.
     """
     if number == 0:
         if member is not None:
@@ -142,11 +155,18 @@ def check_shared_grid(
     """Check that channels share one grid at level and hold member there.
 
     Level 0 is the grid of raw samples and takes member None. Every other
-    level takes a member that BinMember names. Raises ValueError if channels
-    is empty, if a channel differs from the first in rate_hz or offset_us,
-    or if a channel lacks the level. Also raises ValueError if member does
-    not suit the level or a level lacks member. Raises TypeError if level is
-    not an integer.
+    level takes a member that BinMember names.
+
+    Args:
+        channels: The channels to stack.
+        level: The level to read.
+        member: The statistic to read at level.
+
+    Raises:
+        ValueError: If channels is empty, if a channel differs from the first
+            in rate_hz or offset_us, if a channel lacks the level, if member
+            does not suit the level, or if a level lacks member.
+        TypeError: If level is not an integer.
     """
     if not channels:
         raise ValueError("stack needs at least one channel, got none")
@@ -210,15 +230,22 @@ def stack_channels(
 ) -> Stack:
     """Return the window of each channel as one row of a Stack.
 
-    The window is [start_us, end_us), and a None bound leaves that side
-    open. Level 0 reads the raw samples and ignores member. A level of at
-    least 1 reads member from the bins of that level. The rows span every
-    entry that overlaps the window on any channel. A row holds NaN past the
-    end of its channel, or 0 when member is count.
+    The rows span every entry that overlaps the window on any channel. A row
+    holds NaN past the end of its channel, or 0 when member is count.
 
-    Raises ValueError if two channels share a key, if check_shared_grid
-    rejects the channels, or if end_us is before start_us. Raises TypeError
-    if a bound or level is not an integer.
+    Args:
+        channels: The channels to stack, in row order.
+        start_us: The start of the window in microseconds from the reference
+            time. None leaves that side open.
+        end_us: The end of the window, exclusive. None leaves that side open.
+        level: The level to read. Level 0 reads the raw samples and ignores
+            member.
+        member: The statistic to read from the bins of a level of at least 1.
+
+    Raises:
+        ValueError: If two channels share a key, if check_shared_grid rejects
+            the channels, or if end_us is before start_us.
+        TypeError: If a bound or level is not an integer.
     """
     _check_distinct(channels)
     number = integer_argument(level, "level")

@@ -117,10 +117,13 @@ def _object_column(
 class Waveform:
     """Snippet rows read from a waveforms or waveform_mean array.
 
-    values holds one row per snippet and one column per snippet sample.
-    period_us is the snippet sample period in microseconds. Column
-    event_sample is the sample recorded at the event time. rows names what
-    a row stands for, event for waveforms and label for waveform_mean.
+    Attributes:
+        values: One row per snippet and one column per snippet sample.
+        period_us: The snippet sample period in microseconds.
+        event_sample: The column that holds the sample recorded at the event
+            time.
+        rows: What a row stands for, event for waveforms and label for
+            waveform_mean.
     """
 
     values: npt.NDArray[np.floating[Any]]
@@ -174,10 +177,14 @@ class Waveform:
 class Snippets:
     """A waveforms or waveform_mean array of an event channel.
 
-    array is a rank-2 zarr array with one row per snippet and one column per
-    snippet sample. period_us is the snippet sample period in microseconds.
-    Column event_sample is the sample recorded at the event time. rows names
-    what a row stands for, event for waveforms and label for waveform_mean.
+    Attributes:
+        array: A rank-2 zarr array with one row per snippet and one column
+            per snippet sample.
+        period_us: The snippet sample period in microseconds.
+        event_sample: The column that holds the sample recorded at the event
+            time.
+        rows: What a row stands for, event for waveforms and label for
+            waveform_mean.
     """
 
     array: ZarrArray
@@ -209,11 +216,15 @@ class Snippets:
 class CountLevel:
     """One count level of an event channel.
 
-    period_us is the bin width in microseconds. offset_us is the time of bin
-    0 in microseconds from the reference time, a multiple of period_us, and
-    may be negative. Bin i starts at offset_us + i * period_us. count is a
-    rank-2 zarr array whose entry (i, j) is the number of events of label j
-    that start in bin i.
+    Bin i starts at offset_us + i * period_us.
+
+    Attributes:
+        number: The level number, from 1.
+        period_us: The bin width in microseconds.
+        offset_us: The time of bin 0 in microseconds from the reference time.
+            A multiple of period_us, and may be negative.
+        count: A rank-2 zarr array whose entry (i, j) is the number of events
+            of label j that start in bin i.
     """
 
     number: int
@@ -236,10 +247,18 @@ class CountLevel:
 class Counts:
     """Event counts of one count level in a window.
 
-    count[i, j] is the number of events of label j that start in bin
-    first + i. That bin starts at offset_us + (first + i) * period_us
-    microseconds from the reference time. label_names names each label
-    column, or is None when the channel has no label_names.
+    Bin first + i starts at offset_us + (first + i) * period_us microseconds
+    from the reference time.
+
+    Attributes:
+        level: The count level number.
+        first: The index of the first bin in the window.
+        period_us: The bin width in microseconds.
+        offset_us: The time of bin 0 in microseconds from the reference time.
+        count: Entry (i, j) is the number of events of label j that start in
+            bin first + i.
+        label_names: The name of each label column, or None when the channel
+            has no label_names.
     """
 
     level: int
@@ -267,8 +286,10 @@ class Counts:
         """Return time_us and one column per label.
 
         label_names names the label columns. Without label_names, the name of
-        each label column is its label index as a decimal string. Raises
-        ValueError if two label_names are equal or one is time_us.
+        each label column is its label index as a decimal string.
+
+        Raises:
+            ValueError: Two label_names are equal or one is time_us.
         """
         names = (
             self.label_names
@@ -301,16 +322,22 @@ class Counts:
 class EventTable:
     """The events of an event channel in a window, one row per event.
 
-    time_us is the time of each event in microseconds from the reference
-    time, in non-decreasing order. duration_us is in microseconds. value
-    is in the unit of the channel. text holds the decoded text of each
-    event. channel_keys lists the channel keys each event applies to, and
-    an empty list means the whole recording. waveform holds the snippet of
-    each event. A column is None when the channel lacks it or the read left
-    it out. label_names gives the name of each label value by index, or is
-    None when the channel has no label_names. whole_recording is true when
-    the channel has no channels column. Every event of such a channel
-    applies to the whole recording.
+    A column is None when the channel lacks it or the read left it out.
+
+    Attributes:
+        time_us: The time of each event in microseconds from the reference
+            time, in non-decreasing order.
+        duration_us: The duration of each event in microseconds.
+        label: The label of each event.
+        value: The value of each event, in the unit of the channel.
+        text: The decoded text of each event.
+        channel_keys: The channel keys each event applies to. An empty list
+            means the whole recording.
+        waveform: The snippet of each event.
+        label_names: The name of each label value by index, or None when the
+            channel has no label_names.
+        whole_recording: True when the channel has no channels column. Every
+            event of such a channel applies to the whole recording.
     """
 
     time_us: npt.NDArray[np.integer[Any]]
@@ -400,8 +427,13 @@ class EventTable:
         """Return a mask of the events that apply to channel key.
 
         An event applies to key when its channel_keys names key or is empty.
-        Every event applies when whole_recording is true. Raises ValueError
-        if channel_keys is None and whole_recording is false.
+        Every event applies when whole_recording is true.
+
+        Args:
+            key: A channel key.
+
+        Raises:
+            ValueError: channel_keys is None and whole_recording is false.
         """
         if self.channel_keys is None:
             if self.whole_recording:
@@ -480,14 +512,25 @@ def _kept(
 class EventChannel:
     """An event channel of a bundle.
 
-    key is the name of the channel group. label_names[j] names label j.
-    max_duration_us bounds every duration in microseconds. id, unit,
-    label_names, max_duration_us, and provenance are None when the group
-    omits them. events is the zarr array of event times. Each per-event
-    column is a zarr array, or None when the channel lacks it. waveforms and
-    waveform_mean are Snippets, or None when the channel lacks them.
-    count_levels maps each count level number to its CountLevel in level
-    order.
+    Attributes:
+        key: The name of the channel group.
+        name: The channel name.
+        id: The channel id, or None when the group omits it.
+        unit: The unit of values, or None when the group omits it.
+        label_names: The name of each label, where label_names[j] names label
+            j, or None when the group omits it.
+        max_duration_us: A bound on every duration in microseconds, or None
+            when the group omits it.
+        provenance: The provenance object, or None when the group omits it.
+        events: The zarr array of event times.
+        durations: The zarr array of durations, or None when absent.
+        labels: The zarr array of labels, or None when absent.
+        values: The zarr array of values, or None when absent.
+        text: The zarr array of event text, or None when absent.
+        channels: The zarr array of channel keys, or None when absent.
+        waveforms: The per-event snippets, or None when absent.
+        waveform_mean: The per-label mean snippets, or None when absent.
+        count_levels: Each count level by number, in level order.
     """
 
     key: int
@@ -542,14 +585,20 @@ class EventChannel:
         open. An event without a duration is in the window when its time is
         at or after start_us and before end_us. An event with a duration is
         in the window when it starts before end_us and ends at or after
-        start_us. columns names the per-event columns to read, and None reads
-        every column the channel holds. The table always holds the times.
+        start_us. The table always holds the times.
 
-        Raises TypeError if a bound is not an integer or columns is a string.
-        Raises ValueError if end_us is before start_us or columns names a
-        column the channel lacks. Also raises ValueError if a label is below
-        0 or at least the length of label_names, or if the text of an event
-        in the window is not valid UTF-8.
+        Args:
+            start_us: Inclusive start of the window. None leaves it open.
+            end_us: Exclusive end of the window. None leaves it open.
+            columns: The per-event columns to read. None reads every column
+                the channel holds.
+
+        Raises:
+            TypeError: A bound is not an integer or columns is a string.
+            ValueError: end_us is before start_us, or columns names a column
+                the channel lacks. Also raised when a label is below 0 or at
+                least the length of label_names, or the text of an event in
+                the window is not valid UTF-8.
         """
         start, end = window_bounds(start_us, end_us)
         selected = self._selected_columns(columns)
@@ -591,10 +640,18 @@ class EventChannel:
     ) -> Counts:
         """Return the bins of a count level that overlap a window.
 
-        The window is [start_us, end_us), and a None bound leaves that side
-        open. A window past the last bin gives no bins. Raises TypeError if a
-        bound or level is not an integer. Raises ValueError if end_us is
-        before start_us or the channel has no such count level.
+        The window is [start_us, end_us). A window past the last bin gives no
+        bins.
+
+        Args:
+            start_us: Inclusive start of the window. None leaves it open.
+            end_us: Exclusive end of the window. None leaves it open.
+            level: The count level number.
+
+        Raises:
+            TypeError: A bound or level is not an integer.
+            ValueError: end_us is before start_us or the channel has no such
+                count level.
         """
         number = integer_argument(level, "level")
         chosen = self.count_levels.get(number)
@@ -631,9 +688,16 @@ class EventChannel:
         event. Each count is the number of bins read_counts returns for the
         window with those bounds. The result is 0, for the events, when no
         count level holds enough. A channel without events or count levels
-        gives 0. Raises
-        TypeError if a bound or bins is not an integer. Raises ValueError if
-        end_us is before start_us or bins is below 1.
+        gives 0.
+
+        Args:
+            start_us: Inclusive start of the window. None leaves it open.
+            end_us: Exclusive end of the window. None leaves it open.
+            bins: The number of bins the level must hold.
+
+        Raises:
+            TypeError: A bound or bins is not an integer.
+            ValueError: end_us is before start_us or bins is below 1.
         """
         wanted = integer_argument(bins, "bins")
         start, end = window_bounds(start_us, end_us)
@@ -676,8 +740,9 @@ class EventChannel:
     def _selected_columns(self, columns: Iterable[str] | None) -> list[str]:
         """Return the per-event columns a read returns.
 
-        Raises TypeError if columns is a string and ValueError if it names a
-        column the channel lacks.
+        Raises:
+            TypeError: columns is a string.
+            ValueError: columns names a column the channel lacks.
         """
         present = self.columns
         if columns is None:
@@ -710,9 +775,14 @@ class EventChannel:
     ) -> EventTable:
         """Return the table of the kept times and per-event rows.
 
-        indices holds the event index of each kept row. Raises ValueError if
-        a label is below 0 or at least the length of label_names, or if the
-        text of an event is not valid UTF-8.
+        Args:
+            times: The kept event times.
+            rows: The kept rows of each column by name.
+            indices: The event index of each kept row.
+
+        Raises:
+            ValueError: A label is below 0 or at least the length of
+                label_names, or the text of an event is not valid UTF-8.
         """
         label = rows.get(LABELS_KEY)
         names = self.label_names
@@ -796,8 +866,15 @@ def _checked(
 ) -> ZarrArray | None:
     """Return array, or None when it is absent.
 
-    rows None allows any number of rows. Raises ValueError unless the array
-    has the rank, dtype kind, and rows given.
+    Args:
+        array: The array to check, or None.
+        where: Names the channel in an error message.
+        name: The array name.
+        layout: The rank and dtype kind the array must have.
+        rows: The required number of rows. None allows any number.
+
+    Raises:
+        ValueError: The array lacks the rank, dtype kind, or rows given.
     """
     if array is None:
         return None
@@ -819,7 +896,8 @@ def _required(
 ) -> ZarrArray:
     """Return array after the checks of _checked.
 
-    Raises ValueError if the array is absent.
+    Raises:
+        ValueError: The array is absent.
     """
     checked = _checked(array, where, name, layout, rows)
     if checked is None:
@@ -835,8 +913,9 @@ def _parse_snippets(
 ) -> Snippets | None:
     """Return the snippet array name of a channel, or None without one.
 
-    Raises ValueError unless the array is a rank-2 floating-point array
-    with rows rows that carries tsz.period_us.
+    Raises:
+        ValueError: The array is not a rank-2 floating-point array with rows
+            rows that carries tsz.period_us.
     """
     array = _checked(arrays.get(name), where, name, _FLOATING_ROWS, rows)
     if array is None:
@@ -858,11 +937,12 @@ def _parse_count_levels(
 ) -> Mapping[int, CountLevel]:
     """Return the count levels of a channel keyed by number in level order.
 
-    Raises ValueError if a count level is an array, the level numbers have a
-    gap, or a level lacks period_us or count. It also raises ValueError if
-    offset_us is not a multiple of period_us, if count is not a rank-2
-    integer array, or if the levels disagree on the number of labels. So does
-    a period_us that is not DECIMATION_FACTOR times the one before it.
+    Raises:
+        ValueError: A count level is an array, the level numbers have a gap,
+            or a level lacks period_us or count. Also raised when offset_us
+            is not a multiple of period_us, count is not a rank-2 integer
+            array, the levels disagree on the number of labels, or a
+            period_us is not DECIMATION_FACTOR times the one before it.
     """
     check_level_arrays(where, "count level", COUNT_KEY, arrays)
     numbers = check_level_numbers(where, "count levels", groups)
@@ -891,9 +971,11 @@ def _parse_count_levels(
 
 
 def _check_period(where: str, period_us: float, previous: CountLevel) -> None:
-    """Raise ValueError unless period_us follows the count level previous.
+    """Check that period_us follows the count level previous.
 
-    period_us must be DECIMATION_FACTOR times the period_us of previous.
+    Raises:
+        ValueError: period_us is not DECIMATION_FACTOR times the period_us of
+            previous.
     """
     expected = DECIMATION_FACTOR * previous.period_us
     if not math.isclose(period_us, expected, rel_tol=LEVEL_PERIOD_TOLERANCE):
@@ -910,10 +992,13 @@ def _check_label_columns(
     first_level: CountLevel | None,
     label_names: tuple[str, ...] | None,
 ) -> None:
-    """Raise ValueError unless count has one column per label.
+    """Check that count has one column per label.
 
     The number of labels is the length of label_names, or without
     label_names the number of columns of count level 1.
+
+    Raises:
+        ValueError: The number of columns differs from the number of labels.
     """
     columns = count.shape[1]
     if label_names is not None and columns != len(label_names):
@@ -936,16 +1021,23 @@ def parse_event_channel(
 ) -> EventChannel:
     """Return the event channel that channel group key describes.
 
-    attributes are the attributes of the channel group. groups and arrays
-    hold its descendants keyed by the path below the group, such as 1 and
-    1/count. The parser ignores unknown nodes and unknown tsz keys.
+    The parser ignores unknown nodes and unknown tsz keys.
 
-    Raises ValueError naming the channel, and the array or count level at
-    fault. A missing required key or array raises, as does an array of the
-    wrong rank, dtype kind, or number of rows. Count levels raise when their
-    numbers have a gap or they disagree on the number of labels. So does a
-    count level stored as an array, or one whose period_us is not
-    DECIMATION_FACTOR times the one before it.
+    Args:
+        key: The channel key.
+        attributes: The attributes of the channel group.
+        groups: The descendant groups by path below the channel group, such
+            as 1.
+        arrays: The descendant arrays by path below the channel group, such
+            as 1/count.
+
+    Raises:
+        ValueError: A required key or array is missing, or an array has the
+            wrong rank, dtype kind, or number of rows. Also raised when count
+            level numbers have a gap, count levels disagree on the number of
+            labels, a count level is stored as an array, or a period_us is
+            not DECIMATION_FACTOR times the one before it. The message names
+            the channel, and the array or count level at fault.
     """
     where = f"channel {key}"
     fields = parse_event_attrs(attributes, where)

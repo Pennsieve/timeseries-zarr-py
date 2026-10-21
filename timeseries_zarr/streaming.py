@@ -15,13 +15,12 @@ from timeseries_zarr.types import LevelMembers
 class BlockReadableArray(Protocol):
     """Minimal structural view of an on-disk array iterated along axis 0.
 
-    Any object with a shape and axis-0 slicing satisfies this: a zarr Array, a
-    numpy array.
+    A zarr Array and a numpy array satisfy this protocol.
     """
 
     @property
     def shape(self) -> tuple[int, ...]:
-        """Array shape; axis 0 is the iterated sample/bin axis."""
+        """Shape of the array. Axis 0 is the sample or bin axis."""
         ...
 
     def __getitem__(self, item: slice) -> npt.NDArray[Any]:
@@ -40,6 +39,14 @@ def _rebuffer_and_fold[TIn: np.generic, TOut: np.generic](
     dtype. The concatenation of the yielded arrays equals fold_fn applied to
     the whole concatenated input, computed in bounded memory: at most group-1
     rows are carried across a block boundary.
+
+    Args:
+        blocks: The blocks to fold, in order.
+        fold_fn: The fold applied to each run of whole groups.
+        group: The number of rows that fold into one.
+
+    Yields:
+        The fold of each run of whole groups, then the fold of the tail.
     """
     carry: npt.NDArray[TIn] | None = None
     for block in blocks:
@@ -63,11 +70,17 @@ def iter_raw_blocks(
     source: ContinuousChannelSource,
     block_samples: int,
 ) -> Iterator[npt.NDArray[np.float32]]:
-    """Yield successive read_samples windows covering the source's raw samples.
+    """Yield successive read_samples windows covering the raw samples.
 
     Walks [0, source.num_samples()) in block_samples-sized windows; the final
     window may be shorter. Yields nothing when the source has no samples.
-    Raises ValueError if block_samples is not positive.
+
+    Args:
+        source: The source to read.
+        block_samples: The number of samples in each window.
+
+    Raises:
+        ValueError: If block_samples is not positive.
     """
     if block_samples <= 0:
         raise ValueError("block_samples must be positive")
@@ -83,8 +96,14 @@ def iter_array_blocks(
 
     Walks [0, array.shape[0]) in block_len-sized windows; the final window may
     be shorter (keep-tail). Works for rank-1 raw and rank-2 (min, max) arrays
-    alike. Yields nothing when the array is empty. Raises ValueError if
-    block_len is not positive.
+    alike. Yields nothing when the array is empty.
+
+    Args:
+        array: The array to read.
+        block_len: The number of rows in each window.
+
+    Raises:
+        ValueError: If block_len is not positive.
     """
     if block_len <= 0:
         raise ValueError("block_len must be positive")
@@ -106,7 +125,11 @@ class Regrouper[T: np.generic]:
     def __init__(self, rows: int) -> None:
         """Create a regrouper that returns blocks of the given number of rows.
 
-        Raises ValueError if rows is not positive.
+        Args:
+            rows: The number of rows in each block.
+
+        Raises:
+            ValueError: If rows is not positive.
         """
         if rows <= 0:
             raise ValueError("rows must be positive")
@@ -120,6 +143,10 @@ class Regrouper[T: np.generic]:
         A block with no rows adds nothing. A block cut from the pushed rows
         alone is a view of the pushed array. Rows that wait for a later push
         are copied.
+
+        Args:
+            block: The rows to add. Trailing dimensions must match earlier
+                pushes.
         """
         rows = self._rows
         count = block.shape[0]
@@ -167,7 +194,17 @@ def regroup[T: np.generic](
     yielded block has rows rows except the last, which holds the remainder and
     is never empty. A block with no rows is skipped, and an empty stream
     yields nothing. Fewer than rows rows carry from one input block to the
-    next. Raises ValueError if rows is not positive.
+    next.
+
+    Args:
+        blocks: The blocks to re-cut.
+        rows: The number of rows in each yielded block.
+
+    Yields:
+        Blocks of rows rows, then a final shorter block when rows remain.
+
+    Raises:
+        ValueError: If rows is not positive.
     """
     regrouper: Regrouper[T] = Regrouper(rows)
     for block in blocks:
@@ -186,6 +223,10 @@ def tap[T: np.generic](
     sink runs once per block, in order, when the consumer asks for the block
     and before the block is yielded. An exception from sink reaches the
     consumer. An empty stream never calls sink.
+
+    Args:
+        blocks: The blocks to pass through.
+        sink: The function that receives each block.
     """
     for block in blocks:
         sink(block)
@@ -198,6 +239,10 @@ def scale_block(
     """Return block multiplied by factor, in float32.
 
     A factor of 1.0 returns block itself. NaN and infinity stay non-finite.
+
+    Args:
+        block: The samples to scale.
+        factor: The multiplier.
     """
     if factor == 1.0:
         return block
@@ -211,6 +256,10 @@ def scale(
 
     A factor of 1.0 yields the input blocks themselves. NaN and infinity stay
     non-finite.
+
+    Args:
+        blocks: The blocks to scale.
+        factor: The multiplier.
     """
     for block in blocks:
         yield scale_block(block, factor)
@@ -223,9 +272,15 @@ def iter_member_blocks(
 
     Walks the level in block_len-row windows, the last possibly shorter, and
     assembles each window from minmax, mean, count, and var when present with
-    assemble_statistics. A level with no rows yields nothing. Raises
-    ValueError if block_len is not positive or if the members do not all have
-    the same number of rows.
+    assemble_statistics. A level with no rows yields nothing.
+
+    Args:
+        members: The member arrays of the level.
+        block_len: The number of rows in each window.
+
+    Raises:
+        ValueError: If block_len is not positive or if the members do not all
+            have the same number of rows.
     """
     if block_len <= 0:
         raise ValueError("block_len must be positive")

@@ -34,10 +34,13 @@ def open_group(path: Path, attrs: dict[str, object] | None = None) -> Group:
     """Create or open the Zarr v3 group rooted at a local filesystem path.
 
     Creates the directory and group metadata when path is empty or absent, and
-    opens the existing group in place otherwise. attrs becomes the group's
-    attributes verbatim when the group is created and is ignored when the
-    group already exists, so reopening a bundle never rewrites its root
-    attributes.
+    opens the existing group in place otherwise.
+
+    Args:
+        path: The local directory of the group.
+        attrs: The attributes of the group, stored verbatim when the group is
+            created. Ignored when the group already exists, so reopening a
+            bundle never rewrites its root attributes.
     """
     return zarr.open_group(
         store=LocalStore(path),
@@ -52,8 +55,13 @@ def create_group_with_attrs(
 ) -> Group:
     """Create a named child group under parent carrying the given attributes.
 
-    The child sits directly beneath parent and shares its store. attrs lands
-    in the child's zarr.json verbatim and unprefixed.
+    The child sits directly beneath parent and shares its store.
+
+    Args:
+        parent: The group to create the child in.
+        name: The name of the child group.
+        attrs: The attributes of the child, stored verbatim and unprefixed in
+            its zarr.json.
     """
     return parent.create_group(name, attributes=attrs)
 
@@ -73,21 +81,32 @@ def create_array(
 ) -> Array[Any]:
     """Create a v3 sharded array under group with attributes.
 
-    The outer shard is shard_shape, split into inner chunks of chunk_shape by
-    the ZEP2 sharding codec; chunk_shape must divide shard_shape along each
-    axis. The inner chunks are Zstd-compressed at zstd_level, or stored as
-    plain bytes when compress is false, which leaves each shard object as the
-    chunk bytes followed by the shard index. attrs lands in the array's
-    zarr.json verbatim. dimension_names names each axis, with None for an
-    axis that has no name, and is omitted when None. Every shard written to
-    the array reaches disk, including a shard whose values all equal the fill
-    value, so a reader never meets a missing shard key.
+    The ZEP2 sharding codec splits each outer shard into inner chunks. Every
+    shard written to the array reaches disk, including a shard whose values
+    all equal the fill value, so a reader never meets a missing shard key.
 
     A float array declares NaN as its fill value and any other dtype 0. The
     fill is what Zarr serves for a chunk nobody wrote, and the format defines
     NaN as no data. Zarr's own default for a float array is 0.0, which would
-    read an unwritten chunk as a flat zero signal. Raises ValueError if
-    dimension_names does not have one entry per axis.
+    read an unwritten chunk as a flat zero signal.
+
+    Args:
+        group: The group to create the array in.
+        name: The name of the array.
+        shape: The shape of the array.
+        dtype: The element type of the array.
+        chunk_shape: The shape of an inner chunk. It must divide shard_shape
+            along each axis.
+        shard_shape: The shape of an outer shard.
+        attrs: The attributes of the array, stored verbatim in its zarr.json.
+        zstd_level: The Zstd level of the inner chunks.
+        dimension_names: One name for each axis, with None for an axis that
+            has no name. Omitted when None.
+        compress: Whether to compress the inner chunks. When false, each shard
+            object is the chunk bytes followed by the shard index.
+
+    Raises:
+        ValueError: If dimension_names does not have one entry per axis.
     """
     is_float = np.issubdtype(np.dtype(dtype), np.floating)
     return group.create_array(
@@ -109,9 +128,13 @@ def write_region(
 ) -> None:
     """Write a contiguous block of rows into array at axis-0 offset start.
 
-    The block's trailing dimensions must match the array's: rank-1 raw
-    samples, or rank-2 (rows, 2) min/max envelopes. The region must lie within
-    the array's bounds.
+    The block's trailing dimensions must match the array's. The region must lie
+    within the array's bounds.
+
+    Args:
+        array: The array to write to.
+        start: The axis-0 offset of the first row.
+        block: The rows to write.
     """
     array[start : start + block.shape[0]] = block
 
@@ -121,6 +144,9 @@ def consolidate(root: Group) -> None:
 
     Gathers the metadata of every descendant group and array into the root's
     own zarr.json, not a v2 .zmetadata sidecar.
+
+    Args:
+        root: The root group of the bundle.
     """
     zarr.consolidate_metadata(root.store)
 
@@ -137,13 +163,20 @@ def open_root(
     against the working directory at the open. storage_options goes to
     fsspec with a remote URL. The open reads only the root zarr.json.
 
-    Raises ValueError when the root zarr.json carries no consolidated
-    metadata. Also raises ValueError when a file URL names a host other than
-    localhost or holds a query or fragment. Raises FileNotFoundError when
-    location has no root zarr.json and ValueError when its root is an array.
-    Raises TypeError when storage_options comes with a memory URL or a
-    location that is not a remote URL. Raises ImportError, with name set to
-    fsspec, when a remote URL needs fsspec and fsspec is not installed.
+    Args:
+        location: A local path, a file URL, an fsspec URL, a zarr Store, or a
+            StorePath.
+        storage_options: Options for fsspec, valid only with a remote URL.
+
+    Raises:
+        ValueError: If the root zarr.json carries no consolidated metadata,
+            if a file URL names a host other than localhost or holds a query
+            or fragment, or if the root is an array.
+        FileNotFoundError: If location has no root zarr.json.
+        TypeError: If storage_options comes with a memory URL or a location
+            that is not a remote URL.
+        ImportError: If a remote URL needs fsspec and fsspec is not installed.
+            The name attribute is fsspec.
     """
     try:
         root = zarr.open_group(
@@ -196,6 +229,10 @@ def _local_location(location: BundleLocation) -> BundleLocation:
     it holds :// or an fsspec :: chain, and a local path otherwise. A URL, a
     Store, and a StorePath return unchanged. A relative path resolves
     against the working directory of the call.
+
+    Raises:
+        ValueError: If a file URL names a host other than localhost or holds
+            a query or fragment.
     """
     if isinstance(location, Path):
         return location.absolute()
@@ -228,6 +265,9 @@ def descendants(
 
     Each dict maps the path relative to group, such as 0/1/minmax, to its
     node. Under consolidated metadata the walk makes no store reads.
+
+    Returns:
+        A dict of groups and a dict of arrays.
     """
     groups: dict[str, Group] = {}
     arrays: dict[str, Array[Any]] = {}
@@ -243,7 +283,14 @@ def read_rows(array: Array[Any], start: int, stop: int) -> npt.NDArray[Any]:
     """Return rows start through stop - 1 of array.
 
     A stop past the last row returns the rows that exist, which may be none.
-    Raises ValueError when start is negative or stop is less than start.
+
+    Args:
+        array: The array to read.
+        start: The first row.
+        stop: The row after the last one to read.
+
+    Raises:
+        ValueError: If start is negative or stop is less than start.
     """
     if start < 0 or stop < start:
         raise ValueError(
@@ -255,8 +302,13 @@ def read_rows(array: Array[Any], start: int, stop: int) -> npt.NDArray[Any]:
 def read_int(array: Array[Any], index: int) -> int:
     """Return the element at index of a rank-1 integer array.
 
-    Raises ValueError when index is negative and IndexError when it is past
-    the last element.
+    Args:
+        array: The array to read.
+        index: The element to read.
+
+    Raises:
+        ValueError: If index is negative.
+        IndexError: If index is past the last element.
     """
     if index < 0:
         raise ValueError(f"index must be at least 0, got {index}")
@@ -266,8 +318,15 @@ def read_int(array: Array[Any], index: int) -> int:
 def read_store_text(group: Group, name: str) -> str | None:
     """Return the text stored at name beside the zarr.json of group.
 
-    Returns None when the object is absent. Raises UnicodeDecodeError when
-    its bytes are not UTF-8.
+    Args:
+        group: The group whose zarr.json sits beside the object.
+        name: The name of the object.
+
+    Returns:
+        The decoded text, or None when the object is absent.
+
+    Raises:
+        UnicodeDecodeError: If the bytes of the object are not UTF-8.
     """
     # FsspecStore has no get_sync, and every store has the async get.
     key = group.store_path / name

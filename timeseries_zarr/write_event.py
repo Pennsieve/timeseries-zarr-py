@@ -74,10 +74,16 @@ def _write_source_blocks[T: np.generic](
     """Stream a source's rows into array in block_len-sized axis-0 blocks.
 
     Each [begin, begin + block_len) window is read through reader and written
-    at the running axis-0 offset. on_block, when given, inspects a block before
-    its write. Callers pass the shard length: a write narrower than a shard
-    makes the sharding codec read that shard back, re-encode every inner chunk,
-    and rewrite it.
+    at the running axis-0 offset. Callers pass the shard length: a write
+    narrower than a shard makes the sharding codec read that shard back,
+    re-encode every inner chunk, and rewrite it.
+
+    Args:
+        array: Array to write into.
+        n: Total rows to stream.
+        block_len: Rows per block.
+        reader: Returns the rows from begin up to end.
+        on_block: Called with each block before its write.
     """
     start = 0
     for begin in range(0, n, block_len):
@@ -98,11 +104,23 @@ def write_events_array(
     """Create the events array under group and stream the event times into it.
 
     A rank-1 int64 array named "events" with the dimension name "event" and no
-    attributes. Each time is the source time minus reference_us, the
-    reference time, both in microseconds since the Unix epoch. The stored
-    times count from the reference time, and an event before it is negative.
-    Equal times are allowed. Raises ValueError if the times decrease, within a
-    block or across a block boundary.
+    attributes. The stored times count from the reference time, and an event
+    before it is negative. Equal times are allowed.
+
+    Args:
+        group: Channel group to create the array in.
+        source: Source of the event times.
+        reference_us: Reference time in microseconds since the Unix epoch.
+            The source times are in the same unit.
+        sizing: Chunk and shard shapes of the array.
+        zstd_level: Zstandard compression level.
+
+    Returns:
+        The created array.
+
+    Raises:
+        ValueError: If the times decrease, within a block or across a block
+            boundary.
     """
     array = create_array(
         group,
@@ -145,10 +163,21 @@ def write_durations_array(
     """Create the durations array under group and stream the durations into it.
 
     A rank-1 int64 array named "durations" of microseconds, with the dimension
-    name "event" and no attributes. A duration of 0 is a point event. Raises
-    ValueError if the source reports no max_duration_us, a duration is
-    negative, or a duration exceeds max_duration_us, which the channel declares
-    as a bound on every duration.
+    name "event" and no attributes. A duration of 0 is a point event.
+
+    Args:
+        group: Channel group to create the array in.
+        source: Source of the durations.
+        sizing: Chunk and shard shapes of the array.
+        zstd_level: Zstandard compression level.
+
+    Returns:
+        The created array.
+
+    Raises:
+        ValueError: If the source reports no max_duration_us, a duration is
+            negative, or a duration exceeds max_duration_us, which the channel
+            declares as a bound on every duration.
     """
     bound = source.max_duration_us()
     if bound is None:
@@ -193,9 +222,20 @@ def write_labels_array(
 
     A rank-1 uint16 array named "labels", with the dimension name "event" and
     no attributes. Each label indexes the channel's label categories, so it
-    must be below source.num_labels(). Raises ValueError if num_labels() is
-    above MAX_LABELS, which a uint16 cannot index, or if a label is at or above
-    num_labels().
+    must be below source.num_labels().
+
+    Args:
+        group: Channel group to create the array in.
+        source: Source of the labels.
+        sizing: Chunk and shard shapes of the array.
+        zstd_level: Zstandard compression level.
+
+    Returns:
+        The created array.
+
+    Raises:
+        ValueError: If num_labels() is above MAX_LABELS, which a uint16 cannot
+            index, or if a label is at or above num_labels().
     """
     categories = source.num_labels()
     if categories > MAX_LABELS:
@@ -244,10 +284,21 @@ def write_text_array(
     UTF-8 bytes of event i's text followed by zero bytes. The array is stored
     without a compression codec, so a shard object is the rows as plain text
     followed by the shard index, which a text tool can read and redact.
-    sizing is the sizing of the (num_events, W) shape, with the width axis
-    whole. Raises ValueError if text_width() is below 1, a text is longer than
-    the width or holds a NUL character, or the source returns a different
-    number of texts than requested.
+
+    Args:
+        group: Channel group to create the array in.
+        source: Source of the texts.
+        sizing: Chunk and shard shapes of the (num_events, W) shape, with the
+            width axis whole.
+        zstd_level: Zstandard compression level.
+
+    Returns:
+        The created array.
+
+    Raises:
+        ValueError: If text_width() is below 1, a text is longer than the
+            width or holds a NUL character, or the source returns a different
+            number of texts than requested.
     """
     width = source.text_width()
     if width < 1:
@@ -293,11 +344,24 @@ def write_channels_array(
     width of a bitmask for keys up to max_key, and the dimension names "event"
     and None. Row i has the bit of each channel key that event i applies to,
     and a row of zeros means the whole recording. The source names channels by
-    id and channel_keys maps each id to the channel key it has in the bundle.
-    sizing is the sizing of the (num_events, M) shape, with the width axis
-    whole. Raises ValueError if max_key is negative, an id is not in
-    channel_keys, a key is outside 0 to max_key, or the source returns a
-    different number of id lists than requested.
+    id.
+
+    Args:
+        group: Channel group to create the array in.
+        source: Source of the channel ids of each event.
+        channel_keys: Channel key in the bundle, by channel id.
+        max_key: Largest channel key in the bundle.
+        sizing: Chunk and shard shapes of the (num_events, M) shape, with the
+            width axis whole.
+        zstd_level: Zstandard compression level.
+
+    Returns:
+        The created array.
+
+    Raises:
+        ValueError: If max_key is negative, an id is not in channel_keys, a
+            key is outside 0 to max_key, or the source returns a different
+            number of id lists than requested.
     """
     width = channels_width(max_key)
     array = create_array(
@@ -346,9 +410,19 @@ def write_waveform_mean_array(
     and no event_sample. A label that has no events keeps whatever the source
     gives, NaN by the format's convention. The array has one row per label, so
     it is sized with the default chunk and shard targets and written whole.
-    Raises ValueError if the means are not shaped (labels, samples), have no
-    samples, or have a row count other than source.num_labels(), or if the
-    period is not positive.
+
+    Args:
+        group: Channel group to create the array in.
+        source: Source of the means and the sample period.
+        zstd_level: Zstandard compression level.
+
+    Returns:
+        The created array.
+
+    Raises:
+        ValueError: If the means are not shaped (labels, samples), have no
+            samples, or have a row count other than source.num_labels(), or if
+            the period is not positive.
     """
     means = np.asarray(source.waveform_mean(), dtype=np.float32)
     if len(means.shape) != WAVEFORM_MEAN_RANK:
@@ -388,6 +462,12 @@ def _row_sizing(
     The inner chunk spans at most opts.inner_len rows, and fewer when the row
     is wide, so that one chunk stays within opts.target_shard_bytes and a
     block of rows never outgrows a shard. The column axis is never chunked.
+
+    Args:
+        rows: Length of axis 0.
+        columns: Length of axis 1.
+        itemsize: Bytes per element.
+        opts: Chunk and shard targets.
     """
     fitting = max(1, opts.target_shard_bytes // (columns * itemsize))
     return chunk_and_shard(
@@ -404,7 +484,18 @@ def _event_blocks(
     block_len: int,
     with_labels: bool,
 ) -> Iterator[EventBlock]:
-    """Yield the source's event times from the reference time, with labels."""
+    """Yield the source's event times from the reference time, with labels.
+
+    Args:
+        source: Source of the events.
+        reference_us: Reference time in microseconds since the Unix epoch.
+        block_len: Events per block.
+        with_labels: Whether each block carries labels. Otherwise they are
+            None.
+
+    Yields:
+        A block of times and its labels, or None for the labels.
+    """
     total = source.num_events()
     for start in range(0, total, block_len):
         stop = min(start + block_len, total)
@@ -416,7 +507,12 @@ def _event_blocks(
 def _write_count_blocks(
     array: ZarrArray, blocks: Iterable[npt.NDArray[np.uint32]]
 ) -> None:
-    """Write each block of counts to array at its running row offset."""
+    """Write each block of counts to array at its running row offset.
+
+    Args:
+        array: Array to write into.
+        blocks: Blocks of rows, in order.
+    """
     start = 0
     for block in blocks:
         write_region(array, start, block)
@@ -439,9 +535,17 @@ def write_count_levels(
     shard at a time, after the rows that precede its bin 0 are padded with
     zeros so the two grids align. Channels with too few events, or whose
     level 1 would hold fewer than opts.min_bins bins, get no levels and
-    nothing is created. Every write covers a whole shard. Raises ValueError
-    if the event times decrease or if a label is outside the label
-    categories.
+    nothing is created. Every write covers a whole shard.
+
+    Args:
+        group: Channel group to create the levels in.
+        source: Source of the event times and labels.
+        reference_us: Reference time in microseconds since the Unix epoch.
+        opts: Level limits, chunk and shard targets, and compression level.
+
+    Raises:
+        ValueError: If the event times decrease or if a label is outside the
+            label categories.
     """
     total = source.num_events()
     if total == 0:
@@ -525,14 +629,23 @@ def write_event_channel(
     the source's provenance, and, when the source provides the column,
     label_names and the duration bound max_duration_us. The events array
     comes first, then each optional column the source names in columns(),
-    then the count levels of a dense channel. Times are stored from
-    reference_us, the reference time. channel_keys maps channel ids to
-    keys and max_key is
-    the largest key in the bundle, which sizes the channels bitmask. Every
-    array is sized and compressed per opts. Raises ValueError if the source
-    offers waveform_mean without labels or its provenance is not a JSON object
-    of finite values, and whatever the column writers raise for data that
-    breaks the format.
+    then the count levels of a dense channel.
+
+    Args:
+        parent: Group to create the channel group in.
+        key: Channel key, the name of the channel group.
+        source: Source of the event channel.
+        reference_us: Reference time in microseconds since the Unix epoch.
+            Times are stored from it.
+        channel_keys: Channel key in the bundle, by channel id.
+        max_key: Largest channel key in the bundle, which sizes the channels
+            bitmask.
+        opts: Chunk and shard targets and compression level of every array.
+
+    Raises:
+        ValueError: If the source offers waveform_mean without labels or its
+            provenance is not a JSON object of finite values, and whatever
+            the column writers raise for data that breaks the format.
     """
     columns = source.columns()
     if "waveform_mean" in columns and "labels" not in columns:
