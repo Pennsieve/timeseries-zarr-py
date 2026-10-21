@@ -445,15 +445,15 @@ class _RawSink:
         Raises ValueError if the channel received fewer samples than it
         declares.
         """
-        tail = self.regrouper.flush()
-        if tail is not None:
-            self._write(tail)
         if self.received != self.num_samples:
             raise ValueError(
                 f"{self._label()} yields {self.received} samples and "
                 f"declares {self.num_samples}; its blocks must total "
                 f"{self.num_samples}"
             )
+        tail = self.regrouper.flush()
+        if tail is not None:
+            self._write(tail)
 
 
 def write_continuous_channels(
@@ -466,8 +466,7 @@ def write_continuous_channels(
 ) -> None:
     """Write the channels of source as the subgroups named from str(first_key).
 
-    The channels take consecutive keys in channel order, and each channel
-    group is created as write_continuous_channel creates it. One pass over the
+    Each channel group is created as write_continuous_channel creates it. One pass over the
     windows of source fills the raw array of every channel, a shard at a time.
     The levels of each channel are then folded from its stored raw samples.
     Memory holds one shard of raw per channel and the current window. A source
@@ -513,7 +512,7 @@ def write_continuous_channels(
                 f"has {len(sinks)} channels; a window must hold one block "
                 "for each channel"
             )
-        for sink, block in zip(sinks, window, strict=True):
+        for sink, block in zip(sinks, window, strict=False):
             sink.push(block)
     for sink in sinks:
         sink.finish()

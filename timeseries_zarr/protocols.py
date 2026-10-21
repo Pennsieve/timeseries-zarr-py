@@ -77,15 +77,13 @@ class MultiChannelSource(Protocol):
     """Continuous channels the writer reads together, one window at a time.
 
     A source over a format that stores every channel in one stream implements
-    this protocol. The source decodes the stream once per write.
+    this protocol.
 
-    channels returns the channels in channel order, the same on every call. A
-    source must return a stored list. The writer calls channels more than once
-    per write.
-
-    iter_windows yields one window at a time, and the writer calls it once per
-    write. A window is a sequence with one rank-1 float32 block per channel, in
-    channel order. The blocks of one window may differ in length, and a block
+    channels returns the channels in channel order. iter_windows yields one
+    window at a time, and the writer calls it once per write. A window is a
+    sequence with one rank-1 block per channel, in channel order. The writer
+    casts each block to float32, so a strided column view or an int16 block
+    works. The blocks of one window may differ in length, and a block
     may be empty. A channel whose samples end before the others gives an empty
     block in each later window. For each channel, the blocks concatenate to
     its samples, and their lengths total num_samples. The columns of a (rows,

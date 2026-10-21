@@ -81,8 +81,7 @@ datetimes.
 
 ## Orchestration
 
-`bundle.py` runs the whole job. It assigns each channel a key and gives a multi-channel
-source consecutive keys, one for each channel, in channel order. It finds the reference
+`bundle.py` runs the whole job. It assigns each channel a key. It finds the reference
 time, the earlier of the session start and the first sample, and maps channel ids to
 keys. Event channels use that map to name the channels they apply to. It checks each
 channel's unit and provenance before it clears `output_path`. It then writes each
