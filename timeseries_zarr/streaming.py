@@ -95,16 +95,19 @@ def iter_array_blocks(
 
 
 class Regrouper[T: np.generic]:
-    """Re-cut pushed blocks into blocks of exactly rows rows.
+    """Cut blocks of any length into blocks with a fixed number of rows.
 
-    Blocks of any size and rank join along axis 0, so the concatenation of
-    everything returned equals the concatenation of everything pushed. Rows
-    that wait for a later push sit in a buffer of rows rows. Raises ValueError
-    if rows is not positive.
+    Blocks join along axis 0 whatever their rank, and rows keep their order. A
+    push returns the complete blocks that the new rows finish. Fewer rows than
+    one block wait for a later push, and flush returns them at the end of the
+    stream.
     """
 
     def __init__(self, rows: int) -> None:
-        """Create a regrouper for blocks of rows rows."""
+        """Create a regrouper that returns blocks of the given number of rows.
+
+        Raises ValueError if rows is not positive.
+        """
         if rows <= 0:
             raise ValueError("rows must be positive")
         self._rows = rows

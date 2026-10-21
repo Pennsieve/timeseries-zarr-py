@@ -2,8 +2,12 @@
 
 import json
 import shutil
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
+import numpy.typing as npt
 
 from timeseries_zarr.attrs import check_provenance, root_attrs
 from timeseries_zarr.constants import TSZ_KEY, ZARR_METADATA_FILE
@@ -38,26 +42,40 @@ type AnyChannel = ContinuousChannelMetadata | EventChannelSource
 """One channel of a bundle, whichever source it comes from."""
 
 
+@dataclass(frozen=True)
+class _ListedSource:
+    """A multi-channel source with its channels listed once."""
+
+    source: MultiChannelSource
+    listed: Sequence[ContinuousChannelMetadata]
+
+    def channels(self) -> Sequence[ContinuousChannelMetadata]:
+        """Return the channels listed when the source was wrapped."""
+        return self.listed
+
+    def iter_windows(self) -> Iterator[Sequence[npt.NDArray[np.float32]]]:
+        """Yield the windows of the wrapped source."""
+        return self.source.iter_windows()
+
+
 def assign_indices(
     continuous: Sequence[ContinuousChannelSource | MultiChannelSource],
     events: Sequence[EventChannelSource],
 ) -> list[tuple[int, AnySource]]:
     """Assign each source its first channel key, continuous first then event.
 
-    Keys are contiguous from 0 and become the bundle's digit-named
-    channel-group directories. A multi-channel source is one entry at its first
-    key, and the next source takes the key after its last channel. Sources keep
-    their input order within each kind.
+    A multi-channel source comes back with its channels listed once.
     """
     indexed: list[tuple[int, AnySource]] = []
     key = 0
     for source in continuous:
-        indexed.append((key, source))
-        key += (
-            len(source.channels())
-            if isinstance(source, MultiChannelSource)
-            else 1
-        )
+        if isinstance(source, MultiChannelSource):
+            listed = _ListedSource(source, list(source.channels()))
+            indexed.append((key, listed))
+            key += len(listed.listed)
+        else:
+            indexed.append((key, source))
+            key += 1
     for event_source in events:
         indexed.append((key, event_source))
         key += 1
@@ -202,11 +220,9 @@ def write_all_channels(
 ) -> None:
     """Write every indexed source under root, dispatching by source type.
 
-    A single channel becomes the channel group named for its index. A
-    multi-channel source becomes one channel group for each of its channels, at
-    consecutive keys from its index. Every group is governed by opts and placed
-    relative to reference_us. channel_keys maps channel ids to keys, which the
-    event channels use to resolve the channels they apply to.
+    Every group is governed by opts and placed relative to reference_us.
+    channel_keys maps channel ids to keys, which the event channels use to
+    resolve the channels they apply to.
     """
     largest_key = max_key(indexed)
     for index, source in indexed:

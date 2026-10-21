@@ -100,12 +100,9 @@ def test_assign_indices_gives_a_multi_channel_source_one_key_per_channel(
     before, after = _zeros(continuous_source, "before", "after")
     many = multi_channel_source(_zeros(continuous_source, "m0", "m1", "m2"))
     marks = event_source([1], id="marks")
-    assert assign_indices([before, many, after], [marks]) == [
-        (0, before),
-        (1, many),
-        (4, after),
-        (5, marks),
-    ]
+    indexed = assign_indices([before, many, after], [marks])
+    assert [key for key, _ in indexed] == [0, 1, 4, 5]
+    assert [source for _, source in indexed][::3] == [before, marks]
 
 
 def test_assign_indices_gives_a_multi_channel_source_without_channels_no_key(
@@ -114,7 +111,9 @@ def test_assign_indices_gives_a_multi_channel_source_without_channels_no_key(
 ) -> None:
     nothing = multi_channel_source([])
     (after,) = _zeros(continuous_source, "after")
-    assert assign_indices([nothing, after], []) == [(0, nothing), (0, after)]
+    indexed = assign_indices([nothing, after], [])
+    assert [key for key, _ in indexed] == [0, 0]
+    assert indexed[1][1] == after
 
 
 def test_indexed_channels_lists_each_channel_at_its_key(

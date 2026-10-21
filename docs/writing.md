@@ -29,23 +29,22 @@ The writer keeps every other unit as given.
 
 A `ContinuousChannelSource` serves one channel, and `write_bundle` finishes a channel
 before it starts the next. A format that stores every channel in one stream, such as EDF,
-decodes the same bytes for every channel's window. Reading it through one
-`ContinuousChannelSource` per channel decodes the whole stream once per channel. A source
+Reading one channel's window decodes the bytes of every channel. Reading it
+through one `ContinuousChannelSource` per channel decodes the whole stream once per channel. A source
 that implements `MultiChannelSource` lets the writer decode the stream once and fill every
 channel as it goes. Use `ContinuousChannelSource` for a format that stores each channel in
 its own file.
 
 A `MultiChannelSource` has two methods.
 
-`channels()` returns the channels in channel order, the same on every call. Return a
-stored list. The writer calls `channels()` more than once per write. Each channel
-implements `ContinuousChannelMetadata`, which holds `id`, `name`, `unit`, `rate_hz()`,
+`channels()` returns the channels in channel order. Each channel implements `ContinuousChannelMetadata`, which holds `id`, `name`, `unit`, `rate_hz()`,
 `start_us()`, and `num_samples()`. A channel needs no `read_samples`. It may define
 `provenance()`.
 
 `iter_windows()` yields one window at a time, and the writer calls it once per write. A
-window is a sequence with one rank-1 float32 block per channel, in channel order. The
-blocks of one window may differ in length, and a block may be empty. A channel whose
+window is a sequence with one rank-1 block per channel, in channel order. The writer casts
+each block to float32, so a strided column view or an int16 block works. The blocks
+of one window may differ in length, and a block may be empty. A channel whose
 samples end before the others gives an empty block in each later window. For each
 channel, the blocks concatenate to its samples, and their lengths total `num_samples()`.
 The columns of a `(rows, channels)` array are the blocks of a window, so
