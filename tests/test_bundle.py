@@ -1957,14 +1957,35 @@ def test_write_bundle_holds_a_source_with_channels_to_the_multi_channel_protocol
         write_bundle([partial], [], output_path=tmp_path / "bundle", opts=_OPTS)
 
 
+def test_write_bundle_accepts_a_continuous_source_with_an_unrelated_channels_attribute(
+    tmp_path, continuous_source
+):
+    source = continuous_source(np.zeros(8, np.float32))
+    source.channels = ("a", "b")
+    write_bundle([source], [], output_path=tmp_path / "bundle", opts=_OPTS)
+    assert (tmp_path / "bundle" / "0").is_dir()
+
+
+def test_write_bundle_names_a_member_set_to_none_as_missing(
+    tmp_path, continuous_source
+):
+    source = continuous_source(np.zeros(8, np.float32))
+    source.rate_hz = None
+    with pytest.raises(
+        ValueError,
+        match=r"continuous\[0\] .*does not implement "
+        "ContinuousChannelSource; missing rate_hz$",
+    ):
+        write_bundle([source], [], output_path=tmp_path / "bundle", opts=_OPTS)
+
+
 def test_write_bundle_names_the_member_a_listed_channel_lacks(
     tmp_path, continuous_source, multi_channel_source
 ):
     output = tmp_path / "bundle"
     good = continuous_source(np.zeros(8, np.float32), id="c0")
     bad = _without(continuous_source(np.zeros(8, np.float32), id="c1"), "unit")
-    multi = multi_channel_source([good, good])
-    multi._sources[1] = bad
+    multi = multi_channel_source([good, bad])
     with pytest.raises(
         ValueError,
         match=r"continuous\[0\]\.channels\(\)\[1\] \('c1'\) does not "

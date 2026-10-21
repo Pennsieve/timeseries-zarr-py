@@ -14,15 +14,22 @@ def missing_members(source: object, protocol: type) -> list[str]:
     """Return the sorted names of the members of protocol that source lacks.
 
     A name is missing under the same test isinstance applies to a runtime
-    checkable protocol, so a source that fails isinstance has at least one.
+    checkable protocol. A method set to None counts as missing, so a source
+    that fails isinstance has at least one.
     """
     # Python 3.12 has no typing.get_protocol_members.
     members: frozenset[str] = getattr(protocol, "__protocol_attrs__")  # noqa: B009
+    data_members: frozenset[str] = getattr(
+        protocol, "__non_callable_proto_members__", frozenset()
+    )
     missing = []
     for name in members:
         try:
-            inspect.getattr_static(source, name)
+            value = inspect.getattr_static(source, name)
         except AttributeError:
+            missing.append(name)
+            continue
+        if value is None and name not in data_members:
             missing.append(name)
     return sorted(missing)
 
@@ -114,7 +121,7 @@ class MultiChannelSource(Protocol):
         """Return the channels in channel order."""
         ...
 
-    def iter_windows(self) -> Iterator[Sequence[npt.NDArray[np.float32]]]:
+    def iter_windows(self) -> Iterator[Sequence[npt.ArrayLike]]:
         """Yield each window as a sequence of one block per channel."""
         ...
 

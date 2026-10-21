@@ -466,8 +466,9 @@ def write_continuous_channels(
 ) -> None:
     """Write the channels of source as the subgroups named from str(first_key).
 
-    Each channel group is created as write_continuous_channel creates it. One pass over the
-    windows of source fills the raw array of every channel, a shard at a time.
+    Each channel group is created as write_continuous_channel creates it. One
+    pass over the windows of source fills the raw array of every channel, a
+    shard at a time.
     The levels of each channel are then folded from its stored raw samples.
     Memory holds one shard of raw per channel and the current window. A source
     without channels writes nothing, and iter_windows is not called.
@@ -512,7 +513,7 @@ def write_continuous_channels(
                 f"has {len(sinks)} channels; a window must hold one block "
                 "for each channel"
             )
-        for sink, block in zip(sinks, window, strict=False):
+        for sink, block in zip(sinks, window, strict=True):
             sink.push(block)
     for sink in sinks:
         sink.finish()

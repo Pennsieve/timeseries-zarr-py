@@ -28,16 +28,17 @@ The writer keeps every other unit as given.
 ## Multi-channel sources
 
 A `ContinuousChannelSource` serves one channel, and `write_bundle` finishes a channel
-before it starts the next. A format that stores every channel in one stream, such as EDF,
-Reading one channel's window decodes the bytes of every channel. Reading it
-through one `ContinuousChannelSource` per channel decodes the whole stream once per channel. A source
-that implements `MultiChannelSource` lets the writer decode the stream once and fill every
-channel as it goes. Use `ContinuousChannelSource` for a format that stores each channel in
-its own file.
+before it starts the next. Some formats, such as EDF, store every channel in one
+stream, so reading one channel's window decodes the bytes of every channel. Reading
+such a format through one `ContinuousChannelSource` per channel decodes the whole
+stream once per channel. A source that implements `MultiChannelSource` lets the writer
+decode the stream once and fill every channel as it goes. Use `ContinuousChannelSource`
+for a format that stores each channel in its own file.
 
 A `MultiChannelSource` has two methods.
 
-`channels()` returns the channels in channel order. Each channel implements `ContinuousChannelMetadata`, which holds `id`, `name`, `unit`, `rate_hz()`,
+`channels()` returns the channels in channel order. Each channel implements
+`ContinuousChannelMetadata`, which holds `id`, `name`, `unit`, `rate_hz()`,
 `start_us()`, and `num_samples()`. A channel needs no `read_samples`. It may define
 `provenance()`.
 

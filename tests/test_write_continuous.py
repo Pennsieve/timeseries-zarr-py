@@ -1148,6 +1148,18 @@ def test_write_continuous_channels_needs_only_channel_metadata(
     assert np.array_equal(root["1"][RAW_KEY][:], samples[1])
 
 
+def test_write_continuous_channels_reads_the_windows_once(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+) -> None:
+    samples = _series(300)
+    channels = [continuous_source(samples, id="a")]
+    windows = [[samples[:100]], [samples[100:]]]
+    source = _WindowSource(channels, windows)
+    _write_many(tmp_path, source, _OPTS)
+    assert source.calls == 1
+
+
 def test_write_continuous_channels_with_no_channels_writes_nothing_and_reads_no_window(
     tmp_path: Path,
 ) -> None:
