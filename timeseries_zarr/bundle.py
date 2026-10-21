@@ -44,7 +44,12 @@ type AnyChannel = ContinuousChannelMetadata | EventChannelSource
 
 @dataclass(frozen=True)
 class _ListedSource:
-    """A multi-channel source with its channels listed once."""
+    """A multi-channel source with its channels listed once.
+
+    Attributes:
+        source: The wrapped source.
+        listed: The channels of source, read once when it was wrapped.
+    """
 
     source: MultiChannelSource
     listed: Sequence[ContinuousChannelMetadata]
@@ -59,7 +64,16 @@ class _ListedSource:
 
 
 def _require(source: object, protocol: type, label: str) -> None:
-    """Raise ValueError naming the missing members unless source meets protocol."""
+    """Raise ValueError naming the missing members unless source meets protocol.
+
+    Args:
+        source: The object to check.
+        protocol: The runtime-checkable protocol source must implement.
+        label: The name of source in the error message.
+
+    Raises:
+        ValueError: If source does not implement protocol.
+    """
     if isinstance(source, protocol):
         return
     identifier = getattr(source, "id", None)
@@ -75,15 +89,22 @@ def check_sources(
     continuous: Sequence[ContinuousChannelSource | MultiChannelSource],
     events: Sequence[EventChannelSource],
 ) -> None:
-    """Raise ValueError unless every source implements the protocol of its list.
+    """Check that every source implements the protocol of its list.
 
-    An entry of events must implement EventChannelSource. An entry of
-    continuous must implement ContinuousChannelSource or MultiChannelSource.
-    A source that implements neither is named under MultiChannelSource when it
-    has channels or iter_windows, and under ContinuousChannelSource
-    otherwise. Each channel a multi-channel source lists must
-    implement ContinuousChannelMetadata. The error names the position, the id
-    when the source has one, and the missing members.
+    A source that implements neither continuous protocol is named under
+    MultiChannelSource when it has channels or iter_windows, and under
+    ContinuousChannelSource otherwise.
+
+    Args:
+        continuous: Sources that implement ContinuousChannelSource or
+            MultiChannelSource. Each channel a multi-channel source lists must
+            implement ContinuousChannelMetadata.
+        events: Sources that implement EventChannelSource.
+
+    Raises:
+        ValueError: If a source lacks a member of its protocol. The message
+            names the position, the id when the source has one, and the
+            missing members.
     """
     sources: Sequence[object] = continuous
     for position, source in enumerate(sources):
@@ -111,7 +132,13 @@ def assign_indices(
 ) -> list[tuple[int, AnySource]]:
     """Assign each source its first channel key, continuous first then event.
 
-    A multi-channel source comes back with its channels listed once.
+    Args:
+        continuous: The continuous sources, in key order.
+        events: The event sources, in key order.
+
+    Returns:
+        Pairs of first channel key and source. A multi-channel source comes
+        back with its channels listed once and uses one key for each channel.
     """
     indexed: list[tuple[int, AnySource]] = []
     key = 0
@@ -134,9 +161,13 @@ def indexed_channels(
 ) -> list[tuple[int, AnyChannel]]:
     """List every channel of the indexed sources at its own key.
 
-    A multi-channel source gives one pair for each of its channels, at
-    consecutive keys from its entry's key. Any other entry stays as it is, and
-    a list without a multi-channel source comes back equal.
+    Args:
+        indexed: Pairs of first channel key and source.
+
+    Returns:
+        Pairs of channel key and channel. A multi-channel source gives one
+        pair for each of its channels, at consecutive keys from its entry's
+        key. Any other entry stays as it is.
     """
     channels: list[tuple[int, AnyChannel]] = []
     for key, source in indexed:
@@ -154,13 +185,20 @@ def reference_us(
 ) -> int | None:
     """Return the reference time in microseconds since the Unix epoch.
 
-    Every offset and event time counts from it. declared_us, when given, is
-    the reference time as it is, so a rewrite keeps a bundle's reference time.
-    Otherwise it is the earliest of the session start, when given, and the
-    first sample of every continuous source that holds samples, so no sample
-    precedes it. A continuous source without samples has no first sample and
-    does not count. Without either, it is the first event of the event
-    sources that have one, and without any of those it is None.
+    Every offset and event time counts from it.
+
+    Args:
+        sources: The channels of the bundle.
+        session_start_us: The session start, which bounds the reference time
+            from above.
+        declared_us: A reference time to keep as it is, so a rewrite keeps the
+            reference time of a bundle.
+
+    Returns:
+        declared_us when given. Otherwise the earliest of session_start_us and
+        the first sample of every continuous source that holds samples, so no
+        sample precedes it. Without either, the first event of the event
+        sources that have one. None when no source has a sample or an event.
     """
     if declared_us is not None:
         return declared_us
@@ -187,7 +225,12 @@ def channel_keys(indexed: Sequence[tuple[int, AnySource]]) -> dict[str, int]:
     The key names the channel's group in the bundle, and each channel of a
     multi-channel source has its own. An event channel names the channels it
     applies to by id, so this is the table a channels column resolves through.
-    Raises ValueError if two channels share an id.
+
+    Args:
+        indexed: Pairs of first channel key and source.
+
+    Raises:
+        ValueError: If two channels share an id.
     """
     keys: dict[str, int] = {}
     for index, channel in indexed_channels(indexed):
@@ -204,7 +247,10 @@ def max_key(indexed: Sequence[tuple[int, AnySource]]) -> int:
     """Return the largest channel key, which sizes the channels bitmask.
 
     Every channel of a multi-channel source counts. A bundle with no channels
-    reports 0.
+    returns 0.
+
+    Args:
+        indexed: Pairs of first channel key and source.
     """
     return max((index for index, _ in indexed_channels(indexed)), default=0)
 
@@ -214,8 +260,14 @@ def clear_output_path(output_path: Path) -> None:
 
     Does nothing when output_path is absent or empty. Keeps the directory
     itself and removes its root zarr.json last, so an interrupted clear still
-    leaves a bundle the next run recognizes. Raises ValueError, and removes
-    nothing, if output_path is not a directory or holds files but no bundle.
+    leaves a bundle the next run recognizes.
+
+    Args:
+        output_path: The directory to empty.
+
+    Raises:
+        ValueError: If output_path is not a directory or holds files but no
+            bundle. Nothing is removed.
     """
     if not output_path.exists():
         return
@@ -267,9 +319,13 @@ def write_all_channels(
 ) -> None:
     """Write every indexed source under root, dispatching by source type.
 
-    Every group is governed by opts and placed relative to reference_us.
-    channel_keys maps channel ids to keys, which the event channels use to
-    resolve the channels they apply to.
+    Args:
+        root: The root group of the bundle.
+        indexed: Pairs of first channel key and source.
+        reference_us: The reference time that every group is placed against.
+        channel_keys: Channel ids mapped to keys, which the event channels
+            use to resolve the channels they apply to.
+        opts: Sizing and compression options for every group.
     """
     largest_key = max_key(indexed)
     for index, source in indexed:
@@ -325,18 +381,29 @@ def write_bundle(
     time. recording.json holds the reference time as reference_time and the
     session start as session.start_time. With recording.wall_clock False the
     source times do not count from the Unix epoch, so the session start does
-    not place the reference time. Sizing and compression follow opts.
-    Raises ValueError if a source lacks a member of the protocol its list
-    requires, two channels share an id, a time of recording has no
-    UTC offset, recording sets reference_time with wall_clock False,
-    recording.session holds a start_time key, a voltage unit is not "uV"
-    under voltage_policy require_uv, a
-    channel's provenance is not a JSON object of finite values, or
-    output_path is not absent, empty, or a bundle, before anything is
-    written. Raises ValueError during the write if a window of a
-    multi-channel source holds the wrong number of blocks, a block is not
-    rank 1, or the blocks of a channel do not total its num_samples. A failed
-    write leaves a partial bundle with no consolidated metadata.
+    not place the reference time. A failed write leaves a partial bundle with
+    no consolidated metadata.
+
+    Args:
+        continuous: The continuous sources, in key order.
+        events: The event sources, in key order after the continuous ones.
+        output_path: The bundle directory. It must be absent, empty, or an
+            existing bundle.
+        opts: Sizing and compression options.
+        recording: Recording identity and datetimes. Without it the writer
+            writes no recording.json.
+
+    Raises:
+        ValueError: Before anything is written, if a source lacks a member of
+            the protocol its list requires, two channels share an id, a time
+            of recording has no UTC offset, recording sets reference_time
+            with wall_clock False, recording.session holds a start_time key,
+            a voltage unit is not "uV" under voltage_policy require_uv, a
+            channel's provenance is not a JSON object of finite values, or
+            output_path is not absent, empty, or a bundle. During the write,
+            if a window of a multi-channel source holds the wrong number of
+            blocks, a block is not rank 1, or the blocks of a channel do not
+            total its num_samples.
     """
     check_sources(continuous, events)
     indexed = assign_indices(continuous, events)

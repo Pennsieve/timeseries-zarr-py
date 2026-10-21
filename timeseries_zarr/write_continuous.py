@@ -80,6 +80,10 @@ def _write_blocks(
     Blocks arrive shard-sized, so each write covers a whole shard. A write
     narrower than a shard makes the sharding codec read that shard back,
     re-encode every inner chunk, and rewrite it.
+
+    Args:
+        array: The array to fill.
+        blocks: Consecutive row blocks, in order from row 0.
     """
     start = 0
     for block in blocks:
@@ -98,11 +102,23 @@ def create_channel_group(
     """Create the channel group named str(key) with the continuous attributes.
 
     The group stores unit as given, whatever unit the channel declares. Its
-    offset_us is the distance in microseconds from reference_us, the
-    reference time, to the first sample, negative for a channel that begins
-    before it. The group carries the channel's provenance when the channel has
-    one. Raises ValueError if the rate is not positive or the provenance is
-    not a JSON object of finite values.
+    offset_us is the distance in microseconds from reference_us to the first
+    sample, negative for a channel that begins before it. The group carries
+    the channel's provenance when the channel has one.
+
+    Args:
+        parent: The group that receives the channel group.
+        key: The channel number that names the group.
+        channel: The channel metadata.
+        reference_us: The reference time in microseconds.
+        unit: The unit string to store.
+
+    Returns:
+        The new channel group.
+
+    Raises:
+        ValueError: If the rate is not positive or the provenance is not a
+            JSON object of finite values.
     """
     return create_group_with_attrs(
         parent,
@@ -130,6 +146,15 @@ def create_raw(
     value is NaN, its axis is named "time", and it has no attributes. The
     channel group carries the sample rate. A num_samples of 0 gives a
     zero-length array.
+
+    Args:
+        group: The channel group.
+        num_samples: The length of the array.
+        sizing: The chunk and shard shapes.
+        zstd_level: The Zstandard compression level.
+
+    Returns:
+        The new array.
     """
     return create_array(
         group,
@@ -151,12 +176,22 @@ def write_raw(
     zstd_level: int,
     factor: float = 1.0,
 ) -> ZarrArray:
-    """Create the raw array under group and stream the source's samples into it.
+    """Create the raw array under group and stream the source into it.
 
     The array is the one create_raw makes. The samples are multiplied by
     factor, so a non-finite sample stays a gap and a DC offset stays in. They
     are read in shard-sized blocks, so every write covers a whole shard. An
     empty source creates a zero-length array and writes nothing.
+
+    Args:
+        group: The channel group.
+        source: The source of the samples.
+        sizing: The chunk and shard shapes.
+        zstd_level: The Zstandard compression level.
+        factor: The multiplier applied to every sample.
+
+    Returns:
+        The filled array.
     """
     array = create_raw(group, source.num_samples(), sizing, zstd_level)
     _write_blocks(
@@ -178,8 +213,20 @@ def create_level(
     and count shaped (bins,), plus var when write_var is true. The float
     members are float32 and count is uint32. sizing is the sizing of minmax,
     and the other members take its row counts, so one block of rows fills one
-    shard of every member. Every member names its bin axis "time". Raises
-    ValueError if plan.level is below 1.
+    shard of every member. Every member names its bin axis "time".
+
+    Args:
+        parent: The channel group.
+        plan: The size and period of the level.
+        sizing: The chunk and shard shapes of minmax.
+        zstd_level: The Zstandard compression level.
+        write_var: Whether to create the var member.
+
+    Returns:
+        The handles of the new member arrays.
+
+    Raises:
+        ValueError: If plan.level is below 1.
     """
     if plan.level < 1:
         raise ValueError("levels are numbered from 1; raw is not a level")
@@ -230,7 +277,10 @@ def create_level(
 def _statistics_writer(
     members: LevelMembers[ZarrArray],
 ) -> Callable[[npt.NDArray[np.float64]], None]:
-    """Return a function that writes successive statistics blocks to members."""
+    """Return a function that writes successive statistics blocks to members.
+
+    Each call writes at the row after the previous block.
+    """
     start = 0
 
     def write(block: npt.NDArray[np.float64]) -> None:
@@ -257,6 +307,10 @@ def write_statistics_blocks(
     Blocks of shard_shape[0] rows make every write cover a whole shard of
     every member, and only the last block may be shorter. A level without a
     var member drops the variance column. An empty stream writes nothing.
+
+    Args:
+        members: The member arrays of the level.
+        blocks: Statistics blocks in level order.
     """
     write = _statistics_writer(members)
     for block in blocks:
@@ -274,6 +328,12 @@ def _write_levels_by_read_back(
     Level 1 folds the stored raw samples and each later level folds the stored
     float32 members of the level below. One shard of the level below is read per
     fold step, so memory stays at one shard.
+
+    Args:
+        group: The channel group.
+        raw: The stored raw array.
+        plans: The level plans in level order.
+        opts: The write settings.
     """
     previous: LevelMembers[ZarrArray] | None = None
     for plan in plans:
@@ -313,6 +373,12 @@ def _write_levels_in_one_pass(
     variance keeps its full precision. The levels form one chain of generators
     that is drained once, and a shard of statistics rows per level is in
     flight.
+
+    Args:
+        group: The channel group.
+        raw: The stored raw array.
+        plans: The level plans in level order, at least one.
+        opts: The write settings.
     """
     first = level_sizing(plans[0].bins, opts.inner_len, opts.target_shard_bytes)
     stream: Iterator[npt.NDArray[np.float64]] = _rebuffer_and_fold(
@@ -352,6 +418,12 @@ def write_levels(
     the level below. With it true, every level is folded in one pass from the
     raw samples through float64 statistics. The variance then stays exact on a
     channel with a large DC offset.
+
+    Args:
+        group: The channel group.
+        raw: The stored raw array.
+        rate_hz: The sample rate in hertz.
+        opts: The write settings.
     """
     plans = plan_levels(raw.shape[0], rate_hz, opts.max_levels, opts.min_bins)
     if not plans:
@@ -374,9 +446,19 @@ def write_continuous_channel(
 
     A voltage unit resolves under opts.voltage_policy before the group is
     created, and the raw samples are scaled to match. A channel too short for
-    level 1 gets raw and nothing else. Raises ValueError if the source's rate
-    is not positive, if its provenance is not a JSON object of finite values,
-    or, under voltage_policy require_uv, if a voltage unit is not "uV".
+    level 1 gets raw and nothing else.
+
+    Args:
+        parent: The group that receives the channel group.
+        key: The channel number that names the group.
+        source: The source of the channel.
+        reference_us: The reference time in microseconds.
+        opts: The write settings.
+
+    Raises:
+        ValueError: If the source's rate is not positive, if its provenance
+            is not a JSON object of finite values, or, under voltage_policy
+            require_uv, if a voltage unit is not "uV".
     """
     resolved = resolve_unit(source.unit, opts.voltage_policy)
     group = create_channel_group(
@@ -396,7 +478,19 @@ def write_continuous_channel(
 
 @dataclass(slots=True)
 class _RawSink:
-    """Collect one channel's blocks of a sweep and write them to its raw array."""
+    """Collect one channel's blocks of a sweep and write them to its raw array.
+
+    Attributes:
+        key: The channel number.
+        channel: The channel metadata.
+        group: The channel group.
+        raw: The raw array that receives the samples.
+        factor: The multiplier applied to every sample.
+        regrouper: Re-cuts incoming blocks into whole shards.
+        num_samples: The sample count that the channel declares.
+        received: The samples pushed so far.
+        written: The samples written to raw so far.
+    """
 
     key: int
     channel: ContinuousChannelMetadata
@@ -419,9 +513,15 @@ class _RawSink:
         """Write each whole shard that the samples of block complete.
 
         The samples are cast to float32 and multiplied by factor. Samples
-        that do not fill a shard wait for the next push. Raises ValueError,
-        before it writes any sample of block, if block is not rank 1 or if the
-        channel has received more samples than it declares.
+        that do not fill a shard wait for the next push.
+
+        Args:
+            block: The next samples of the channel.
+
+        Raises:
+            ValueError: If block is not rank 1 or if the channel has received
+                more samples than it declares. Nothing from block is written
+                first.
         """
         samples = np.asarray(block, dtype=np.float32)
         if samples.ndim != 1:
@@ -442,8 +542,9 @@ class _RawSink:
     def finish(self) -> None:
         """Write the samples that wait for a shard to fill.
 
-        Raises ValueError if the channel received fewer samples than it
-        declares.
+        Raises:
+            ValueError: If the channel received fewer samples than it
+                declares.
         """
         if self.received != self.num_samples:
             raise ValueError(
@@ -473,13 +574,21 @@ def write_continuous_channels(
     Memory holds one shard of raw per channel and the current window. A source
     without channels writes nothing, and iter_windows is not called.
 
-    Raises ValueError for a rate that is not positive, for provenance that is
-    not a JSON object of finite values, and under voltage_policy require_uv
-    for a voltage unit that is not "uV". Raises ValueError also for a window
-    that does not hold one block per channel, for a block that is not rank 1,
-    and for a channel whose blocks do not total its num_samples. Each of these
-    errors comes before the first level is folded. A failure leaves the
-    groups written so far in place.
+    Args:
+        parent: The group that receives the channel groups.
+        first_key: The channel number of the first channel.
+        source: The multi-channel source.
+        reference_us: The reference time in microseconds.
+        opts: The write settings.
+
+    Raises:
+        ValueError: If a rate is not positive, if provenance is not a JSON
+            object of finite values, if a voltage unit is not "uV" under
+            voltage_policy require_uv, if a window does not hold one block
+            per channel, if a block is not rank 1, or if a channel's blocks
+            do not total its num_samples. Each error comes before the first
+            level is folded. A failure leaves the groups written so far in
+            place.
     """
     channels = list(source.channels())
     if not channels:

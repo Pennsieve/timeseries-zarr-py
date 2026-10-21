@@ -1,4 +1,4 @@
-"""Check an installed timeseries-zarr wheel by writing and reading back a bundle."""
+"""Check an installed timeseries-zarr wheel by writing and reading a bundle."""
 
 import importlib.metadata
 import tempfile
@@ -58,7 +58,7 @@ class SineSource:
 
 
 def main() -> None:
-    """Fail unless the installed package reports a consistent version and round-trips data."""
+    """Fail unless the installed package has a version and round-trips data."""
     package_dir = Path(tsz.__file__).resolve().parent
     assert "site-packages" in package_dir.parts, (
         f"not the installed wheel: {package_dir}"

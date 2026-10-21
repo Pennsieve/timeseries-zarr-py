@@ -35,9 +35,15 @@ def level1_period_us(n_events: int, span_us: int) -> int:
     COUNT_LADDER_BASE_US times a power of 4, so every event channel in a
     bundle shares one set of bin grids. It is never finer than
     COUNT_LADDER_BASE_US, and a width exactly on a rung of the ladder keeps
-    that rung. The arithmetic is exact in integers. span_us is the time from
-    the first event to the last, and events all at one time give the finest
-    period. Raises ValueError if n_events is below 1 or span_us is negative.
+    that rung. The arithmetic is exact in integers. Events all at one time
+    give the finest period.
+
+    Args:
+        n_events: The number of events in the channel.
+        span_us: The time from the first event to the last.
+
+    Raises:
+        ValueError: If n_events is below 1 or span_us is negative.
     """
     if n_events < 1:
         raise ValueError(f"n_events must be at least 1, got {n_events}")
@@ -54,7 +60,14 @@ def bin_offset_us(first_event_us: int, period_us: int) -> int:
     """Return the time of bin 0 of a count level: the first event's bin start.
 
     It is the largest multiple of period_us at or before first_event_us, and
-    may be negative. Raises ValueError if period_us is below 1.
+    may be negative.
+
+    Args:
+        first_event_us: The time of the first event.
+        period_us: The period of the level.
+
+    Raises:
+        ValueError: If period_us is below 1.
     """
     if period_us < 1:
         raise ValueError(f"period_us must be at least 1, got {period_us}")
@@ -68,8 +81,16 @@ def count_bins(first_event_us: int, last_event_us: int, period_us: int) -> int:
     i * period_us up to but not including the next multiple of period_us, so
     an event that sits exactly on a bin boundary is counted in the bin it
     opens and is never dropped. A channel whose events all share one time
-    has 1 bin. Raises ValueError if period_us is below 1 or last_event_us
-    precedes first_event_us.
+    has 1 bin.
+
+    Args:
+        first_event_us: The time of the first event.
+        last_event_us: The time of the last event.
+        period_us: The period of the level.
+
+    Raises:
+        ValueError: If period_us is below 1 or last_event_us precedes
+            first_event_us.
     """
     if period_us < 1:
         raise ValueError(f"period_us must be at least 1, got {period_us}")
@@ -98,9 +119,18 @@ def plan_count_levels(
     ladder stops before a level that would hold fewer than min_bins bins or
     would pass max_levels. A channel whose level 1 already holds fewer than
     min_bins bins gets none. The plan is the same for every label column.
-    Raises ValueError if n_events is negative or above the uint32 range,
-    which a count bin can hold when equal times put every event in one bin,
-    or if last_event_us precedes first_event_us.
+
+    Args:
+        n_events: The number of events in the channel.
+        first_event_us: The time of the first event.
+        last_event_us: The time of the last event.
+        max_levels: The most levels to plan.
+        min_bins: The fewest bins a level may hold.
+
+    Raises:
+        ValueError: If n_events is negative or above the uint32 range, which
+            a count bin can hold when equal times put every event in one bin,
+            or if last_event_us precedes first_event_us.
     """
     if n_events < 0:
         raise ValueError(f"n_events must be at least 0, got {n_events}")
@@ -142,7 +172,12 @@ def _check_event_block(
     first_bin: int,
     bins: int,
 ) -> npt.NDArray[np.int64]:
-    """Return the bin of each event, raising ValueError if the block is bad."""
+    """Return the bin of each event.
+
+    Raises:
+        ValueError: If the block is out of order or falls outside the bins or
+            columns.
+    """
     if labels is not None and labels.shape != times.shape:
         raise ValueError(
             f"labels have shape {labels.shape} but times have {times.shape}"
@@ -177,19 +212,31 @@ def iter_count_blocks(
     """Yield level 1 counts in blocks of block_bins rows, covering every bin.
 
     Event i with time t counts in bin t // period_us - offset_us // period_us,
-    in the column of its label. offset_us is the time of bin 0, a multiple of
-    period_us. The counts have max(1, n_labels) columns, and a block without
-    labels counts every event in column 0. The blocks are contiguous and
+    in the column of its label. The counts have max(1, n_labels) columns, and
+    a block without labels counts every event in column 0. The blocks are
+    contiguous and
     cover the whole axis of bins rows, including stretches no event falls in:
     every block has block_bins rows except the last, which holds the
     remainder. An axis of no bins yields nothing. Times must be non-decreasing
     across all blocks, so a block is complete, and is written out, as soon as
     an event lands past it; only one block of counts is held at a time. A
-    block of no events is skipped. Raises ValueError if block_bins or
-    period_us is below 1, offset_us is not a multiple of period_us, bins or
-    n_labels is negative, an event precedes bin 0, a time decreases, an event
-    falls past the last bin, a label is outside the columns, or labels and
-    times differ in shape.
+    block of no events is skipped.
+
+    Args:
+        event_blocks: Windows of event times and labels, in time order.
+        n_labels: The number of label columns. 0 counts every event in one
+            column.
+        period_us: The period of the level.
+        offset_us: The time of bin 0, a multiple of period_us.
+        bins: The number of bins on the axis.
+        block_bins: The number of rows in each yielded block.
+
+    Raises:
+        ValueError: If block_bins or period_us is below 1, offset_us is not a
+            multiple of period_us, bins or n_labels is negative, an event
+            precedes bin 0, a time decreases, an event falls past the last
+            bin, a label is outside the columns, or labels and times differ
+            in shape.
     """
     if block_bins < 1:
         raise ValueError(f"block_bins must be at least 1, got {block_bins}")
@@ -251,8 +298,13 @@ def fold_count_block(
     bin holds exactly the events of its span. A final partial group of 1 to 3
     rows becomes one row. An empty input yields zero rows. The sums stay in
     uint32, which holds them because plan_count_levels caps the event count at
-    the uint32 range. Raises ValueError if counts is not shaped (rows,
-    columns).
+    the uint32 range.
+
+    Args:
+        counts: A block of counts shaped (rows, columns).
+
+    Raises:
+        ValueError: If counts is not shaped (rows, columns).
     """
     if len(counts.shape) != COUNT_BLOCK_RANK:
         raise ValueError(

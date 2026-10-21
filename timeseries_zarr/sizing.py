@@ -21,6 +21,10 @@ def chunk_shape_for_level(
     more than the level's own length and never fewer than one bin, so a
     zero-length level still gets a shape Zarr accepts. The trailing length-2
     (min, max) axis of an envelope level is never chunked.
+
+    Args:
+        level_shape: Shape of the level array.
+        inner_len: Target chunk length in bins along axis 0.
     """
     n, *rest = level_shape
     return (max(1, min(n, inner_len)), *rest)
@@ -36,9 +40,15 @@ def shard_shape_for_level(
 
     The shard spans as many whole inner chunks along the time axis (axis 0) as
     fit in target_shard_bytes, at least one and at most the number of chunks
-    the level holds. A zero-length level takes one chunk. It is always an
-    integer multiple of chunk_shape along axis 0; the trailing length-2
+    the level holds. A zero-length level takes one chunk. The shard is an
+    integer multiple of chunk_shape along axis 0, and the trailing length-2
     (min, max) axis stays size 2.
+
+    Args:
+        chunk_shape: Inner chunk shape of the level.
+        level_shape: Shape of the level array.
+        dtype_size: Bytes per element.
+        target_shard_bytes: Target shard size in bytes.
     """
     chunk_bytes = prod(chunk_shape) * dtype_size
     chunks_per_shard = max(1, target_shard_bytes // chunk_bytes)
@@ -53,7 +63,7 @@ def chunk_and_shard(
     inner_len: int = INNER_CHUNK_SAMPLES,
     target_shard_bytes: int = TARGET_SHARD_BYTES,
 ) -> ChunkShard:
-    """Return the inner-chunk and outer-shard shapes for a level as a ChunkShard."""
+    """Return the inner-chunk and outer-shard shapes for a level."""
     chunk_shape = chunk_shape_for_level(level_shape, inner_len)
     shard_shape = shard_shape_for_level(
         chunk_shape, level_shape, dtype_size, target_shard_bytes

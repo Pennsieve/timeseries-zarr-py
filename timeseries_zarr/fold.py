@@ -29,9 +29,16 @@ def _block_split(
 ) -> tuple[int, int]:
     """Return (n_full, tail_len) for splitting length items into blocks.
 
-    n_full is the count of complete blocks of size block; tail_len is the
-    leftover count (0..block-1), kept as a final partial block with no padding.
-    Raises ValueError if block is not positive.
+    Args:
+        length: Number of items.
+        block: Block size.
+
+    Returns:
+        The count of complete blocks, and the leftover count (0 to block - 1)
+        that forms a final partial block with no padding.
+
+    Raises:
+        ValueError: block is not positive.
     """
     if block <= 0:
         raise ValueError("block must be positive")
@@ -39,7 +46,7 @@ def _block_split(
 
 
 def _require_statistics_block(statistics: npt.NDArray[np.float64]) -> None:
-    """Raise ValueError unless statistics has shape (rows, STATISTIC_COLUMNS)."""
+    """Raise ValueError unless statistics is (rows, STATISTIC_COLUMNS)."""
     if statistics.shape[1:] != (STATISTIC_COLUMNS,):
         raise ValueError(
             f"a statistics block has shape (rows, {STATISTIC_COLUMNS}), "
@@ -63,13 +70,19 @@ def _reduce_into(
 def fold_raw_block(raw: npt.NDArray[np.float32]) -> npt.NDArray[np.float64]:
     """Fold raw samples into per-bin statistics over disjoint blocks of 4.
 
-    Returns a float64 statistics block with one row per block: the minimum,
-    maximum, mean, and population variance of the block's samples, then the
-    number of finite samples. A non-finite sample (NaN or infinity) counts as
-    NaN, so a block holding one has NaN in its four statistics while the
-    count still reports the finite samples; a block of nothing but non-finite
-    samples has count 0. A final partial block of 1 to 3 samples becomes one
-    row. An empty input yields zero rows. The input is never modified.
+    A non-finite sample (NaN or infinity) counts as NaN, so a block holding
+    one has NaN in its four statistics while the count still reports the
+    finite samples. A block of only non-finite samples has count 0. A final
+    partial block of 1 to 3 samples becomes one row. An empty input yields
+    zero rows. The input is not modified.
+
+    Args:
+        raw: Raw samples of one channel.
+
+    Returns:
+        A float64 statistics block with one row per block: the minimum,
+        maximum, mean, and population variance of the block's samples, then
+        the number of finite samples.
     """
     block = DECIMATION_FACTOR
     n_full, tail_len = _block_split(raw.shape[0], block)
@@ -116,7 +129,7 @@ def _combine_into(
 def fold_statistics_block(
     statistics: npt.NDArray[np.float64],
 ) -> npt.NDArray[np.float64]:
-    """Fold a statistics block into the next coarser level over blocks of 4 rows.
+    """Fold a statistics block into the next coarser level in blocks of 4 rows.
 
     Each output row combines up to 4 child rows: the minimum of the minimums,
     the maximum of the maximums, the count-weighted mean of the means, the
@@ -126,8 +139,16 @@ def fold_statistics_block(
     children cover. A NaN in any child statistic makes the parent's four
     statistics NaN, and so do children whose counts sum to 0; the count is
     the plain sum in every case. A final partial block of 1 to 3 rows becomes
-    one row. An empty input yields zero rows. Raises ValueError if statistics is
-    not rank 2 with STATISTIC_COLUMNS columns.
+    one row. An empty input yields zero rows.
+
+    Args:
+        statistics: Statistics block of the finer level.
+
+    Returns:
+        The statistics block of the coarser level.
+
+    Raises:
+        ValueError: statistics is not rank 2 with STATISTIC_COLUMNS columns.
     """
     _require_statistics_block(statistics)
     block = DECIMATION_FACTOR
@@ -156,14 +177,23 @@ def split_members(
 ]:
     """Split a statistics block into the member arrays of one level.
 
-    Returns (minmax, mean, var, count) in their on-disk dtypes. minmax is
-    float32 of shape (rows, 2) with the minimum in column 0 and the maximum in
-    column 1. mean and var are float32 of shape (rows,), and var is None when
-    with_var is false. count is uint32 of shape (rows,) and exact, because a
-    level within MAX_LEVELS never counts 2**32 samples. A NaN stays NaN, and a
-    value beyond the float32 range becomes infinity without a warning. An
-    empty block yields zero rows in every member. Raises ValueError if statistics
-    is not shaped (rows, STATISTIC_COLUMNS).
+    A NaN stays NaN, and a value beyond the float32 range becomes infinity
+    without a warning. An empty block yields zero rows in every member.
+
+    Args:
+        statistics: Statistics block of one level.
+        with_var: Whether to return the variance member.
+
+    Returns:
+        The tuple (minmax, mean, var, count) in on-disk dtypes. minmax is
+        float32 of shape (rows, 2) with the minimum in column 0 and the
+        maximum in column 1. mean and var are float32 of shape (rows,), and
+        var is None when with_var is false. count is uint32 of shape (rows,)
+        and exact, because a level within MAX_LEVELS never counts 2**32
+        samples.
+
+    Raises:
+        ValueError: statistics is not shaped (rows, STATISTIC_COLUMNS).
     """
     _require_statistics_block(statistics)
     with np.errstate(over="ignore"):
@@ -183,11 +213,21 @@ def assemble_statistics(
     """Assemble the member arrays of one level into a float64 statistics block.
 
     The inverse of split_members, up to the float32 rounding the stored
-    statistics already carry. minmax is shaped (rows, 2) with the minimum in
-    column 0 and the maximum in column 1; mean, var, and count are shaped
-    (rows,). A var of None leaves the variance column NaN. An empty level
-    yields zero rows. Raises ValueError if minmax is not (rows, 2) or if mean,
-    var, or count does not have the same number of rows.
+    statistics already carry. An empty level yields zero rows.
+
+    Args:
+        minmax: Array of shape (rows, 2) with the minimum in column 0 and the
+            maximum in column 1.
+        mean: Array of shape (rows,).
+        var: Array of shape (rows,). None leaves the variance column NaN.
+        count: Array of shape (rows,).
+
+    Returns:
+        The float64 statistics block.
+
+    Raises:
+        ValueError: minmax is not (rows, 2), or mean, var, or count has a
+            different number of rows.
     """
     if minmax.shape[1:] != (ENVELOPE_PAIR_SIZE,):
         raise ValueError(

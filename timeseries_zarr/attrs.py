@@ -39,10 +39,15 @@ _OBJECT = "an object"
 class ContinuousAttrs:
     """Parsed tsz fields of a continuous channel group.
 
-    rate_hz is the sample rate in hertz. offset_us is the time of sample 0
-    in microseconds from the reference time, and may be negative. id and
-    provenance are None when
-    the group omits them.
+    Attributes:
+        name: Channel name.
+        id: Channel id, or None when the group omits it.
+        unit: Unit of the samples.
+        rate_hz: Sample rate in hertz.
+        offset_us: Time of sample 0 in microseconds from the reference time.
+            May be negative.
+        provenance: Read-only provenance object, or None when the group omits
+            it.
     """
 
     name: str
@@ -57,9 +62,15 @@ class ContinuousAttrs:
 class EventAttrs:
     """Parsed tsz fields of an event channel group.
 
-    Every field but name is None when the group omits its key. label_names[j]
-    names label value j. max_duration_us bounds every duration in
-    microseconds.
+    Every field but name is None when the group omits its key.
+
+    Attributes:
+        name: Channel name.
+        id: Channel id.
+        unit: Unit of the channel.
+        label_names: Label names, where label_names[j] names label value j.
+        max_duration_us: Bound on every duration, in microseconds.
+        provenance: Read-only provenance object.
     """
 
     name: str
@@ -74,9 +85,10 @@ class EventAttrs:
 class CountLevelAttrs:
     """Parsed tsz fields of a count level group.
 
-    period_us is the bin width in microseconds. offset_us is the time of bin
-    0 in microseconds from the reference time, a multiple of period_us, and
-    may be negative.
+    Attributes:
+        period_us: Bin width in microseconds.
+        offset_us: Time of bin 0 in microseconds from the reference time. A
+            multiple of period_us, and may be negative.
     """
 
     period_us: float
@@ -87,8 +99,9 @@ class CountLevelAttrs:
 class WaveformAttrs:
     """Parsed tsz fields of a waveforms or waveform_mean array.
 
-    period_us is the sample period within a snippet in microseconds.
-    event_sample is the snippet index recorded at the event time.
+    Attributes:
+        period_us: Sample period within a snippet, in microseconds.
+        event_sample: Snippet index recorded at the event time.
     """
 
     period_us: float
@@ -105,6 +118,13 @@ def check_provenance(provenance: object) -> None:
 
     A non-finite number would be written as a bare NaN or Infinity, which is
     not JSON, so one such value makes the root metadata unreadable.
+
+    Args:
+        provenance: The value to check.
+
+    Raises:
+        ValueError: If provenance is not a dict, or holds a value JSON cannot
+            store or a non-finite number.
     """
     if provenance is None:
         return
@@ -136,10 +156,18 @@ def continuous_channel_attrs(
 ) -> dict[str, object]:
     """Return the channel-group attributes for one continuous channel.
 
-    offset_us is the time of sample 0 in microseconds from the reference
-    time, and may be negative. provenance is written only when it is not None.
-    Raises ValueError if rate_hz is not positive or provenance is not a JSON
-    object of finite values.
+    Args:
+        name: Channel name.
+        id: Channel id.
+        rate_hz: Sample rate in hertz.
+        offset_us: Time of sample 0 in microseconds from the reference time.
+            May be negative.
+        unit: Unit of the samples.
+        provenance: JSON object written under provenance, or None to omit it.
+
+    Raises:
+        ValueError: If rate_hz is not positive or provenance is not a JSON
+            object of finite values.
     """
     if rate_hz <= 0:
         raise ValueError(f"rate_hz must be positive, got {rate_hz!r}")
@@ -167,10 +195,20 @@ def event_channel_attrs(
 ) -> dict[str, object]:
     """Return the channel-group attributes for one event channel.
 
-    kind and name are always present; each other key is written only when
-    its argument is not None. Raises ValueError if label_names is empty,
-    max_duration_us is negative, or provenance is not a JSON object of finite
-    values.
+    The kind and name keys are always present. Each other key is written only
+    when its argument is not None.
+
+    Args:
+        name: Channel name.
+        id: Channel id.
+        unit: Unit of the channel.
+        label_names: Label names, one per label value.
+        max_duration_us: Bound on every duration, in microseconds.
+        provenance: JSON object written under provenance.
+
+    Raises:
+        ValueError: If label_names is empty, max_duration_us is negative, or
+            provenance is not a JSON object of finite values.
     """
     if label_names is not None and not label_names:
         raise ValueError("label_names must name at least one category")
@@ -198,11 +236,15 @@ def level_group_attrs(
 ) -> dict[str, object]:
     """Return the level-group attributes.
 
-    period_us is the microseconds one bin spans at this level. offset_us,
-    given for a count level, is the time of bin 0 from the reference time, a
-    multiple of period_us. A level of a continuous channel passes None.
-    Raises ValueError if period_us is not positive or offset_us is not a
-    multiple of it.
+    Args:
+        period_us: Microseconds one bin spans at this level.
+        offset_us: Time of bin 0 from the reference time, for a count level.
+            Must be a multiple of period_us. A level of a continuous channel
+            passes None.
+
+    Raises:
+        ValueError: If period_us is not positive or offset_us is not a
+            multiple of it.
     """
     if period_us <= 0:
         raise ValueError(f"period_us must be positive, got {period_us!r}")
@@ -222,10 +264,13 @@ def waveform_array_attrs(
 ) -> dict[str, object]:
     """Return the attributes of a waveforms or waveform_mean array.
 
-    period_us is the sample period within a snippet. event_sample is the
-    snippet index recorded at the event time and is written only when given.
-    Raises ValueError if period_us is not positive or event_sample is
-    negative.
+    Args:
+        period_us: Sample period within a snippet, in microseconds.
+        event_sample: Snippet index recorded at the event time. Written only
+            when given.
+
+    Raises:
+        ValueError: If period_us is not positive or event_sample is negative.
     """
     if period_us <= 0:
         raise ValueError(f"period_us must be positive, got {period_us!r}")
@@ -253,7 +298,14 @@ def _required(
 ) -> object:
     """Return the value of a key the node must carry.
 
-    Raises ValueError if the key is absent.
+    Args:
+        fields: The tsz object.
+        key: Key to read.
+        where: Node name for the error message.
+        expectation: Description of the valid value, for the error message.
+
+    Raises:
+        ValueError: If the key is absent.
     """
     if key not in fields:
         raise ValueError(
@@ -293,7 +345,8 @@ def _as_integer(value: object) -> int | None:
 def _string(fields: Mapping[str, object], key: str, where: str) -> str:
     """Return the string a node must carry under key.
 
-    Raises ValueError if the key is absent or its value is not a string.
+    Raises:
+        ValueError: If the key is absent or its value is not a string.
     """
     value = _required(fields, key, where, _STRING)
     if not isinstance(value, str):
@@ -306,7 +359,8 @@ def _optional_string(
 ) -> str | None:
     """Return the string under key, or None when the key is absent.
 
-    Raises ValueError if the value is not a string.
+    Raises:
+        ValueError: If the value is not a string.
     """
     if key not in fields:
         return None
@@ -318,7 +372,8 @@ def _positive_number(
 ) -> float:
     """Return the finite number above 0 a node must carry under key.
 
-    Raises ValueError if the key is absent or its value is not such a number.
+    Raises:
+        ValueError: If the key is absent or its value is not such a number.
     """
     value = _required(fields, key, where, _POSITIVE_NUMBER)
     number = _as_finite_float(value)
@@ -332,7 +387,8 @@ def _optional_nonnegative_integer(
 ) -> int | None:
     """Return the integer from 0 to 2^63 - 1 under key, or None when absent.
 
-    Raises ValueError if the value is not such an integer.
+    Raises:
+        ValueError: If the value is not such an integer.
     """
     if key not in fields:
         return None
@@ -348,7 +404,8 @@ def _nonnegative_integer(
 ) -> int:
     """Return the integer from 0 to 2^63 - 1 under key, or default if absent.
 
-    Raises ValueError if the value is not such an integer.
+    Raises:
+        ValueError: If the value is not such an integer.
     """
     integer = _optional_nonnegative_integer(fields, key, where)
     return default if integer is None else integer
@@ -359,7 +416,8 @@ def _integer(
 ) -> int:
     """Return the int64 under key, or default if absent.
 
-    Raises ValueError if the value is not an integer within the int64 range.
+    Raises:
+        ValueError: If the value is not an integer within the int64 range.
     """
     if key not in fields:
         return default
@@ -375,7 +433,8 @@ def _optional_string_tuple(
 ) -> tuple[str, ...] | None:
     """Return the list of strings under key as a tuple, or None when absent.
 
-    Raises ValueError if the value is not a non-empty list of strings.
+    Raises:
+        ValueError: If the value is not a non-empty list of strings.
     """
     if key not in fields:
         return None
@@ -395,7 +454,10 @@ def _optional_object(
     """Return a read-only copy of the object under key, or None when absent.
 
     The copy is deep, and the objects and lists nested in it are plain dicts
-    and lists. Raises ValueError if the value is not an object.
+    and lists.
+
+    Raises:
+        ValueError: If the value is not an object.
     """
     if key not in fields:
         return None
@@ -410,7 +472,12 @@ def tsz_fields(
 ) -> Mapping[str, object]:
     """Return the tsz object of a node's attributes.
 
-    Raises ValueError if tsz is absent or is not an object.
+    Args:
+        attributes: The zarr attributes of the node.
+        where: Node name for the error message.
+
+    Raises:
+        ValueError: If tsz is absent or is not an object.
     """
     if TSZ_KEY not in attributes:
         raise ValueError(f"{where}: {TSZ_KEY} is missing; it must be {_OBJECT}")
@@ -423,8 +490,12 @@ def tsz_fields(
 def parse_version(attributes: Mapping[str, object]) -> str:
     """Return the tsz.version of a root group whose major version is known.
 
-    Raises ValueError unless the version is a major.minor string of decimal
-    digits whose major is MAJOR_VERSION.
+    Args:
+        attributes: The zarr attributes of the root group.
+
+    Raises:
+        ValueError: Unless the version is a major.minor string of decimal
+            digits whose major is MAJOR_VERSION.
     """
     where = "root group"
     fields = tsz_fields(attributes, where)
@@ -448,8 +519,14 @@ def parse_channel_kind(
 ) -> ChannelKind | None:
     """Return the tsz.kind of a channel group, or None for an unknown kind.
 
-    A kind is known when CHANNEL_KINDS lists it. Raises ValueError if kind is
-    absent or is not a string.
+    A kind is known when CHANNEL_KINDS lists it.
+
+    Args:
+        attributes: The zarr attributes of the channel group.
+        where: Node name for the error message.
+
+    Raises:
+        ValueError: If kind is absent or is not a string.
     """
     kind = _string(tsz_fields(attributes, where), "kind", where)
     for known in CHANNEL_KINDS:
@@ -464,9 +541,15 @@ def parse_continuous_attrs(
 ) -> ContinuousAttrs:
     """Return the tsz fields of a continuous channel group.
 
-    offset_us defaults to 0 and may be negative. Raises ValueError if name,
-    unit, or rate_hz is absent, or if a key holds a value outside its type or
-    range.
+    The offset_us field defaults to 0 and may be negative.
+
+    Args:
+        attributes: The zarr attributes of the channel group.
+        where: Node name for the error message.
+
+    Raises:
+        ValueError: If name, unit, or rate_hz is absent, or if a key holds a
+            value outside its type or range.
     """
     fields = tsz_fields(attributes, where)
     return ContinuousAttrs(
@@ -484,8 +567,13 @@ def parse_event_attrs(
 ) -> EventAttrs:
     """Return the tsz fields of an event channel group.
 
-    Raises ValueError if name is absent, or if a key holds a value outside
-    its type or range.
+    Args:
+        attributes: The zarr attributes of the channel group.
+        where: Node name for the error message.
+
+    Raises:
+        ValueError: If name is absent, or if a key holds a value outside its
+            type or range.
     """
     fields = tsz_fields(attributes, where)
     return EventAttrs(
@@ -503,7 +591,12 @@ def parse_event_attrs(
 def parse_level_attrs(attributes: Mapping[str, object], where: str) -> float:
     """Return the bin width of a level group in microseconds.
 
-    Raises ValueError unless tsz.period_us is a finite number above 0.
+    Args:
+        attributes: The zarr attributes of the level group.
+        where: Node name for the error message.
+
+    Raises:
+        ValueError: Unless tsz.period_us is a finite number above 0.
     """
     return _positive_number(tsz_fields(attributes, where), "period_us", where)
 
@@ -513,8 +606,15 @@ def parse_count_level_attrs(
 ) -> CountLevelAttrs:
     """Return the tsz fields of a count level group.
 
-    offset_us defaults to 0. Raises ValueError unless tsz.period_us is a
-    finite number above 0 and tsz.offset_us is an integer multiple of it.
+    The offset_us field defaults to 0.
+
+    Args:
+        attributes: The zarr attributes of the level group.
+        where: Node name for the error message.
+
+    Raises:
+        ValueError: Unless tsz.period_us is a finite number above 0 and
+            tsz.offset_us is an integer multiple of it.
     """
     fields = tsz_fields(attributes, where)
     period_us = _positive_number(fields, "period_us", where)
@@ -534,8 +634,15 @@ def parse_waveform_attrs(
 ) -> WaveformAttrs:
     """Return the tsz fields of a waveforms or waveform_mean array.
 
-    event_sample defaults to 0. Raises ValueError if period_us is absent, or
-    if a key holds a value outside its type or range.
+    The event_sample field defaults to 0.
+
+    Args:
+        attributes: The zarr attributes of the array.
+        where: Node name for the error message.
+
+    Raises:
+        ValueError: If period_us is absent, or if a key holds a value outside
+            its type or range.
     """
     fields = tsz_fields(attributes, where)
     return WaveformAttrs(

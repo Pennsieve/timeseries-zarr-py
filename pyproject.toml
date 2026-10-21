@@ -99,6 +99,8 @@ line-length = 80
 extend-exclude = ["timeseries_zarr/_version.py"]
 
 [tool.ruff.lint]
+preview = true
+explicit-preview-rules = true
 select = [
     "E",    # pycodestyle errors
     "W",    # pycodestyle warnings
@@ -114,7 +116,11 @@ select = [
     "TID",  # flake8-tidy-imports
     "N",    # pep8-naming
     "PL",   # pylint
-    "D",    # pydocstyle (PEP 257 docstring conventions)
+    "D",    # pydocstyle (Google docstring conventions)
+    "DOC102",  # documented parameter does not exist
+    "DOC202",  # Returns section on a function that returns nothing
+    "DOC402",  # missing Yields section
+    "DOC403",  # Yields section on a function that does not yield
 ]
 ignore = [
     "E501",     # line too long (handled by formatter)
@@ -129,10 +135,10 @@ ban-relative-imports = "all"
 max-args = 10
 
 [tool.ruff.lint.pydocstyle]
-convention = "pep257"
+convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B", "C4", "ANN", "D", "PLR2004"]
+"tests/*" = ["B", "C4", "ANN", "D", "DOC", "PLR2004"]
 
 [tool.mypy]
 python_version = "3.12"

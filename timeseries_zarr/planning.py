@@ -33,9 +33,17 @@ def level_count(
 
     Raw is not a level. Level k is included only while it would still hold at
     least min_bins complete bins, and the total is capped at max_levels. A
-    partial trailing bin does not count toward min_bins, so this gate is one
+    partial trailing bin does not count toward min_bins, so this gate is
     stricter than level_bins, which keeps the partial bin. A channel too short
     for level 1 gets 0, and so does an empty one.
+
+    Args:
+        num_samples: Raw samples in the channel.
+        max_levels: Most levels to return.
+        min_bins: Fewest complete bins a level must hold.
+
+    Returns:
+        The number of levels.
     """
     count = 0
     for level in range(1, max_levels + 1):
@@ -49,7 +57,17 @@ def level_bins(num_samples: int, level: int) -> int:
     """Return the number of bins at a level for num_samples raw samples.
 
     Level k has one bin per disjoint block of 4**k raw samples, and a partial
-    final block becomes one bin. Raises ValueError if level is below 1.
+    final block becomes one bin.
+
+    Args:
+        num_samples: Raw samples in the channel.
+        level: Level number, from 1.
+
+    Returns:
+        The number of bins.
+
+    Raises:
+        ValueError: level is below 1.
     """
     _require_level(level)
     samples_per_bin: int = DECIMATION_FACTOR**level
@@ -59,7 +77,11 @@ def level_bins(num_samples: int, level: int) -> int:
 def sample_period_us(rate_hz: float) -> float:
     """Return the spacing between raw samples in microseconds.
 
-    Raises ValueError if rate_hz is not positive.
+    Args:
+        rate_hz: Sample rate in hertz.
+
+    Raises:
+        ValueError: rate_hz is not positive.
     """
     _require_rate(rate_hz)
     return MICROSECONDS_PER_SECOND / rate_hz
@@ -69,7 +91,14 @@ def level_period_us(rate_hz: float, level: int) -> float:
     """Return the microseconds that one bin spans at the given level.
 
     Each level spans 4x more time than the one below, and level 1 spans 4 raw
-    samples. Raises ValueError if rate_hz is not positive or level is below 1.
+    samples.
+
+    Args:
+        rate_hz: Sample rate in hertz.
+        level: Level number, from 1.
+
+    Raises:
+        ValueError: rate_hz is not positive or level is below 1.
     """
     _require_rate(rate_hz)
     _require_level(level)
@@ -90,9 +119,18 @@ def plan_levels(
 ) -> list[LevelPlan]:
     """Return the pyramid plan for a channel: one LevelPlan per level.
 
-    Numbered from 1. An empty list means the channel carries raw samples and
-    no levels. Raises ValueError if rate_hz is not positive, even when no
-    level fits.
+    Args:
+        num_samples: Raw samples in the channel.
+        rate_hz: Sample rate in hertz.
+        max_levels: Most levels to plan.
+        min_bins: Fewest complete bins a level must hold.
+
+    Returns:
+        The plans numbered from 1. An empty list means the channel carries raw
+        samples and no levels.
+
+    Raises:
+        ValueError: rate_hz is not positive, even when no level fits.
     """
     _require_rate(rate_hz)
     return [

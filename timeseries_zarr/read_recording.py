@@ -30,12 +30,18 @@ _JSON_TYPE_NAMES: Mapping[type, str] = {
 class Recording:
     """Identity and datetimes read from recording.json.
 
-    reference_time is the reference time, t = 0 of every time in the bundle,
-    as a datetime. session_start_time is the start_time of the session
-    object, the instant acquisition began. Each carries the UTC
-    offset the file gives it and is None when the file omits it. subject,
-    session, and source are producer-defined objects, read-only after parsing
-    and empty when the file omits them. session keeps its start_time entry.
+    Each time carries the UTC offset the file gives it. The three objects are
+    producer-defined and read-only after parsing.
+
+    Attributes:
+        reference_time: The reference time, t = 0 of every time in the
+            bundle. None when the file omits it.
+        session_start_time: The start_time of the session object, the instant
+            acquisition began. None when the file omits it.
+        subject: The subject object. Empty when the file omits it.
+        session: The session object, with its start_time entry. Empty when
+            the file omits it.
+        source: The source object. Empty when the file omits it.
     """
 
     reference_time: datetime | None = None
@@ -50,11 +56,18 @@ def _optional_time(
 ) -> datetime | None:
     """Return the RFC 3339 time under key, or None when key is absent.
 
-    name is how an error names the key, and defaults to key. The letters T
-    and Z may be lowercase. A leap second, second 60, reads as the first
-    instant of the next minute. The result drops any fraction finer than a
-    microsecond. Raises ValueError if the value is not a string, does not
-    parse, lies past the year 9999, or has no UTC offset.
+    The letters T and Z may be lowercase. A leap second, second 60, reads as
+    the first instant of the next minute. The result drops any fraction finer
+    than a microsecond.
+
+    Args:
+        document: The parsed object that may hold key.
+        key: The entry to read.
+        name: How an error names the key. Defaults to key.
+
+    Raises:
+        ValueError: If the value is not a string, does not parse, lies past
+            the year 9999, or has no UTC offset.
     """
     if key not in document:
         return None
@@ -83,9 +96,12 @@ def _optional_time(
 def _parse_time(value: str) -> datetime:
     """Return the time that the uppercase string value names.
 
-    Second 60 reads as the first instant of the next minute. Raises
-    ValueError if value does not parse. Raises OverflowError if value is
-    second 60 of the last minute of the year 9999.
+    Second 60 reads as the first instant of the next minute.
+
+    Raises:
+        ValueError: If value does not parse.
+        OverflowError: If value is second 60 of the last minute of the year
+            9999.
     """
     try:
         return datetime.fromisoformat(value)
@@ -102,7 +118,8 @@ def _optional_object(
 ) -> Mapping[str, object]:
     """Return a read-only copy of the object under key, empty when absent.
 
-    Raises ValueError if the value is not an object.
+    Raises:
+        ValueError: If the value is not an object.
     """
     if key not in document:
         return _EMPTY
@@ -117,10 +134,16 @@ def _optional_object(
 def parse_recording_document(document: Mapping[str, object]) -> Recording:
     """Return the Recording that a parsed recording.json document describes.
 
-    parse_recording_document reads only reference_time, subject, session,
-    source, and the start_time of session. Raises ValueError if a time is not an RFC
-    3339 string with a UTC offset, if a time lies past the year 9999, or if an
-    object key holds a non-object.
+    Reads only reference_time, subject, session, source, and the start_time
+    of session.
+
+    Args:
+        document: The parsed recording.json object.
+
+    Raises:
+        ValueError: If a time is not an RFC 3339 string with a UTC offset, if
+            a time lies past the year 9999, or if an object key holds a
+            non-object.
     """
     session = _optional_object(document, "session")
     return Recording(
@@ -137,8 +160,12 @@ def parse_recording_document(document: Mapping[str, object]) -> Recording:
 def parse_recording_text(text: str) -> Recording:
     """Return the Recording that the text of a recording.json file describes.
 
-    Raises ValueError if text is not valid JSON, if it holds a value other
-    than an object, or if parse_recording_document rejects the object.
+    Args:
+        text: The content of a recording.json file.
+
+    Raises:
+        ValueError: If text is not valid JSON, if it holds a value other than
+            an object, or if parse_recording_document rejects the object.
     """
     try:
         document = json.loads(text)

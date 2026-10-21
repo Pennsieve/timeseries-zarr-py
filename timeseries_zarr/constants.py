@@ -3,7 +3,7 @@
 from typing import Final
 
 FORMAT_VERSION: Final = "1.0"
-"""Version of the TS-Zarr specification the writer produces, the root tsz.version."""
+"""TS-Zarr specification version the writer produces (root tsz.version)."""
 
 MAJOR_VERSION: Final = 1
 """Major version a bundle's tsz.version must carry for the reader to open it."""
@@ -15,7 +15,7 @@ CHANNEL_KINDS: Final = ("continuous", "event")
 """Values of tsz.kind that mark a channel group."""
 
 ZARR_METADATA_FILE: Final = "zarr.json"
-"""Name of the metadata file every Zarr v3 node holds, the root group included."""
+"""Name of the metadata file every Zarr v3 node holds, the root included."""
 
 RAW_KEY: Final = "raw"
 """Key of the full-resolution sample array within a channel group."""
@@ -146,7 +146,7 @@ TARGET_SHARD_BYTES: Final = 16 * 2**20
 """Target outer shard size in bytes (~16 MiB) for sharded pyramid arrays."""
 
 EVENTS_SEARCH_LIMIT_BYTES: Final = 2**20
-"""Largest events array in bytes (1 MiB) that an event window search reads whole."""
+"""Largest events array in bytes (1 MiB) that a window search reads whole."""
 
 UNIT_TO_UV: Final = {
     "volts": 1e6,

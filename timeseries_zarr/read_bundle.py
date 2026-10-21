@@ -125,9 +125,17 @@ def _microsecond_offsets(
 ) -> npt.NDArray[np.timedelta64]:
     """Return time_us as whole microseconds, with NaT for a NaN.
 
-    An integer keeps its value, and a fraction rounds half to even. Raises
-    ValueError if a time is infinite or reaches _DATETIME_LIMIT_US in
-    magnitude.
+    An integer keeps its value, and a fraction rounds half to even.
+
+    Args:
+        time_us: Times in microseconds.
+
+    Returns:
+        A timedelta64[us] array of the same shape as time_us.
+
+    Raises:
+        ValueError: A time is infinite or reaches _DATETIME_LIMIT_US in
+            magnitude.
     """
     try:
         values = np.asarray(time_us)
@@ -154,10 +162,13 @@ def _microsecond_offsets(
 class Bundle:
     """A bundle opened for reading.
 
-    version is the tsz.version of the root group. recording is None when
-    the bundle has no recording.json. channels maps each channel key to its
-    channel in key order. It leaves out a channel group whose kind is
-    unknown.
+    Attributes:
+        root: The root group of the store.
+        version: The tsz.version of the root group.
+        recording: The parsed recording.json, or None when the bundle has
+            none.
+        channels: Each channel by key, in key order. A channel group whose
+            kind is unknown is absent.
     """
 
     root: ZarrGroup
@@ -198,9 +209,18 @@ class Bundle:
     def channel(self, name_or_id: str) -> Channel:
         """Return the channel whose name, or else whose id, is name_or_id.
 
-        A name match takes precedence over an id match. Raises ValueError if
-        several channels share the name, or share the id when no name
-        matches. Raises KeyError if no channel has that name or id.
+        A name match takes precedence over an id match.
+
+        Args:
+            name_or_id: A channel name or id.
+
+        Returns:
+            The matching channel.
+
+        Raises:
+            ValueError: Several channels share the name, or share the id when
+                no name matches.
+            KeyError: No channel has that name or id.
         """
         named = [
             key
@@ -229,8 +249,8 @@ class Bundle:
     def describe(self) -> str:
         """Return a plain-text table with one line per channel after a header.
 
-        An absent value shows as a hyphen. levels gives the range of level
-        numbers, or of count level numbers on an event channel.
+        An absent value shows as a hyphen. The levels column gives the range
+        of level numbers, or of count level numbers on an event channel.
         """
         rows = [_DESCRIBE_HEADER]
         rows.extend(
@@ -241,15 +261,20 @@ class Bundle:
     def datetimes(self, time_us: npt.ArrayLike) -> npt.NDArray[np.datetime64]:
         """Return each time in time_us as a UTC datetime64[us].
 
-        time_us counts microseconds from the reference time, and a fraction
-        rounds to the nearest microsecond. A time halfway between two
-        microseconds rounds to the even one. The result has dtype
-        datetime64[us], the shape of time_us, and NaT for a NaN.
+        A fraction rounds to the nearest microsecond. A time halfway between
+        two microseconds rounds to the even one.
 
-        Raises ValueError if recording.json holds no reference_time, or one
-        whose UTC time falls outside years 1 through 9999. Also raises
-        ValueError if a time is infinite or reaches 2^62 microseconds in
-        magnitude.
+        Args:
+            time_us: Microseconds from the reference time.
+
+        Returns:
+            A datetime64[us] array of the shape of time_us, with NaT for a
+            NaN.
+
+        Raises:
+            ValueError: recording.json holds no reference_time, or one whose
+                UTC time falls outside years 1 through 9999. Also raised when
+                a time is infinite or reaches 2^62 microseconds in magnitude.
         """
         reference = (
             None if self.recording is None else self.recording.reference_time
@@ -282,19 +307,30 @@ class Bundle:
     ) -> Stack:
         """Return the window of each continuous channel in keys as a Stack.
 
-        The rows follow the order of keys. The window is [start_us, end_us),
-        and a None bound leaves that side open. Level 0 reads the raw
-        samples, and the member of the Stack is then None. A level of at
-        least 1 reads member from the bins of that level. The rows span every
-        entry that overlaps the window on any channel. A row holds NaN past
-        the end of its channel, or 0 when member is count.
+        The rows follow the order of keys. The rows span every entry that
+        overlaps the window on any channel. A row holds NaN past the end of
+        its channel, or 0 when member is count.
 
-        Raises KeyError if no channel has a key. Raises ValueError if keys is
-        empty, repeats a key, or names an event channel. Also raises
-        ValueError if the channels differ in rate_hz or offset_us, or a
-        channel lacks the level or member. Also raises ValueError if member
-        is not a BinMember at a level of at least 1, or end_us is before
-        start_us. Raises TypeError if a bound or level is not an integer.
+        Args:
+            keys: Channel keys of the continuous channels to stack.
+            start_us: Inclusive start of the window. None leaves it open.
+            end_us: Exclusive end of the window. None leaves it open.
+            level: Level 0 reads the raw samples, and the member of the Stack
+                is then None. A level of at least 1 reads member from the
+                bins of that level.
+            member: The bin member to read at a level of at least 1.
+
+        Returns:
+            The stacked window.
+
+        Raises:
+            KeyError: No channel has a key.
+            ValueError: keys is empty, repeats a key, or names an event
+                channel. Also raised when the channels differ in rate_hz or
+                offset_us, a channel lacks the level or member, member is not
+                a BinMember at a level of at least 1, or end_us is before
+                start_us.
+            TypeError: A bound or level is not an integer.
         """
         channels = [self._continuous_channel(key) for key in keys]
         number = integer_argument(level, "level")
@@ -304,8 +340,9 @@ class Bundle:
     def _continuous_channel(self, key: int) -> ContinuousChannel:
         """Return the continuous channel with that key.
 
-        Raises KeyError if no channel has the key and ValueError if it names
-        an event channel.
+        Raises:
+            KeyError: No channel has the key.
+            ValueError: The key names an event channel.
         """
         channel = self.channels.get(key)
         if isinstance(channel, ContinuousChannel):
@@ -351,6 +388,12 @@ def _by_top_name[T](nodes: Mapping[str, T]) -> dict[str, dict[str, T]]:
 
     The inner dict keys each node by its path below that group, such as
     1/minmax.
+
+    Args:
+        nodes: Nodes by path below the root.
+
+    Returns:
+        The nodes by top-level group name.
     """
     grouped: dict[str, dict[str, T]] = {}
     for path, node in nodes.items():
@@ -368,8 +411,16 @@ def _parse_channel(
 ) -> Channel | None:
     """Return the channel with that key, or None if its kind is unknown.
 
-    An unknown kind issues a UserWarning. Raises ValueError if the channel
-    group does not parse.
+    An unknown kind issues a UserWarning.
+
+    Args:
+        key: The channel key.
+        attributes: The attributes of the channel group.
+        groups: The groups below the channel group, by relative path.
+        arrays: The arrays below the channel group, by relative path.
+
+    Raises:
+        ValueError: The channel group does not parse.
     """
     where = f"channel {key}"
     kind = parse_channel_kind(attributes, where)
@@ -396,9 +447,13 @@ def parse_bundle(root: ZarrGroup) -> Bundle:
     every other top-level node. It skips a channel group of unknown kind
     with a UserWarning. It reads recording.json through the store of root.
 
-    Raises ValueError if the root tsz.version is not a major.minor string
-    with major version MAJOR_VERSION. Also raises ValueError if a channel
-    group or recording.json does not parse.
+    Args:
+        root: An open root group.
+
+    Raises:
+        ValueError: The root tsz.version is not a major.minor string with
+            major version MAJOR_VERSION. Also raised when a channel group or
+            recording.json does not parse.
     """
     version = parse_version(dict(root.attrs))
     groups, arrays = descendants(root)
@@ -439,20 +494,24 @@ def open_bundle(
 ) -> Bundle:
     """Open the bundle at location for reading.
 
-    location is a local path, a file URL, an fsspec URL, a zarr Store, or a
-    StorePath. A relative path resolves against the working directory at the
-    open. storage_options goes to fsspec with a remote URL. The open reads
-    the root zarr.json and recording.json and no other object. It skips a
-    channel group of unknown kind with a UserWarning.
+    A relative path resolves against the working directory at the open. The
+    open reads the root zarr.json and recording.json and no other object. It
+    skips a channel group of unknown kind with a UserWarning.
 
-    Raises ValueError if the root zarr.json carries no consolidated metadata
-    or the root tsz.version is not a major.minor string with major version 1.
-    Also raises ValueError if a channel group or recording.json does not
-    parse. Also raises ValueError if a file URL names a host other than
-    localhost or holds a query or fragment. Raises FileNotFoundError if
-    location has no root zarr.json and ValueError if its root is an array.
-    Raises TypeError if storage_options comes with a memory URL or a
-    location that is not a remote URL. Raises ImportError if a remote URL
-    needs fsspec and fsspec is not installed.
+    Args:
+        location: A local path, a file URL, an fsspec URL, a zarr Store, or a
+            StorePath.
+        storage_options: Options that go to fsspec with a remote URL.
+
+    Raises:
+        ValueError: The root zarr.json carries no consolidated metadata, or
+            the root tsz.version is not a major.minor string with major
+            version 1. Also raised when a channel group or recording.json
+            does not parse, a file URL names a host other than localhost or
+            holds a query or fragment, or the root is an array.
+        FileNotFoundError: location has no root zarr.json.
+        TypeError: storage_options comes with a memory URL or a location that
+            is not a remote URL.
+        ImportError: A remote URL needs fsspec and fsspec is not installed.
     """
     return parse_bundle(open_root(location, storage_options))

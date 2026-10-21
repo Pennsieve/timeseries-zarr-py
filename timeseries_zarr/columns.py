@@ -12,9 +12,17 @@ def text_width(strings: Sequence[str]) -> int:
     """Return the width in bytes of the longest string once encoded as UTF-8.
 
     Counts bytes, so a character outside ASCII counts for 2 to 4. An empty
-    sequence, or one holding only empty strings, gives 0. Raises ValueError if
-    a string cannot be encoded as UTF-8, for example one with an unpaired
-    surrogate.
+    sequence, or one holding only empty strings, gives 0.
+
+    Args:
+        strings: Strings to measure.
+
+    Returns:
+        The width in bytes.
+
+    Raises:
+        ValueError: A string cannot be encoded as UTF-8, for example one with
+            an unpaired surrogate.
     """
     return max((len(text.encode("utf-8")) for text in strings), default=0)
 
@@ -22,12 +30,21 @@ def text_width(strings: Sequence[str]) -> int:
 def text_rows(strings: Sequence[str], width: int) -> npt.NDArray[np.uint8]:
     """Encode strings as rows of UTF-8 bytes, each zero-padded to width.
 
-    Returns a uint8 array of shape (len(strings), width). Row i holds the
-    UTF-8 bytes of strings[i] followed by zero bytes, so an empty string is a
-    row of zeros. No string may hold a NUL character, since it would read back
-    as padding. An empty sequence yields zero rows. Raises ValueError if width
-    is negative, a string encodes to more than width bytes, a string holds a
-    NUL, or a string cannot be encoded as UTF-8.
+    Row i holds the UTF-8 bytes of strings[i] followed by zero bytes, so an
+    empty string is a row of zeros. An empty sequence yields zero rows.
+
+    Args:
+        strings: Strings to encode. None may hold a NUL character, which
+            would read back as padding.
+        width: Row width in bytes.
+
+    Returns:
+        A uint8 array of shape (len(strings), width).
+
+    Raises:
+        ValueError: The width is negative, a string encodes to more than width
+            bytes, a string holds a NUL, or a string cannot be encoded as
+            UTF-8.
     """
     if width < 0:
         raise ValueError(f"width must be at least 0, got {width}")
@@ -50,7 +67,16 @@ def channels_width(max_key: int) -> int:
     """Return the byte width of a channel bitmask row for keys up to max_key.
 
     One bit per channel key, so key 0 to 7 need 1 byte and key 8 needs a
-    second. Raises ValueError if max_key is negative.
+    second.
+
+    Args:
+        max_key: Largest channel key a row can hold.
+
+    Returns:
+        The row width in bytes.
+
+    Raises:
+        ValueError: max_key is negative.
     """
     if max_key < 0:
         raise ValueError(f"max_key must be at least 0, got {max_key}")
@@ -62,13 +88,22 @@ def channels_rows(
 ) -> npt.NDArray[np.uint8]:
     """Encode the channel keys each event applies to as bitmask rows.
 
-    Returns a uint8 array of shape (len(key_lists), channels_width(max_key)).
     Row i has bit k mod 8 of byte k // 8 set, least significant bit first, for
     each key k in key_lists[i]. An empty list gives a row of zeros, which
     means the event applies to the whole recording. A repeated key sets its
     bit once, and keys may come in any order. An empty sequence yields zero
-    rows. Raises ValueError if max_key is negative or a key is negative or
-    above max_key.
+    rows.
+
+    Args:
+        key_lists: The channel keys of each event.
+        max_key: Largest channel key allowed.
+
+    Returns:
+        A uint8 array of shape (len(key_lists), channels_width(max_key)).
+
+    Raises:
+        ValueError: max_key is negative, or a key is negative or above
+            max_key.
     """
     width = channels_width(max_key)
     lists = [np.fromiter(keys, dtype=np.int64) for keys in key_lists]
@@ -100,9 +135,17 @@ def decode_text_rows(rows: npt.NDArray[np.uint8]) -> list[str]:
 
     Row i decodes the bytes before its first zero byte, or the whole row when
     it holds no zero byte. A row of zeros gives the empty string, and so does
-    every row of width 0. An array with no rows gives an empty list. Raises
-    ValueError if rows is not a rank 2 uint8 array or a row is not valid
-    UTF-8.
+    every row of width 0. An array with no rows gives an empty list.
+
+    Args:
+        rows: Rank 2 uint8 array of zero-padded UTF-8 rows.
+
+    Returns:
+        One string per row.
+
+    Raises:
+        ValueError: rows is not a rank 2 uint8 array or a row is not valid
+            UTF-8.
     """
     _check_rows(rows)
     return _decoded(
@@ -115,10 +158,17 @@ def decode_event_text(
 ) -> list[str]:
     """Decode the text rows of events as decode_text_rows does.
 
-    Row i holds the text of the event whose index is item i of indices, and
-    indices holds one index per row. where names the channel in an error
-    message. Raises ValueError if rows is not a rank 2 uint8 array or a row
-    is not valid UTF-8.
+    Args:
+        rows: Rank 2 uint8 array of zero-padded UTF-8 rows.
+        indices: The event index of each row, one per row, for error messages.
+        where: Channel name for error messages.
+
+    Returns:
+        One string per row.
+
+    Raises:
+        ValueError: rows is not a rank 2 uint8 array or a row is not valid
+            UTF-8.
     """
     _check_rows(rows)
     return _decoded(rows, indices, lambda index: f"{where}: event {index} text")
@@ -131,8 +181,16 @@ def _decoded(
 ) -> list[str]:
     """Decode each row up to its first zero byte as UTF-8.
 
-    indices numbers the rows, and subject names a row by its number in an
-    error message. Raises ValueError if a row is not valid UTF-8.
+    Args:
+        rows: Rank 2 uint8 array of zero-padded UTF-8 rows.
+        indices: The number of each row, one per row.
+        subject: Names a row by its number in an error message.
+
+    Returns:
+        One string per row.
+
+    Raises:
+        ValueError: A row is not valid UTF-8.
     """
     strings = []
     for index, row in zip(indices, rows, strict=True):
@@ -152,8 +210,16 @@ def decode_channels_rows(rows: npt.NDArray[np.uint8]) -> list[list[int]]:
     Bit k mod 8 of byte k // 8, least significant bit first, names channel
     key k. Row i gives its keys in ascending order. A row of zeros gives an
     empty list, which means the event applies to the whole recording. An
-    array with no rows gives an empty list. Raises ValueError if rows is not a
-    rank 2 uint8 array.
+    array with no rows gives an empty list.
+
+    Args:
+        rows: Rank 2 uint8 array of bitmask rows.
+
+    Returns:
+        The ascending channel keys of each row.
+
+    Raises:
+        ValueError: rows is not a rank 2 uint8 array.
     """
     _check_rows(rows)
     bits = np.unpackbits(rows, axis=1, bitorder="little")
