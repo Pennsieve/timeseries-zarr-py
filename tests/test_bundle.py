@@ -1874,3 +1874,130 @@ def test_write_bundle_writes_the_same_files_from_a_multi_channel_source_as_from_
     assert len(left) > 30
     assert left.keys() == right.keys()
     assert [name for name in left if left[name] != right[name]] == []
+
+
+def _without(source, *names):
+    """Return a copy of source that lacks the members called names."""
+    cls = type(source)
+    members = {
+        name: getattr(cls, name)
+        for name in dir(cls)
+        if not name.startswith("__") and name not in names
+    }
+    partial = type("Partial", (), members)()
+    partial.__dict__.update(
+        {k: v for k, v in vars(source).items() if k not in names}
+    )
+    return partial
+
+
+def test_write_bundle_names_the_member_an_event_source_lacks(
+    tmp_path, event_source
+):
+    output = tmp_path / "bundle"
+    partial = _without(event_source([1], id="e9"), "waveform_mean")
+    with pytest.raises(
+        ValueError,
+        match=r"events\[0\] \('e9'\) does not implement EventChannelSource; "
+        "missing waveform_mean$",
+    ):
+        write_bundle([], [partial], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_lists_every_member_an_event_source_lacks_in_order(
+    tmp_path, event_source
+):
+    partial = _without(event_source([1]), "waveform_period_us", "read_text")
+    with pytest.raises(
+        ValueError, match="missing read_text, waveform_period_us"
+    ):
+        write_bundle([], [partial], output_path=tmp_path / "bundle", opts=_OPTS)
+
+
+def test_write_bundle_names_the_member_a_continuous_source_lacks(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    partial = _without(
+        continuous_source(np.zeros(8, np.float32), id="c3"), "read_samples"
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"continuous\[0\] \('c3'\) does not implement "
+        "ContinuousChannelSource; missing read_samples$",
+    ):
+        write_bundle([partial], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_names_the_member_a_multi_channel_source_lacks(
+    tmp_path, continuous_source, multi_channel_source
+):
+    output = tmp_path / "bundle"
+    multi = multi_channel_source([continuous_source(np.zeros(8, np.float32))])
+    partial = _without(multi, "iter_windows")
+    with pytest.raises(
+        ValueError,
+        match=r"continuous\[0\] does not implement MultiChannelSource; "
+        "missing iter_windows$",
+    ):
+        write_bundle([partial], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_holds_a_source_with_channels_to_the_multi_channel_protocol(
+    tmp_path, continuous_source, multi_channel_source
+):
+    multi = multi_channel_source([continuous_source(np.zeros(8, np.float32))])
+    partial = _without(multi, "channels")
+    with pytest.raises(
+        ValueError, match="MultiChannelSource; missing channels"
+    ):
+        write_bundle([partial], [], output_path=tmp_path / "bundle", opts=_OPTS)
+
+
+def test_write_bundle_names_the_member_a_listed_channel_lacks(
+    tmp_path, continuous_source, multi_channel_source
+):
+    output = tmp_path / "bundle"
+    good = continuous_source(np.zeros(8, np.float32), id="c0")
+    bad = _without(continuous_source(np.zeros(8, np.float32), id="c1"), "unit")
+    multi = multi_channel_source([good, good])
+    multi._sources[1] = bad
+    with pytest.raises(
+        ValueError,
+        match=r"continuous\[0\]\.channels\(\)\[1\] \('c1'\) does not "
+        "implement ContinuousChannelMetadata; missing unit$",
+    ):
+        write_bundle([multi], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_rejects_an_event_source_listed_as_continuous(
+    tmp_path, event_source
+):
+    output = tmp_path / "bundle"
+    with pytest.raises(
+        ValueError,
+        match=r"continuous\[0\] \('ch-0'\) does not implement "
+        "ContinuousChannelSource; missing .*rate_hz",
+    ):
+        write_bundle(
+            [event_source([1], id="ch-0")],
+            [],
+            output_path=output,
+            opts=_OPTS,
+        )
+    assert not output.exists()
+
+
+def test_write_bundle_leaves_an_existing_bundle_when_a_source_is_incomplete(
+    tmp_path, continuous_source, event_source
+):
+    output = _write_mixed(tmp_path, continuous_source, event_source)
+    before = (output / "zarr.json").read_text()
+    partial = _without(event_source([1], id="e9"), "waveform_mean")
+    with pytest.raises(ValueError, match="missing waveform_mean"):
+        write_bundle([], [partial], output_path=output, opts=_OPTS)
+    assert (output / "zarr.json").read_text() == before

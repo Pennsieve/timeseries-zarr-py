@@ -1,5 +1,6 @@
 """Typed source protocols the writer consumes for channel data."""
 
+import inspect
 from collections.abc import Iterator, Sequence
 from typing import Protocol, runtime_checkable
 
@@ -7,6 +8,23 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.types import EventColumn
+
+
+def missing_members(source: object, protocol: type) -> list[str]:
+    """Return the sorted names of the members of protocol that source lacks.
+
+    A name is missing under the same test isinstance applies to a runtime
+    checkable protocol, so a source that fails isinstance has at least one.
+    """
+    # Python 3.12 has no typing.get_protocol_members.
+    members: frozenset[str] = getattr(protocol, "__protocol_attrs__")  # noqa: B009
+    missing = []
+    for name in members:
+        try:
+            inspect.getattr_static(source, name)
+        except AttributeError:
+            missing.append(name)
+    return sorted(missing)
 
 
 @runtime_checkable
