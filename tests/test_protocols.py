@@ -11,6 +11,7 @@ from timeseries_zarr.protocols import (
     EventChannelSource,
     MultiChannelSource,
     ProvenanceSource,
+    missing_members,
     source_provenance,
 )
 
@@ -358,3 +359,28 @@ def test_source_provenance_returns_what_the_source_gives():
 
     assert isinstance(Marked(), ProvenanceSource)
     assert source_provenance(Marked()) == {"software": "x 1"}
+
+
+def test_missing_members_is_empty_for_a_conforming_source() -> None:
+    assert missing_members(FakeContinuous(), ContinuousChannelSource) == []
+
+
+@pytest.mark.parametrize("missing", sorted(_event_members()))
+def test_missing_members_names_the_one_member_an_event_source_lacks(
+    missing: str,
+) -> None:
+    members = {k: v for k, v in _event_members().items() if k != missing}
+    source = type("Partial", (), members)()
+    assert missing_members(source, EventChannelSource) == [missing]
+
+
+def test_missing_members_sorts_the_names() -> None:
+    assert missing_members(object(), MultiChannelSource) == [
+        "channels",
+        "iter_windows",
+    ]
+
+
+def test_missing_members_includes_the_members_a_protocol_inherits() -> None:
+    names = missing_members(object(), ContinuousChannelSource)
+    assert {"id", "read_samples"} <= set(names)

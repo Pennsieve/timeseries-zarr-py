@@ -16,6 +16,7 @@ from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
     MultiChannelSource,
+    missing_members,
     source_provenance,
 )
 from timeseries_zarr.recording import (
@@ -56,6 +57,50 @@ class _ListedSource:
     def iter_windows(self) -> Iterator[Sequence[npt.NDArray[np.float32]]]:
         """Yield the windows of the wrapped source."""
         return self.source.iter_windows()
+
+
+def _require(source: object, protocol: type, label: str) -> None:
+    """Raise ValueError naming the missing members unless source implements protocol."""
+    if isinstance(source, protocol):
+        return
+    identifier = getattr(source, "id", None)
+    where = (
+        f"{label} ({identifier!r})" if isinstance(identifier, str) else label
+    )
+    missing = ", ".join(missing_members(source, protocol))
+    raise ValueError(
+        f"{where} does not implement {protocol.__name__}; missing {missing}"
+    )
+
+
+def check_sources(
+    continuous: Sequence[ContinuousChannelSource | MultiChannelSource],
+    events: Sequence[EventChannelSource],
+) -> None:
+    """Raise ValueError unless every source implements the protocol of its list.
+
+    An entry of events must implement EventChannelSource. An entry of
+    continuous must implement ContinuousChannelSource or MultiChannelSource,
+    and a source that has channels or iter_windows is held to
+    MultiChannelSource. Each channel a multi-channel source lists must
+    implement ContinuousChannelMetadata. The error names the position, the id
+    when the source has one, and the missing members.
+    """
+    for position, source in enumerate(continuous):
+        label = f"continuous[{position}]"
+        if isinstance(source, MultiChannelSource):
+            for number, channel in enumerate(source.channels()):
+                _require(
+                    channel,
+                    ContinuousChannelMetadata,
+                    f"{label}.channels()[{number}]",
+                )
+        elif hasattr(source, "channels") or hasattr(source, "iter_windows"):
+            _require(source, MultiChannelSource, label)
+        else:
+            _require(source, ContinuousChannelSource, label)
+    for position, event_source in enumerate(events):
+        _require(event_source, EventChannelSource, f"events[{position}]")
 
 
 def assign_indices(
@@ -279,7 +324,8 @@ def write_bundle(
     session start as session.start_time. With recording.wall_clock False the
     source times do not count from the Unix epoch, so the session start does
     not place the reference time. Sizing and compression follow opts.
-    Raises ValueError if two channels share an id, a time of recording has no
+    Raises ValueError if a source lacks a member of the protocol its list
+    requires, two channels share an id, a time of recording has no
     UTC offset, recording sets reference_time with wall_clock False,
     recording.session holds a start_time key, a voltage unit is not "uV"
     under voltage_policy require_uv, a
@@ -290,6 +336,7 @@ def write_bundle(
     rank 1, or the blocks of a channel do not total its num_samples. A failed
     write leaves a partial bundle with no consolidated metadata.
     """
+    check_sources(continuous, events)
     indexed = assign_indices(continuous, events)
     channels = indexed_channels(indexed)
     sources = [channel for _, channel in channels]

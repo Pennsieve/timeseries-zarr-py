@@ -54,6 +54,12 @@ Blocks may differ in length, so one source can hold channels of different sample
 A one-second EDF record, for example, holds 256 samples of an EEG channel beside 1 sample
 of an SpO2 channel.
 
+Before it clears or writes anything, `write_bundle` checks that every entry of `continuous`
+implements `ContinuousChannelSource` or `MultiChannelSource`, that every channel of a
+`MultiChannelSource` implements `ContinuousChannelMetadata`, and that every entry of
+`events` implements `EventChannelSource`. A source with a member missing raises
+`ValueError` with the list position and the missing member names.
+
 This example writes four channels of one 256 Hz stream in windows of 4096 rows:
 
 ```python
