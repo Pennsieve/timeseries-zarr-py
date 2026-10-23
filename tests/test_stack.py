@@ -85,6 +85,14 @@ def test_raw_stack_records_level_0_and_member_none(odd):
     assert np.isnan(stack.values[0, 1001:]).all()
 
 
+@pytest.mark.parametrize("member", [None, "median"])
+def test_raw_stack_ignores_member(odd, member):
+    channels = [odd.continuous[0], odd.continuous[2]]
+    stack = stack_channels(channels, None, None, member=member)
+    _assert_same_stack(stack, odd.stack([0, 2]))
+    assert stack.member is None
+
+
 def test_stack_holds_the_keys_names_and_units_in_the_order_given(odd):
     stack = odd.stack([2, 0])
     assert stack.keys == (2, 0)

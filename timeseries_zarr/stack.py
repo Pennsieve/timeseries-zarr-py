@@ -18,6 +18,7 @@ from timeseries_zarr.constants import (
     MEAN_KEY,
     MICROSECONDS_PER_SECOND,
     MINMAX_KEY,
+    RAW_KEY,
     VAR_KEY,
 )
 from timeseries_zarr.convert import (
@@ -274,13 +275,13 @@ def stack_channels(
     check_shared_grid(channels, number, chosen)
     count = _check_max_workers(max_workers)
     start, end = window_bounds(start_us, end_us)
-    name, column = _MEMBER_ARRAYS[member]
+    name, column = (RAW_KEY, None) if number == 0 else _MEMBER_ARRAYS[member]
 
     def read_one(
         channel: ContinuousChannel,
     ) -> tuple[int, float, npt.NDArray[Any]]:
         first, period_us, rows = read_entries(channel, start, end, number, name)
-        if number != 0 and column is not None:
+        if column is not None:
             rows = rows[:, column]
         return first, period_us, rows
 
