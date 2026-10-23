@@ -6,11 +6,11 @@ or whole bins.
 """
 
 import math
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from fractions import Fraction
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, SupportsIndex, overload
+from typing import TYPE_CHECKING, Any, Final, Literal, SupportsIndex, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -47,6 +47,7 @@ from timeseries_zarr.windows import (
     bin_period,
     check_level_arrays,
     check_level_numbers,
+    check_not_string,
     duration_us,
     index_range,
     integer_argument,
@@ -62,6 +63,7 @@ if TYPE_CHECKING:
     import xarray as xr
 
 _RAW_EXPECTATION = "a rank-1 floating-point array"
+_LEVEL_MEMBERS: Final = (MINMAX_KEY, MEAN_KEY, VAR_KEY, COUNT_KEY)
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -137,10 +139,12 @@ class Bins:
         period_us: The bin width in microseconds.
         min: The minimum of each bin, the first column of minmax.
         max: The maximum of each bin, the second column of minmax.
-        mean: The mean of each bin. None when the level does not hold it.
-        var: The variance of each bin. None when the level does not hold it.
+        mean: The mean of each bin. None when the level does not hold it or
+            the read left it out.
+        var: The variance of each bin. None when the level does not hold it
+            or the read left it out.
         count: The count of finite samples in each bin. None when the level
-            does not hold it.
+            does not hold it or the read left it out.
     """
 
     level: int
@@ -297,6 +301,7 @@ class ContinuousChannel:
         end_us: SupportsIndex | None = None,
         *,
         level: None = None,
+        members: Iterable[str] | None = None,
     ) -> Samples: ...
 
     @overload
@@ -306,6 +311,7 @@ class ContinuousChannel:
         end_us: SupportsIndex | None = None,
         *,
         level: SupportsIndex | None = None,
+        members: Iterable[str] | None = None,
     ) -> Samples | Bins: ...
 
     def read(
@@ -314,6 +320,7 @@ class ContinuousChannel:
         end_us: SupportsIndex | None = None,
         *,
         level: SupportsIndex | None = None,
+        members: Iterable[str] | None = None,
     ) -> Samples | Bins:
         """Return the raw samples or the bins of a level in a window.
 
@@ -325,17 +332,23 @@ class ContinuousChannel:
             end_us: The exclusive end of the window. None leaves the end
                 open.
             level: The level to read. 0 and None read the raw samples.
+            members: The members of the level to read from minmax, mean,
+                var, and count. None reads every member the level holds. The
+                read always holds min and max.
 
         Returns:
             Samples for level 0 or None, otherwise Bins.
 
         Raises:
-            TypeError: If a bound or level is not an integer.
-            ValueError: If end_us is before start_us or the channel has no
-                such level.
+            TypeError: If a bound or level is not an integer, or if members
+                is a string.
+            ValueError: If end_us is before start_us, the channel has no such
+                level, or members comes with a raw read or names a member
+                the level lacks.
         """
         number = self._level_number(level)
         start, end = window_bounds(start_us, end_us)
+        selected = self._selected_members(number, members)
         first, stop = self._index_range(start, end, number)
         if number == 0:
             return Samples(
@@ -353,9 +366,9 @@ class ContinuousChannel:
             period_us=level_period_us(self.rate_hz, number),
             min=minmax[:, 0],
             max=minmax[:, 1],
-            mean=_read_member(chosen.mean, first, stop),
-            var=_read_member(chosen.var, first, stop),
-            count=_read_member(chosen.count, first, stop),
+            mean=_read_member(chosen.mean, MEAN_KEY, selected, first, stop),
+            var=_read_member(chosen.var, VAR_KEY, selected, first, stop),
+            count=_read_member(chosen.count, COUNT_KEY, selected, first, stop),
         )
 
     def level_for(
@@ -461,6 +474,36 @@ class ContinuousChannel:
             raise ValueError(self._level_choices())
         return number
 
+    def _selected_members(
+        self, number: int, members: Iterable[str] | None
+    ) -> set[str]:
+        """Return the members of level number that a read returns.
+
+        The result always holds minmax, and it is empty for a raw read.
+        Raises TypeError if members is a string. Raises ValueError if
+        members comes with a raw read or names a member the level lacks.
+        """
+        if number == 0:
+            if members is not None:
+                raise ValueError(
+                    "level 0 holds raw samples and takes members None, "
+                    f"got {members!r}"
+                )
+            return set()
+        held = tuple(_member_arrays(self.levels[number]))
+        if members is None:
+            return set(held)
+        check_not_string(members, "members")
+        selected = {MINMAX_KEY}
+        for name in members:
+            if name not in held:
+                raise ValueError(
+                    f"channel {self.key} level {number} has members {held!r}; "
+                    f"members must name only these, got {name!r}"
+                )
+            selected.add(name)
+        return selected
+
     def _level_choices(self) -> str:
         """Return the error message for a level the channel does not hold."""
         where = f"channel {self.key}"
@@ -506,10 +549,32 @@ class ContinuousChannel:
 
 
 def _read_member(
-    array: ZarrArray | None, first: int, stop: int
+    array: ZarrArray | None,
+    name: str,
+    selected: set[str],
+    first: int,
+    stop: int,
 ) -> npt.NDArray[Any] | None:
-    """Return rows first through stop - 1 of a member, or None without one."""
-    return None if array is None else read_rows(array, first, stop)
+    """Return rows first through stop - 1 of member name.
+
+    The result is None when the level lacks the member or selected does not
+    hold name.
+    """
+    if array is None or name not in selected:
+        return None
+    return read_rows(array, first, stop)
+
+
+def _member_arrays(level: Level) -> dict[str, ZarrArray]:
+    """Return the members a level holds, keyed by name in spec order."""
+    present = dict(
+        zip(
+            _LEVEL_MEMBERS,
+            (level.minmax, level.mean, level.var, level.count),
+            strict=True,
+        )
+    )
+    return {name: array for name, array in present.items() if array is not None}
 
 
 def _gap_us(gap_us: SupportsIndex) -> int:

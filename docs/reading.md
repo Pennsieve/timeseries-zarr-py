@@ -315,8 +315,8 @@ A `Level` holds the zarr arrays `minmax`, `mean`, `var`, and `count`, with
 `None` for a member the level lacks. Slicing a zarr array, for example
 `channel.raw[1000:2000]`, reads that slice from the store.
 
-`read(start_us=None, end_us=None, *, level=None)` returns `Samples` for level
-`None` or 0, and `Bins` for a level number. The window is half-open,
+`read(start_us=None, end_us=None, *, level=None, members=None)` returns `Samples`
+for level `None` or 0, and `Bins` for a level number. The window is half-open,
 `[start_us, end_us)`, and a `None` bound leaves that side open.
 The read widens the window outward to whole samples or bins.
 The result holds every entry that overlaps the window, and `first` is the index
@@ -324,7 +324,13 @@ of its first entry. A window that reaches past either end of the channel reads
 the entries that exist, and a window outside the channel gives an empty result.
 
 `Bins` splits `minmax` into `min` and `max`.
-It also holds `mean`, `var`, and `count`, each `None` when the level lacks it.
+It also holds `mean`, `var`, and `count`, each `None` when the level lacks it or
+the read left it out.
+
+`members` names the members of the level to read, from `minmax`, `mean`, `var`,
+and `count`. `None` reads every member the level holds. The read always holds
+`min` and `max`, so `members=()` reads them alone. A name the level lacks raises
+`ValueError`, and `members` on a raw read raises `ValueError`.
 
 `level_for(start_us=None, end_us=None, *, bins)` returns the coarsest level at
 which `read` returns at least `bins` bins for the window. It returns 0, for the
@@ -346,6 +352,8 @@ with open_bundle("example.zarr") as bundle:
         level = channel.level_for(start_us, end_us, bins=1200)
         result = channel.read(start_us, end_us, level=level)
         print(level, type(result).__name__, len(result), result.first)
+    envelope = channel.read(0, 300_000_000, level=1, members=())
+    print(len(envelope), envelope.mean)
 ```
 
 Channel 2 of `example.zarr` starts 500,000 microseconds after the reference time.

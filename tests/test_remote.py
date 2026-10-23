@@ -282,6 +282,18 @@ def test_open_bundle_sends_the_storage_options_with_each_http_request(
     assert {value for _, _, value in http_server.requests} == {"1"}
 
 
+def test_level_read_of_no_other_member_over_http_fetches_only_minmax(
+    http_server, http_url
+):
+    channel = open_bundle(http_url).continuous[0]
+    http_server.requests.clear()
+    channel.read(0, 32_000_000, level=1, members=())
+    paths = [path for _, path, _ in http_server.requests]
+    assert any("/1/minmax/" in path for path in paths)
+    for name in ("mean", "var", "count"):
+        assert not any(f"/1/{name}/" in path for path in paths)
+
+
 def test_read_store_text_returns_none_for_an_object_the_server_lacks(
     http_url,
 ):

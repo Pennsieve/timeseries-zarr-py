@@ -12,3 +12,6 @@ Writes every channel of a `MultiChannelSource` in one pass over its windows.
 
 Reads TS-Zarr 1.0 bundles, with extras for pandas, xarray, and remote stores. Requires
 zarr 3.2.1 or later.
+
+`ContinuousChannel.read` takes `members`, the level members to read. A read with
+`members=()` holds `min` and `max` alone.

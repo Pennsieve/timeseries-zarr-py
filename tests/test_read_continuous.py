@@ -9,6 +9,7 @@ from zarr.storage import MemoryStore
 
 from tests.conftest import ODD_NAN_RUN, ODD_OFFSET_US, ODD_RATE_HZ
 from tests.test_bundle import _ACQUIRE
+from timeseries_zarr import read_continuous
 from timeseries_zarr.attrs import continuous_channel_attrs, level_group_attrs
 from timeseries_zarr.constants import (
     COUNT_KEY,
@@ -389,6 +390,99 @@ def test_bin_times_count_from_the_channel_offset(mixed_bundle):
 def test_read_accepts_a_numpy_integer_level(odd_bundle):
     bins = _channel(odd_bundle, 0).read(level=np.int64(2))
     assert (bins.level, len(bins)) == (2, 63)
+
+
+def _recorded_paths(monkeypatch):
+    """Record the path of every array that read_continuous.read_rows reads."""
+    paths = []
+    read_rows = read_continuous.read_rows
+
+    def counting(array, start, stop):
+        paths.append(array.path)
+        return read_rows(array, start, stop)
+
+    monkeypatch.setattr(read_continuous, "read_rows", counting)
+    return paths
+
+
+@pytest.mark.parametrize("members", [(), ("minmax",)])
+def test_level_read_of_no_other_member_holds_min_and_max_alone(
+    odd_bundle, members
+):
+    channel = _channel(odd_bundle, 2)
+    full = channel.read(300_000, 1_000_000, level=1)
+    bins = channel.read(300_000, 1_000_000, level=1, members=members)
+    assert (bins.first, len(bins)) == (full.first, len(full))
+    np.testing.assert_array_equal(bins.min, full.min)
+    np.testing.assert_array_equal(bins.max, full.max)
+    assert (bins.mean, bins.var, bins.count) == (None, None, None)
+
+
+def test_level_read_returns_only_the_named_members(odd_bundle):
+    channel = _channel(odd_bundle, 2)
+    full = channel.read(level=1)
+    bins = channel.read(level=1, members=("mean", "count"))
+    np.testing.assert_array_equal(bins.mean, full.mean)
+    np.testing.assert_array_equal(bins.count, full.count)
+    assert bins.var is None
+
+
+def test_level_read_of_no_other_member_reads_only_minmax(
+    odd_bundle, monkeypatch
+):
+    channel = _channel(odd_bundle, 2)
+    paths = _recorded_paths(monkeypatch)
+    channel.read(level=1, members=())
+    assert paths == [channel.levels[1].minmax.path]
+
+
+def test_level_read_reads_a_repeated_member_once(odd_bundle, monkeypatch):
+    channel = _channel(odd_bundle, 2)
+    paths = _recorded_paths(monkeypatch)
+    channel.read(level=1, members=("mean", "mean"))
+    assert paths == [
+        channel.levels[1].minmax.path,
+        channel.levels[1].mean.path,
+    ]
+
+
+@pytest.mark.parametrize("name", ["mean", "median"])
+def test_level_read_rejects_a_member_the_level_lacks(odd_bundle, name):
+    channel = _channel(odd_bundle, 0)
+    message = (
+        "channel 0 level 1 has members ('minmax',); members must name only "
+        f"these, got '{name}'"
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        channel.read(level=1, members=(name,))
+
+
+@pytest.mark.parametrize("level", [0, None])
+def test_raw_read_rejects_members(odd_bundle, level):
+    message = "level 0 holds raw samples and takes members None, got ()"
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _channel(odd_bundle, 0).read(level=level, members=())
+
+
+def test_level_read_rejects_a_string_of_members(odd_bundle):
+    with pytest.raises(TypeError, match="members must be a collection"):
+        _channel(odd_bundle, 2).read(level=1, members="mean")
+
+
+def test_level_read_of_members_none_reads_every_member(odd_bundle):
+    channel = _channel(odd_bundle, 2)
+    bins = channel.read(level=1, members=None)
+    full = channel.read(level=1)
+    for name, values in full.columns().items():
+        np.testing.assert_array_equal(bins.columns()[name], values)
+
+
+def test_level_read_with_members_accepts_numpy_integers(odd_bundle):
+    bins = _channel(odd_bundle, 2).read(
+        np.int64(0), np.int64(1_000_000), level=np.int64(1), members=()
+    )
+    assert (bins.level, bins.mean) == (1, None)
+    assert len(bins) == 128
 
 
 def test_read_rejects_float_bounds(odd_bundle):
