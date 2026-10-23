@@ -304,12 +304,14 @@ class Bundle:
         *,
         level: SupportsIndex = 0,
         member: BinMember = "mean",
+        max_workers: SupportsIndex = 1,
     ) -> Stack:
         """Return the window of each continuous channel in keys as a Stack.
 
         The rows follow the order of keys. The rows span every entry that
         overlaps the window on any channel. A row holds NaN past the end of
-        its channel, or 0 when member is count.
+        its channel, or 0 when member is count. The result does not depend on
+        max_workers.
 
         Args:
             keys: Channel keys of the continuous channels to stack.
@@ -319,6 +321,8 @@ class Bundle:
                 is then None. A level of at least 1 reads member from the
                 bins of that level.
             member: The bin member to read at a level of at least 1.
+            max_workers: The number of threads that read the channels. 1 reads
+                them in order on the calling thread.
 
         Returns:
             The stacked window.
@@ -328,14 +332,21 @@ class Bundle:
             ValueError: keys is empty, repeats a key, or names an event
                 channel. Also raised when the channels differ in rate_hz or
                 offset_us, a channel lacks the level or member, member is not
-                a BinMember at a level of at least 1, or end_us is before
-                start_us.
-            TypeError: A bound or level is not an integer.
+                a BinMember at a level of at least 1, end_us is before
+                start_us, or max_workers is below 1.
+            TypeError: A bound, level, or max_workers is not an integer.
         """
         channels = [self._continuous_channel(key) for key in keys]
         number = integer_argument(level, "level")
         start, end = window_bounds(start_us, end_us)
-        return stack_channels(channels, start, end, level=number, member=member)
+        return stack_channels(
+            channels,
+            start,
+            end,
+            level=number,
+            member=member,
+            max_workers=max_workers,
+        )
 
     def _continuous_channel(self, key: int) -> ContinuousChannel:
         """Return the continuous channel with that key.

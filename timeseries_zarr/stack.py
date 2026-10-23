@@ -6,21 +6,32 @@ every row then starts at the same time.
 """
 
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Literal, get_args
+from typing import TYPE_CHECKING, Any, Final, Literal, SupportsIndex, get_args
 
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.constants import COUNT_KEY, MICROSECONDS_PER_SECOND
+from timeseries_zarr.constants import (
+    COUNT_KEY,
+    MEAN_KEY,
+    MICROSECONDS_PER_SECOND,
+    MINMAX_KEY,
+    VAR_KEY,
+)
 from timeseries_zarr.convert import (
     TIME_COLUMN,
     Columns,
     stack_to_dataframe,
     stack_to_xarray,
 )
-from timeseries_zarr.read_continuous import Bins, ContinuousChannel, Samples
-from timeseries_zarr.windows import integer_argument, time_axis
+from timeseries_zarr.read_continuous import (
+    ContinuousChannel,
+    member_arrays,
+    read_entries,
+)
+from timeseries_zarr.windows import integer_argument, time_axis, window_bounds
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -33,6 +44,14 @@ min and max are the two columns of minmax.
 """
 
 _MEMBERS: Final[tuple[BinMember, ...]] = get_args(BinMember.__value__)
+_MEMBER_ARRAYS: Final[dict[BinMember, tuple[str, int | None]]] = {
+    "min": (MINMAX_KEY, 0),
+    "max": (MINMAX_KEY, 1),
+    "mean": (MEAN_KEY, None),
+    "var": (VAR_KEY, None),
+    "count": (COUNT_KEY, None),
+}
+"""Array of a level and its column, or None for a rank-1 array, per member."""
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -183,29 +202,13 @@ def check_shared_grid(
                 f"channel {channel.key} has no level {number}; stack needs "
                 "a level that every channel holds"
             )
-        held = {
-            "min": chosen.minmax,
-            "max": chosen.minmax,
-            "mean": chosen.mean,
-            "var": chosen.var,
-            "count": chosen.count,
-        }
-        if held[member] is None:
+        name, _ = _MEMBER_ARRAYS[member]
+        if name not in member_arrays(chosen):
             raise ValueError(
                 f"level {number} of channel {channel.key} has no {member}; "
                 "stack needs a member that every channel holds at level "
                 f"{number}"
             )
-
-
-def _entries(result: Samples | Bins, member: BinMember) -> npt.NDArray[Any]:
-    """Return the samples of a raw read, or the member column of bins."""
-    if isinstance(result, Samples):
-        return result.values
-    # Each name in _MEMBERS is a field of Bins, and check_shared_grid has
-    # confirmed that the level holds member.
-    entries: npt.NDArray[Any] = getattr(result, member)
-    return entries
 
 
 def _check_distinct(channels: Sequence[ContinuousChannel]) -> None:
@@ -220,6 +223,19 @@ def _check_distinct(channels: Sequence[ContinuousChannel]) -> None:
         seen.add(channel.key)
 
 
+def _check_max_workers(max_workers: SupportsIndex) -> int:
+    """Return max_workers as an int.
+
+    Raises:
+        TypeError: If max_workers is not an integer.
+        ValueError: If max_workers is below 1.
+    """
+    count = integer_argument(max_workers, "max_workers")
+    if count < 1:
+        raise ValueError(f"max_workers must be at least 1, got {count}")
+    return count
+
+
 def stack_channels(
     channels: Sequence[ContinuousChannel],
     start_us: int | None,
@@ -227,11 +243,13 @@ def stack_channels(
     *,
     level: int = 0,
     member: BinMember = "mean",
+    max_workers: SupportsIndex = 1,
 ) -> Stack:
     """Return the window of each channel as one row of a Stack.
 
     The rows span every entry that overlaps the window on any channel. A row
     holds NaN past the end of its channel, or 0 when member is count.
+    The result does not depend on max_workers.
 
     Args:
         channels: The channels to stack, in row order.
@@ -241,25 +259,43 @@ def stack_channels(
         level: The level to read. Level 0 reads the raw samples and ignores
             member.
         member: The statistic to read from the bins of a level of at least 1.
+        max_workers: The number of threads that read the channels. 1 reads
+            them in order on the calling thread.
 
     Raises:
         ValueError: If two channels share a key, if check_shared_grid rejects
-            the channels, or if end_us is before start_us.
-        TypeError: If a bound or level is not an integer.
+            the channels, if end_us is before start_us, or if max_workers is
+            below 1.
+        TypeError: If a bound, level, or max_workers is not an integer.
     """
     _check_distinct(channels)
     number = integer_argument(level, "level")
     chosen = None if number == 0 else member
     check_shared_grid(channels, number, chosen)
-    results = [
-        channel.read(start_us, end_us, level=number) for channel in channels
-    ]
-    rows = [_entries(result, member) for result in results]
+    count = _check_max_workers(max_workers)
+    start, end = window_bounds(start_us, end_us)
+    name, column = _MEMBER_ARRAYS[member]
+
+    def read_one(
+        channel: ContinuousChannel,
+    ) -> tuple[int, float, npt.NDArray[Any]]:
+        first, period_us, rows = read_entries(channel, start, end, number, name)
+        if number != 0 and column is not None:
+            rows = rows[:, column]
+        return first, period_us, rows
+
+    workers = min(count, len(channels))
+    if workers == 1:
+        results = [read_one(channel) for channel in channels]
+    else:
+        with ThreadPoolExecutor(workers) as executor:
+            results = list(executor.map(read_one, channels))
+    rows = [row for _, _, row in results]
     # The channels share one grid and differ only in length. A channel that
     # ends before the window reads nothing, and every other read starts at
     # the shared first.
-    first = max(result.first for result in results)
-    stop = max(result.first + len(result) for result in results)
+    first = max(entry_first for entry_first, _, _ in results)
+    stop = max(entry_first + row.shape[0] for entry_first, _, row in results)
     dtype = np.result_type(*(row.dtype for row in rows))
     fill = 0 if chosen == COUNT_KEY else np.nan
     values = np.full((len(rows), stop - first), fill, dtype=dtype)
@@ -273,6 +309,6 @@ def stack_channels(
         member=chosen,
         offset_us=channels[0].offset_us,
         first=first,
-        period_us=results[0].period_us,
+        period_us=results[0][1],
         values=values,
     )

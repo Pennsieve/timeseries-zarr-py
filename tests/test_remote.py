@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 from zarr.storage import FsspecStore
 
+from tests.conftest import write_pair_bundle
 from timeseries_zarr.read_bundle import open_bundle
 from timeseries_zarr.recording import RECORDING_FILE
 from timeseries_zarr.zarr_io import read_store_text
@@ -292,6 +293,28 @@ def test_level_read_of_no_other_member_over_http_fetches_only_minmax(
     assert any("/1/minmax/" in path for path in paths)
     for name in ("mean", "var", "count"):
         assert not any(f"/1/{name}/" in path for path in paths)
+
+
+@pytest.fixture(scope="module")
+def pair_bundle(mixed_bundle):
+    """Write the pair bundle beside the mixed bundle, under the served directory."""
+    return write_pair_bundle(mixed_bundle.parent / "pair")
+
+
+def test_threaded_stack_over_http_matches_the_stack_on_disk(
+    http_server, pair_bundle
+):
+    bundle = open_bundle(_server_url(http_server, pair_bundle.name))
+    options = {"level": 1, "member": "count"}
+    threaded = bundle.stack([0, 1], 0, 8_000_000, **options, max_workers=2)
+    serial = bundle.stack([0, 1], 0, 8_000_000, **options)
+    on_disk = open_bundle(pair_bundle).stack([0, 1], 0, 8_000_000, **options)
+    assert threaded.values.shape == (2, 1024)
+    assert (threaded.values[1, 750:] == 0).all()
+    for expected in (serial, on_disk):
+        np.testing.assert_array_equal(threaded.values, expected.values)
+        assert threaded.values.dtype == expected.values.dtype
+        assert threaded.first == expected.first
 
 
 def test_read_store_text_returns_none_for_an_object_the_server_lacks(

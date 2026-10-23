@@ -288,21 +288,23 @@ def check_label_range(
     )
 
 
-def check_not_string(names: object, argument: str) -> None:
+def check_not_string(
+    names: object, argument: str, noun: str = "column names"
+) -> None:
     """Raise TypeError if names is a string.
 
     Args:
-        names: The value of argument, which takes a collection of column
-            names.
+        names: The value of argument, which takes a collection of names.
         argument: The name of the argument in the error message.
+        noun: The kind of name in the error message.
 
     Raises:
         TypeError: If names is a string.
     """
     if isinstance(names, str):
         raise TypeError(
-            f"{argument} must be a collection of column names, got the "
-            f"string {names!r}"
+            f"{argument} must be a collection of {noun}, got the string "
+            f"{names!r}"
         )
 
 

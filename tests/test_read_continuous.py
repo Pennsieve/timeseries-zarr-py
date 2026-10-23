@@ -465,7 +465,10 @@ def test_raw_read_rejects_members(odd_bundle, level):
 
 
 def test_level_read_rejects_a_string_of_members(odd_bundle):
-    with pytest.raises(TypeError, match="members must be a collection"):
+    message = (
+        "members must be a collection of member names, got the string 'mean'"
+    )
+    with pytest.raises(TypeError, match=re.escape(message)):
         _channel(odd_bundle, 2).read(level=1, members="mean")
 
 

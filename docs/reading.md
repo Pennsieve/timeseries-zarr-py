@@ -505,8 +505,8 @@ with open_bundle("example.zarr") as bundle:
 
 ## Stacking channels
 
-`bundle.stack(keys, start_us=None, end_us=None, *, level=0, member="mean")` reads
-one window of several continuous channels into one array. The channels must
+`bundle.stack(keys, start_us=None, end_us=None, *, level=0, member="mean", max_workers=1)`
+reads one window of several continuous channels into one array. The channels must
 share `rate_hz` and `offset_us`. Level 0 reads the raw samples, and the `member`
 of the result is `None`. A level of at least 1 reads `member`, which is
 `min`, `max`, `mean`, `var`, or `count`. Every channel must hold that member
@@ -517,13 +517,21 @@ entry that overlaps the window on any channel. A row holds NaN past the end of
 its channel, or 0 when `member` is `count`. `names` and `units` follow the order
 of `keys`.
 
+A stack reads one array per channel. At level 0 it reads `raw`, and at a level of
+at least 1 it reads the array that holds `member`. `max_workers` is the number of
+threads that read the channels. At 1 the call reads them in order. A larger value
+reads up to that many channels at once. On a remote store, a stack of many
+channels then takes less time. The result does not depend on `max_workers`. Each
+thread holds its own zarr request budget, so `max_workers` threads can keep that
+many times `async.concurrency` requests in flight.
+
 ```python
 from timeseries_zarr import open_bundle
 
 with open_bundle("example.zarr") as bundle:
     stack = bundle.stack([0, 1], 0, 10_000_000, level=1, member="mean")
     print(stack.keys, stack.names, stack.values.shape, stack.period_us)
-    raw = bundle.stack([0, 1], 0, 3_000)
+    raw = bundle.stack([0, 1], 0, 3_000, max_workers=2)
     print(raw.level, raw.member)
     print(raw.values)
 ```

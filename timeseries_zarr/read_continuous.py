@@ -490,10 +490,10 @@ class ContinuousChannel:
                     f"got {members!r}"
                 )
             return set()
-        held = tuple(_member_arrays(self.levels[number]))
+        held = tuple(member_arrays(self.levels[number]))
         if members is None:
             return set(held)
-        check_not_string(members, "members")
+        check_not_string(members, "members", "member names")
         selected = {MINMAX_KEY}
         for name in members:
             if name not in held:
@@ -565,7 +565,7 @@ def _read_member(
     return read_rows(array, first, stop)
 
 
-def _member_arrays(level: Level) -> dict[str, ZarrArray]:
+def member_arrays(level: Level) -> dict[str, ZarrArray]:
     """Return the members a level holds, keyed by name in spec order."""
     present = dict(
         zip(
@@ -575,6 +575,35 @@ def _member_arrays(level: Level) -> dict[str, ZarrArray]:
         )
     )
     return {name: array for name, array in present.items() if array is not None}
+
+
+def read_entries(
+    channel: ContinuousChannel,
+    start_us: int | None,
+    end_us: int | None,
+    number: int,
+    name: str,
+) -> tuple[int, float, npt.NDArray[Any]]:
+    """Return first, period_us, and the rows of one array in a window.
+
+    number 0 reads the raw samples and ignores name. Otherwise name is the
+    member of level number, and minmax returns rows of shape (n, 2). Raises
+    ValueError if the channel lacks the level or the level lacks name.
+    """
+    if number != 0 and number not in channel.levels:
+        raise ValueError(channel._level_choices())
+    first, stop = channel._index_range(start_us, end_us, number)
+    if number == 0:
+        return first, channel.period_us, read_rows(channel.raw, first, stop)
+    held = member_arrays(channel.levels[number])
+    array = held.get(name)
+    if array is None:
+        raise ValueError(
+            f"channel {channel.key} level {number} has members "
+            f"{tuple(held)!r}; name must be one of these, got {name!r}"
+        )
+    period_us = level_period_us(channel.rate_hz, number)
+    return first, period_us, read_rows(array, first, stop)
 
 
 def _gap_us(gap_us: SupportsIndex) -> int:

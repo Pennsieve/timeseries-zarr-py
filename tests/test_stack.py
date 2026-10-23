@@ -1,13 +1,13 @@
 import dataclasses
 import re
 import sys
+import threading
 
 import numpy as np
 import pytest
 
-from tests.conftest import ODD_OFFSET_US, ArrayContinuousSource
-from tests.test_bundle import _SPEC_OPTS
-from timeseries_zarr.bundle import write_bundle
+from tests.conftest import ODD_OFFSET_US, write_pair_bundle
+from timeseries_zarr import read_continuous
 from timeseries_zarr.convert import CHANNEL_DIMENSION, TIME_COLUMN
 from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.read_bundle import open_bundle
@@ -15,7 +15,6 @@ from timeseries_zarr.stack import Stack, check_shared_grid, stack_channels
 
 _RAW_PERIOD_US = 1953.125
 _LEVEL_1_PERIOD_US = 7812.5
-_PAIR_LENGTHS = (4096, 3000)
 _PAIR_LEVEL_1_BINS = (1024, 750)
 
 
@@ -31,24 +30,9 @@ def mixed(mixed_bundle):
 
 @pytest.fixture(scope="module")
 def pair(tmp_path_factory):
-    """Open a bundle of two 512 Hz channels that start together.
-
-    Channel 0 holds more samples than channel 1, and level 1 of each holds
-    minmax, mean, and count.
-    """
-    sources = [
-        ArrayContinuousSource(
-            np.arange(length, dtype=np.float32),
-            id=f"pair-{index}",
-            name=f"pair-{index}",
-            rate_hz=512.0,
-            start_us=10_000_000,
-        )
-        for index, length in enumerate(_PAIR_LENGTHS)
-    ]
+    """Open the pair bundle of tests/conftest.py."""
     path = tmp_path_factory.mktemp("pair") / "bundle"
-    write_bundle(sources, [], output_path=path, opts=_SPEC_OPTS)
-    return open_bundle(path)
+    return open_bundle(write_pair_bundle(path))
 
 
 @pytest.fixture
@@ -350,6 +334,146 @@ def test_stack_channels_matches_bundle_stack(odd):
     through = odd.stack([0, 2], 0, 50_000, level=1, member="max")
     np.testing.assert_array_equal(direct.values, through.values)
     assert (direct.first, direct.keys) == (through.first, through.keys)
+
+
+def _wrap_reads(monkeypatch, before):
+    """Call before with each array that read_continuous.read_rows reads."""
+    read_rows = read_continuous.read_rows
+
+    def wrapped(array, start, stop):
+        before(array)
+        return read_rows(array, start, stop)
+
+    monkeypatch.setattr(read_continuous, "read_rows", wrapped)
+
+
+def _record_paths(monkeypatch):
+    """Record the path of every array that read_continuous.read_rows reads."""
+    paths = []
+    _wrap_reads(monkeypatch, lambda array: paths.append(array.path))
+    return paths
+
+
+def _assert_same_stack(stack, expected):
+    np.testing.assert_array_equal(stack.values, expected.values)
+    assert stack.values.dtype == expected.values.dtype
+    assert (stack.first, stack.period_us) == (
+        expected.first,
+        expected.period_us,
+    )
+
+
+@pytest.mark.parametrize("max_workers", [2, 8])
+@pytest.mark.parametrize(
+    ("fixture", "options"),
+    [
+        ("odd", {}),
+        ("odd", {"level": 1, "member": "max"}),
+        ("pair", {"level": 1, "member": "count"}),
+    ],
+)
+def test_stack_does_not_depend_on_max_workers(
+    request, fixture, options, max_workers
+):
+    bundle = request.getfixturevalue(fixture)
+    keys = [0, 2] if fixture == "odd" else [0, 1]
+    serial = bundle.stack(keys, **options)
+    threaded = bundle.stack(keys, **options, max_workers=max_workers)
+    _assert_same_stack(threaded, serial)
+
+
+def test_stack_rejects_max_workers_below_1(odd):
+    message = "max_workers must be at least 1, got 0"
+    with pytest.raises(ValueError, match=re.escape(message)):
+        odd.stack([0, 2], max_workers=0)
+
+
+@pytest.mark.parametrize("max_workers", [2.5, "2"])
+def test_stack_rejects_max_workers_that_is_not_an_integer(odd, max_workers):
+    with pytest.raises(TypeError, match="max_workers must be an integer"):
+        odd.stack([0, 2], max_workers=max_workers)
+
+
+def test_stack_accepts_a_numpy_integer_max_workers(odd):
+    stack = odd.stack([0, 2], max_workers=np.int64(2))
+    _assert_same_stack(stack, odd.stack([0, 2]))
+
+
+@pytest.mark.parametrize(
+    ("fixture", "keys", "member", "array"),
+    [("odd", [0, 2], "max", "minmax"), ("pair", [0, 1], "count", "count")],
+)
+def test_stack_reads_one_array_per_channel(
+    request, monkeypatch, fixture, keys, member, array
+):
+    bundle = request.getfixturevalue(fixture)
+    paths = _record_paths(monkeypatch)
+    bundle.stack(keys, level=1, member=member, max_workers=2)
+    assert sorted(paths) == [f"{key}/1/{array}" for key in keys]
+
+
+def test_stack_rejects_channels_before_it_reads(odd, monkeypatch):
+    paths = _record_paths(monkeypatch)
+    with pytest.raises(ValueError, match="has no mean"):
+        odd.stack([2, 0], level=1, member="mean", max_workers=2)
+    assert paths == []
+
+
+def _fail_reads(monkeypatch, keys):
+    """Raise RuntimeError naming the channel for each read of a key in keys."""
+
+    def fail(array):
+        key = int(array.path.partition("/")[0])
+        if key in keys:
+            raise RuntimeError(f"read of channel {key} failed")
+
+    _wrap_reads(monkeypatch, fail)
+
+
+@pytest.mark.parametrize(
+    ("keys", "failing", "raised"),
+    [([2, 0], {0, 2}, 2), ([0, 2], {0, 2}, 0), ([0, 2], {2}, 2)],
+)
+def test_threaded_stack_raises_the_first_failure_in_key_order(
+    odd, monkeypatch, keys, failing, raised
+):
+    _fail_reads(monkeypatch, failing)
+    message = f"read of channel {raised} failed"
+    with pytest.raises(RuntimeError, match=message):
+        odd.stack(keys, max_workers=2)
+
+
+def test_threaded_stack_reads_two_channels_at_once(odd, monkeypatch):
+    barrier = threading.Barrier(2, timeout=5)
+    _wrap_reads(monkeypatch, lambda array: barrier.wait())
+    stack = odd.stack([0, 2], max_workers=2)
+    assert stack.values.shape == (2, 3000)
+
+
+def test_stack_with_one_worker_reads_one_channel_at_a_time(odd, monkeypatch):
+    barrier = threading.Barrier(2, timeout=0.2)
+    _wrap_reads(monkeypatch, lambda array: barrier.wait())
+    with pytest.raises(threading.BrokenBarrierError):
+        odd.stack([0, 2], max_workers=1)
+
+
+@pytest.mark.parametrize(("keys", "max_workers"), [([0, 2], 1), ([2], 4)])
+def test_stack_with_one_worker_reads_on_the_calling_thread(
+    odd, monkeypatch, keys, max_workers
+):
+    threads = []
+    _wrap_reads(
+        monkeypatch, lambda array: threads.append(threading.get_ident())
+    )
+    odd.stack(keys, max_workers=max_workers)
+    assert threads
+    assert set(threads) == {threading.get_ident()}
+
+
+def test_stack_channels_matches_bundle_stack_with_max_workers(odd):
+    channels = [odd.continuous[0], odd.continuous[2]]
+    direct = stack_channels(channels, None, None, max_workers=2)
+    _assert_same_stack(odd.stack([0, 2], max_workers=2), direct)
 
 
 def test_check_shared_grid_accepts_channels_that_share_a_level(odd):

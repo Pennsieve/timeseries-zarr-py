@@ -15,3 +15,6 @@ zarr 3.2.1 or later.
 
 `ContinuousChannel.read` takes `members`, the level members to read. A read with
 `members=()` holds `min` and `max` alone.
+
+`Bundle.stack` and `stack_channels` read one array per channel and take
+`max_workers`, the number of threads that read the channels.

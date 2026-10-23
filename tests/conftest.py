@@ -278,6 +278,30 @@ def write_mixed_bundle(
     return path
 
 
+PAIR_LENGTHS = (4096, 3000)
+"""Sample counts of the two channels of the pair bundle."""
+
+
+def write_pair_bundle(path):
+    """Write a bundle of two 512 Hz channels that start together at path.
+
+    Channel 0 holds more samples than channel 1, and level 1 of each holds
+    minmax, mean, and count. Returns path.
+    """
+    sources = [
+        ArrayContinuousSource(
+            np.arange(length, dtype=np.float32),
+            id=f"pair-{index}",
+            name=f"pair-{index}",
+            rate_hz=512.0,
+            start_us=10_000_000,
+        )
+        for index, length in enumerate(PAIR_LENGTHS)
+    ]
+    write_bundle(sources, [], output_path=path, opts=_SPEC_OPTS)
+    return path
+
+
 MEMORY_PREFIX = "sub/bundle"
 """Prefix of the second copy of the mixed bundle in memory_bundle."""
 
