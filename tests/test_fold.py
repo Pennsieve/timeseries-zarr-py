@@ -17,10 +17,7 @@ from timeseries_zarr.fold import (
     _block_split,
     assemble_statistics,
     fold_raw,
-    fold_raw_block,
     fold_statistics,
-    fold_statistics_block,
-    split_members,
 )
 
 
@@ -73,82 +70,24 @@ def _direct(raw, width=4):
     return np.array(rows, dtype=np.float64).reshape(-1, STATISTIC_COLUMNS)
 
 
-def test_fold_raw_block_matches_the_direct_definition():
-    rng = np.random.default_rng(0)
-    raw = (5000.0 + 8.0 * rng.standard_normal(67)).astype(np.float32)
-    raw[5] = np.nan
-    raw[20:24] = np.nan
-    raw[40] = np.inf
-    raw[41] = -np.inf
-    out = fold_raw_block(raw)
-    want = _direct(raw)
-    assert out.shape == (17, STATISTIC_COLUMNS)
-    assert np.array_equal(np.isnan(out), np.isnan(want))
-    assert np.allclose(out, want, rtol=1e-12, equal_nan=True)
-
-
 @pytest.mark.parametrize(
     ("m", "expected_rows"),
     [(0, 0), (1, 1), (2, 1), (3, 1), (4, 1), (5, 2), (17, 5)],
 )
-def test_fold_raw_block_shape(m, expected_rows):
-    out = fold_raw_block(np.arange(m, dtype=np.float32))
-    assert out.shape == (expected_rows, STATISTIC_COLUMNS)
+def test_fold_raw_row_count(m, expected_rows):
+    assert fold_raw(np.arange(m, dtype=np.float32)).rows == expected_rows
 
 
-def test_fold_raw_block_tail_folds_partial_block():
-    out = fold_raw_block(np.array([0, 1, 2, 3, 4], dtype=np.float32))
-    assert out.shape == (2, STATISTIC_COLUMNS)
-    assert tuple(out[0]) == (0.0, 3.0, 1.5, 1.25, 4.0)
-    assert tuple(out[1]) == (4.0, 4.0, 4.0, 0.0, 1.0)
+def test_fold_raw_empty_input_yields_zero_rows():
+    out = fold_raw(np.array([], dtype=np.float32))
+    assert out.rows == 0
+    assert out.mean.dtype == np.float64
 
 
-def test_fold_raw_block_empty():
-    out = fold_raw_block(np.array([], dtype=np.float32))
-    assert out.shape == (0, STATISTIC_COLUMNS)
-    assert out.dtype == np.float64
-
-
-def test_fold_raw_block_single_sample():
-    out = fold_raw_block(np.array([7.0], dtype=np.float32))
-    assert tuple(out[0]) == (7.0, 7.0, 7.0, 0.0, 1.0)
-
-
-def test_fold_raw_block_dtype_is_float64():
-    out = fold_raw_block(np.arange(8, dtype=np.float32))
-    assert out.dtype == np.float64
-
-
-@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
-def test_fold_raw_block_one_non_finite_sample_makes_stats_nan(bad):
-    raw = np.array([1, 2, bad, 4, 5, 6, 7, 8], dtype=np.float32)
-    out = fold_raw_block(raw)
-    assert np.isnan(
-        out[0, [MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN]]
-    ).all()
-    assert out[0, COUNT_COLUMN] == 3.0
-    assert tuple(out[1]) == (5.0, 8.0, 6.5, 1.25, 4.0)
-
-
-def test_fold_raw_block_all_non_finite_bin_has_count_zero():
-    raw = np.array([np.nan, np.inf, np.nan, -np.inf], dtype=np.float32)
-    out = fold_raw_block(raw)
-    assert np.isnan(out[0, :COUNT_COLUMN]).all()
-    assert out[0, COUNT_COLUMN] == 0.0
-
-
-def test_fold_raw_block_raises_no_warning_on_non_finite_input():
-    raw = np.array([np.nan, np.nan, np.nan, np.nan, 1.0], dtype=np.float32)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        fold_raw_block(raw)
-
-
-def test_fold_raw_block_leaves_the_input_unchanged():
-    raw = np.array([1.0, np.inf, 3.0, 4.0], dtype=np.float32)
-    before = raw.copy()
-    fold_raw_block(raw)
-    assert np.array_equal(raw, before)
+def test_fold_raw_single_sample():
+    out = fold_raw(np.array([7.0], dtype=np.float32))
+    assert (out.minimum[0], out.maximum[0], out.mean[0]) == (7.0, 7.0, 7.0)
+    assert (out.variance[0], out.count[0]) == (0.0, 1.0)
 
 
 def _reduce(values, width, reduction):
@@ -196,101 +135,9 @@ def _gappy_series(length, seed=0):
     return raw
 
 
-def test_fold_statistics_block_matches_the_generator_fold():
-    statistics = fold_raw_block(_gappy_series(4133))
-    out = fold_statistics_block(statistics)
-    want = _generator_fold(statistics)
-    assert np.array_equal(np.isnan(out), np.isnan(want))
-    assert np.allclose(out, want, rtol=1e-12, atol=0.0, equal_nan=True)
-
-
-def test_fold_statistics_block_composes_to_the_direct_definition_over_levels():
-    raw = _gappy_series(4133)
-    statistics = fold_raw_block(raw)
-    for level in range(2, 7):
-        statistics = fold_statistics_block(statistics)
-        want = _direct(raw, 4**level)
-        assert statistics.shape == want.shape
-        assert np.array_equal(np.isnan(statistics), np.isnan(want))
-        assert np.array_equal(
-            statistics[:, [MIN_COLUMN, MAX_COLUMN]], want[:, :2], equal_nan=True
-        )
-        assert np.array_equal(
-            statistics[:, COUNT_COLUMN], want[:, COUNT_COLUMN]
-        )
-        assert np.allclose(
-            statistics[:, [MEAN_COLUMN, VAR_COLUMN]],
-            want[:, [MEAN_COLUMN, VAR_COLUMN]],
-            rtol=1e-9,
-            atol=0.0,
-            equal_nan=True,
-        )
-
-
-@pytest.mark.parametrize(
-    ("m", "expected_rows"),
-    [(0, 0), (1, 1), (2, 1), (3, 1), (4, 1), (5, 2), (17, 5)],
-)
-def test_fold_statistics_block_shape(m, expected_rows):
-    out = fold_statistics_block(
-        fold_raw_block(np.arange(4 * m, dtype=np.float32))
-    )
-    assert out.shape == (expected_rows, STATISTIC_COLUMNS)
-    assert out.dtype == np.float64
-
-
-def test_fold_statistics_block_weights_a_partial_child_by_its_count():
-    raw = np.array([0.0] * 12 + [8.0], dtype=np.float32)
-    children = fold_raw_block(raw)
-    assert children[:, MEAN_COLUMN].mean() == 2.0
-    out = fold_statistics_block(children)
-    want = _direct(raw, 16)
-    assert out.shape == (1, STATISTIC_COLUMNS)
-    assert np.allclose(out, want, rtol=1e-12, atol=0.0)
-    assert out[0, MEAN_COLUMN] == 8.0 / 13.0
-
-
-def test_fold_statistics_block_one_nan_child_makes_the_parent_nan():
-    raw = np.array([1, 2, np.nan, 4] + list(range(12)), dtype=np.float32)
-    out = fold_statistics_block(fold_raw_block(raw))
-    assert np.isnan(
-        out[0, [MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN]]
-    ).all()
-    assert out[0, COUNT_COLUMN] == 15.0
-
-
-def test_fold_statistics_block_all_nan_children_give_count_zero_without_warning():
-    raw = np.full(16, np.nan, dtype=np.float32)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        out = fold_statistics_block(fold_raw_block(raw))
-    assert np.isnan(out[0, :COUNT_COLUMN]).all()
-    assert out[0, COUNT_COLUMN] == 0.0
-
-
-def test_fold_statistics_block_raises_no_warning_on_finite_input():
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        fold_statistics_block(fold_raw_block(np.arange(64, dtype=np.float32)))
-
-
-def test_fold_statistics_block_tail_of_one_child_is_that_child():
-    raw = np.arange(20, dtype=np.float32)
-    children = fold_raw_block(raw)
-    out = fold_statistics_block(children)
-    assert out.shape == (2, STATISTIC_COLUMNS)
-    assert np.array_equal(out[1], children[4])
-
-
-@pytest.mark.parametrize("shape", [(8,), (8, 2), (2, 4, 5)])
-def test_fold_statistics_block_rejects_a_non_statistics_block(shape):
-    with pytest.raises(ValueError, match="statistics block"):
-        fold_statistics_block(np.zeros(shape, dtype=np.float64))
-
-
 def _members(length=4133, with_var=True):
-    statistics = fold_raw_block(_gappy_series(length))
-    return statistics, split_members(statistics, with_var)
+    statistics = fold_raw(_gappy_series(length))
+    return _stack(statistics), statistics.members(with_var)
 
 
 def _stored(statistics):
@@ -300,7 +147,7 @@ def _stored(statistics):
     return out
 
 
-def test_split_members_returns_the_on_disk_dtypes_and_shapes():
+def test_statistics_members_returns_the_on_disk_dtypes_and_shapes():
     statistics, (minmax, mean, var, count) = _members()
     rows = statistics.shape[0]
     assert minmax.shape == (rows, 2)
@@ -310,7 +157,7 @@ def test_split_members_returns_the_on_disk_dtypes_and_shapes():
     assert count.dtype == np.uint32
 
 
-def test_split_members_places_each_statistic_in_its_member():
+def test_statistics_members_places_each_statistic_in_its_member():
     statistics, (minmax, mean, var, count) = _members()
     assert np.array_equal(
         minmax[:, 0],
@@ -331,7 +178,7 @@ def test_split_members_places_each_statistic_in_its_member():
     assert np.array_equal(count, statistics[:, COUNT_COLUMN])
 
 
-def test_split_members_keeps_nan_bins_nan_and_their_counts():
+def test_statistics_members_keeps_nan_bins_nan_and_their_counts():
     statistics, (minmax, mean, var, count) = _members()
     nan_bins = np.isnan(statistics[:, MEAN_COLUMN])
     assert nan_bins.any()
@@ -341,7 +188,7 @@ def test_split_members_keeps_nan_bins_nan_and_their_counts():
     assert (count[nan_bins] <= 3).all()
 
 
-def test_split_members_without_var_returns_none_and_the_same_others():
+def test_statistics_members_without_var_returns_none_and_the_same_others():
     _, with_var = _members(with_var=True)
     _, without = _members(with_var=False)
     assert without[2] is None
@@ -350,29 +197,7 @@ def test_split_members_without_var_returns_none_and_the_same_others():
     assert np.array_equal(with_var[3], without[3])
 
 
-def test_split_members_stores_a_value_beyond_float32_as_infinity_quietly():
-    statistics = np.array([[1.0, 2.0, 1.5, 1e300, 4.0]], dtype=np.float64)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        _, _, var, _ = split_members(statistics, True)
-    assert np.isposinf(var[0])
-
-
-def test_split_members_empty_block_yields_zero_rows_in_every_member():
-    minmax, mean, var, count = split_members(
-        np.empty((0, STATISTIC_COLUMNS), dtype=np.float64), True
-    )
-    assert minmax.shape == (0, 2)
-    assert mean.shape == var.shape == count.shape == (0,)
-
-
-@pytest.mark.parametrize("shape", [(8,), (8, 2), (2, 4, 5)])
-def test_split_members_rejects_a_non_statistics_block(shape):
-    with pytest.raises(ValueError, match="statistics block"):
-        split_members(np.zeros(shape, dtype=np.float64), True)
-
-
-def test_assemble_stats_inverts_split_members_up_to_float32_rounding():
+def test_assemble_stats_inverts_statistics_members_up_to_float32_rounding():
     statistics, members = _members()
     out = assemble_statistics(*members)
     assert out.shape == statistics.shape
@@ -498,19 +323,19 @@ def test_statistics_is_frozen():
 
 
 @pytest.mark.parametrize("length", [0, 1, 2, 3, 4, 5, 7, 8, 67, 4133])
-def test_fold_raw_equals_fold_raw_block(length):
+def test_fold_raw_matches_the_direct_definition_at_every_length(length):
     raw = _gappy_series(max(length, 261))[:length]
-    _assert_same(fold_raw(raw), fold_raw_block(raw))
+    _assert_same(fold_raw(raw), _direct(raw))
 
 
-def test_fold_raw_equals_fold_raw_block_on_random_data_with_non_finite_samples():
+def test_fold_raw_matches_the_direct_definition_on_random_data_with_non_finite_samples():
     rng = np.random.default_rng(3)
     raw = (1e4 * rng.standard_normal(40_003)).astype(np.float32)
     raw[rng.integers(0, raw.size, 300)] = np.nan
     raw[rng.integers(0, raw.size, 100)] = np.inf
     raw[rng.integers(0, raw.size, 100)] = -np.inf
     raw[-2] = np.nan
-    _assert_same(fold_raw(raw), fold_raw_block(raw))
+    _assert_same(fold_raw(raw), _direct(raw))
 
 
 def test_fold_raw_matches_the_direct_definition():
@@ -604,7 +429,7 @@ def test_fold_raw_reads_a_strided_column_view():
     window = np.stack([_gappy_series(4133), _gappy_series(4133, seed=1)], 1)
     column = window[:, 1]
     assert not column.flags.c_contiguous
-    _assert_same(fold_raw(column), fold_raw_block(np.ascontiguousarray(column)))
+    _assert_same(fold_raw(column), _direct(column))
 
 
 @pytest.mark.parametrize("shape", [(8, 2), (2, 4, 5)])
@@ -614,9 +439,9 @@ def test_fold_raw_rejects_a_block_that_is_not_rank_1(shape):
 
 
 @pytest.mark.parametrize("length", [0, 1, 4, 5, 16, 17, 4133])
-def test_fold_statistics_equals_fold_statistics_block(length):
-    block = fold_raw_block(_gappy_series(max(length, 261))[:length])
-    _assert_same(fold_statistics(_unstack(block)), fold_statistics_block(block))
+def test_fold_statistics_matches_the_generator_fold_at_every_length(length):
+    block = _direct(_gappy_series(max(length, 261))[:length])
+    _assert_same(fold_statistics(_unstack(block)), _generator_fold(block))
 
 
 def test_fold_statistics_matches_the_generator_fold():
@@ -704,16 +529,22 @@ def test_fold_statistics_leaves_the_input_unchanged():
 
 @pytest.mark.parametrize("with_var", [True, False])
 @pytest.mark.parametrize("length", [0, 5, 4133])
-def test_statistics_members_equals_split_members(with_var, length):
+def test_statistics_members_equal_the_direct_definition_in_on_disk_dtypes(
+    with_var, length
+):
     raw = _gappy_series(max(length, 261))[:length]
     got = fold_raw(raw).members(with_var)
-    want = split_members(fold_raw_block(raw), with_var)
-    assert got[2] is None if not with_var else got[2] is not None
-    for member, expected in zip(got, want, strict=True):
-        if expected is None:
-            continue
-        assert member.dtype == expected.dtype
-        assert np.array_equal(member, expected, equal_nan=True)
+    want = _direct(raw)
+    assert (got[2] is None) == (not with_var)
+    assert got[0].dtype == got[1].dtype == np.float32
+    assert got[3].dtype == np.uint32
+    assert np.array_equal(
+        got[0], want[:, :2].astype(np.float32), equal_nan=True
+    )
+    assert np.allclose(got[1], want[:, 2], rtol=1e-6, equal_nan=True)
+    if with_var:
+        assert np.allclose(got[2], want[:, 3], rtol=1e-6, equal_nan=True)
+    assert np.array_equal(got[3], want[:, 4])
 
 
 def test_statistics_members_stores_a_value_beyond_float32_as_infinity_quietly():

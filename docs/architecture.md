@@ -39,39 +39,35 @@ without touching a store.
 
 ## Numeric core
 
-`fold.py` reduces one level to the next over disjoint blocks of 4. A folded block is a
-float64 statistics block with one column each for the minimum, maximum, mean, population
-variance, and count of finite samples. `fold.py` also splits a block into the member
-arrays a level stores and assembles one from them. `Statistics` holds the same five
-statistics as one float64 array each. `fold_raw` and `fold_statistics` fold it on
-column views, and `Statistics.members` converts it to the member arrays. A `LevelFolder`
-holds the state of one channel's pyramid. It folds raw samples into every level as they
-arrive and emits one chunk of every member each time a level fills `inner_len` rows. A
-level never holds more than one chunk of pending rows. See
+`fold.py` reduces one level to the next over disjoint blocks of 4. `Statistics` holds the
+minimum, maximum, mean, population variance, and count of finite samples of consecutive
+bins, as one float64 array each. `fold_raw` and `fold_statistics` fold it on column
+views, and `Statistics.members` converts it to the member arrays a level stores. A
+`LevelFolder` holds the state of one channel's pyramid. It folds raw samples into every
+level as they arrive and emits one chunk of every member each time a level fills
+`inner_len` rows. A level never holds more than one chunk of pending rows. See
 [the format spec](./spec.md) for the exact rules and the NaN behavior.
 
-`streaming.py` drives the folds one block at a time. It buffers across block boundaries,
-so a run of 4 that straddles two blocks folds correctly. `regroup` re-cuts an iterator of
-blocks into whole shards, and `Regrouper` re-cuts blocks that arrive one push at a time.
-Memory stays bounded however long the recording is.
+`streaming.py` reads a source in blocks and re-cuts block streams. The count levels of an
+event channel use it.
 
 ## Write path
 
-`write_continuous.py` writes one continuous channel: the `raw` array, then a group per
-level with its `minmax`, `mean`, `count`, and optional `var` arrays. By default each level
-folds from the stored members of the level below. With `write_var` on, every level folds
-from the raw samples in one pass through float64 statistics. That keeps the variance
-exact on a channel with a large DC offset.
+`write_continuous.py` writes continuous channels in one pass. A `ChannelWriter` holds the
+state of one channel. Each block of samples is scaled to the stored unit, appended to
+`raw`, and folded into every level. Each chunk that the folder emits is appended to its
+member array. Nothing is read back from the store. `write_var` decides only whether the
+`var` member is stored, because every level folds from float64 statistics and the variance
+stays exact on a channel with a large DC offset.
 
 `write_continuous_channels` writes every channel of a multi-channel source. It builds
 the metadata of every channel group, `raw` array, level group, and level member, and
 `zarr_io.create_nodes` creates them all in one concurrent call. `zarr_io.array_metadata`
 and `zarr_io.group_metadata` build the metadata, and a test pins that they store the same
 `zarr.json` as `create_array` and `create_group_with_attrs`. The writer then makes one
-pass over the windows of the source. Each channel has a `Regrouper`, so every write to
-`raw` covers a whole shard whatever the length of the blocks. After the pass, the writer
-folds the levels of each channel from its stored `raw` array into the level arrays that
-the first call created.
+pass over the windows of the source and pushes each block to the `ChannelWriter` of its
+channel. `write_continuous_channel` builds the same nodes and writer for one source and
+pushes blocks of one `raw` shard.
 
 `shards.py` writes the shards of one array as its rows arrive. A `ChunkEncoder` turns the
 rows of an inner chunk into little-endian bytes compressed with Zstd. A `ShardWriter`
@@ -80,13 +76,12 @@ appends encoded chunks to a `ShardSink`, then writes the shard index and its CRC
 The module imports `numcodecs` and `google_crc32c` and never zarr, and its shards match
 the bytes that zarr writes for the same array. `zarr_io.shard_layout` reads the layout and
 the shard sinks of an existing array from its metadata. It raises `ValueError` for any
-codec chain other than the one `shards.py` encodes.
+codec chain other than the one `shards.py` encodes. zarr creates the nodes of a
+continuous channel and reads them back. It does not encode a chunk of one.
 
 `write_event.py` writes one event channel: the `events` array, each optional column the
 source names, and the count levels of a dense channel. Event times are stored from the
-reference time.
-
-Both writers cover a whole shard with every write. A narrower write makes the sharding
+reference time. Every write covers a whole shard. A narrower write makes the sharding
 codec read the shard back, re-encode every inner chunk, and rewrite it. That costs about
 10x the store traffic on a 16-chunk shard.
 

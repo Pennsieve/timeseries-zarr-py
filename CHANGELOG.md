@@ -10,6 +10,12 @@ Writes TS-Zarr 1.0 bundles from continuous and event channel sources.
 
 Writes every channel of a `MultiChannelSource` in one pass over its windows.
 
+Writes each continuous channel in one pass. The writer folds every level while the
+samples are in memory, encodes each shard as its chunks complete, and reads nothing back
+from the store. The memory of a channel no longer grows with the shard size, and
+`write_var` no longer changes the memory or the algorithm. The stored `minmax` and `count`
+match the earlier writer. `mean` matches it without `write_var` to float32 rounding.
+
 Reads TS-Zarr 1.0 bundles, with extras for pandas, xarray, and remote stores. Requires
 zarr 3.2.1 or later.
 

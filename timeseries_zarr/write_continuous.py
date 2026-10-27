@@ -1,20 +1,17 @@
-"""Compose streaming and zarr I/O to write one continuous channel.
+"""Write continuous channels in one pass.
 
-A channel is the raw samples plus a ladder of level groups above them. Raw is
-written from the source, and every level is folded from the samples below it.
-A level group holds one array per statistic over a shared bin axis. An empty
+A channel is the raw samples plus a ladder of level groups above them. A
+level group holds one array per statistic over a shared bin axis. An empty
 input creates the arrays and writes nothing.
 
-write_continuous_channel composes three steps. create_channel_group makes the
-channel group with its attributes, write_raw makes and fills the raw array,
-and write_levels folds the levels from the stored raw array.
-write_continuous_channels writes every channel of a multi-channel source. It
-fills the raw arrays of all channels in one sweep over the source and then
-folds the levels of each channel.
+ChannelWriter writes one channel in one pass. Each block of samples goes to
+the raw array and through a LevelFolder, and every chunk that the folder
+emits goes to its member array. Nothing is read back from the store.
+write_continuous_channel writes one source, and write_continuous_channels
+writes every channel of a multi-channel source in one sweep over its windows.
 """
 
-from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from collections.abc import Sequence
 from typing import cast
 
 import numpy as np
@@ -23,7 +20,6 @@ import numpy.typing as npt
 from timeseries_zarr.attrs import continuous_channel_attrs, level_group_attrs
 from timeseries_zarr.constants import (
     COUNT_KEY,
-    DECIMATION_FACTOR,
     ENVELOPE_PAIR_SIZE,
     MEAN_KEY,
     MINMAX_KEY,
@@ -31,11 +27,7 @@ from timeseries_zarr.constants import (
     TIME_DIMENSION,
     VAR_KEY,
 )
-from timeseries_zarr.fold import (
-    fold_raw_block,
-    fold_statistics_block,
-    split_members,
-)
+from timeseries_zarr.fold import LevelChunk, LevelFolder
 from timeseries_zarr.planning import plan_levels, raw_shape
 from timeseries_zarr.protocols import (
     ContinuousChannelMetadata,
@@ -43,23 +35,14 @@ from timeseries_zarr.protocols import (
     MultiChannelSource,
     source_provenance,
 )
+from timeseries_zarr.shards import ArrayWriter, ShardLayout
 from timeseries_zarr.sizing import level_sizing, member_sizing, raw_sizing
-from timeseries_zarr.streaming import (
-    BlockReadableArray,
-    Regrouper,
-    _rebuffer_and_fold,
-    iter_array_blocks,
-    iter_member_blocks,
-    iter_raw_blocks,
-    regroup,
-    scale,
-    scale_block,
-    tap,
-)
+from timeseries_zarr.streaming import iter_raw_blocks, scale_block
 from timeseries_zarr.types import (
     ChunkShard,
     LevelMembers,
     LevelPlan,
+    ResolvedUnit,
     WriteOpts,
 )
 from timeseries_zarr.units import resolve_unit
@@ -70,27 +53,8 @@ from timeseries_zarr.zarr_io import (
     array_metadata,
     create_nodes,
     group_metadata,
-    write_region,
+    shard_layout,
 )
-
-
-def _write_blocks(
-    array: ZarrArray, blocks: Iterable[npt.NDArray[np.float32]]
-) -> None:
-    """Write each block to array at its running axis-0 offset.
-
-    Blocks arrive shard-sized, so each write covers a whole shard. A write
-    narrower than a shard makes the sharding codec read that shard back,
-    re-encode every inner chunk, and rewrite it.
-
-    Args:
-        array: The array to fill.
-        blocks: Consecutive row blocks, in order from row 0.
-    """
-    start = 0
-    for block in blocks:
-        write_region(array, start, block)
-        start += block.shape[0]
 
 
 def _channel_group_metadata(
@@ -189,37 +153,6 @@ def create_raw(
     return cast("ZarrArray", create_nodes(group, {RAW_KEY: metadata})[RAW_KEY])
 
 
-def write_raw(
-    group: ZarrGroup,
-    source: ContinuousChannelSource,
-    sizing: ChunkShard,
-    zstd_level: int,
-    factor: float = 1.0,
-) -> ZarrArray:
-    """Create the raw array under group and stream the source into it.
-
-    The array is the one create_raw makes. The samples are multiplied by
-    factor, so a non-finite sample stays a gap and a DC offset stays in. They
-    are read in shard-sized blocks, so every write covers a whole shard. An
-    empty source creates a zero-length array and writes nothing.
-
-    Args:
-        group: The channel group.
-        source: The source of the samples.
-        sizing: The chunk and shard shapes.
-        zstd_level: The Zstandard compression level.
-        factor: The multiplier applied to every sample.
-
-    Returns:
-        The filled array.
-    """
-    array = create_raw(group, source.num_samples(), sizing, zstd_level)
-    _write_blocks(
-        array, scale(iter_raw_blocks(source, sizing.shard_shape[0]), factor)
-    )
-    return array
-
-
 def _level_metadata(
     plan: LevelPlan,
     sizing: ChunkShard,
@@ -309,8 +242,8 @@ def create_level(
     The group carries period_us. It holds minmax shaped (bins, 2), and mean
     and count shaped (bins,), plus var when write_var is true. The float
     members are float32 and count is uint32. sizing is the sizing of minmax,
-    and the other members take its row counts, so one block of rows fills one
-    shard of every member. Every member names its bin axis "time".
+    and the other members take its row counts. Every member names its bin
+    axis "time".
 
     Args:
         parent: The channel group.
@@ -333,265 +266,86 @@ def create_level(
     return _level_members(handles, plan, write_var)
 
 
-def _statistics_writer(
-    members: LevelMembers[ZarrArray],
-) -> Callable[[npt.NDArray[np.float64]], None]:
-    """Return a function that writes successive statistics blocks to members.
+class _LevelWriters:
+    """The member writers of one level."""
 
-    Each call writes at the row after the previous block.
+    def __init__(self, layouts: LevelMembers[ShardLayout]) -> None:
+        """Start a writer for each member that layouts holds."""
+        self._minmax = ArrayWriter(layouts.minmax)
+        self._mean = ArrayWriter(layouts.mean)
+        self._var = None if layouts.var is None else ArrayWriter(layouts.var)
+        self._count = ArrayWriter(layouts.count)
+
+    def push(self, chunk: LevelChunk) -> None:
+        """Write the rows of chunk to each member."""
+        self._minmax.push(chunk.minmax)
+        self._mean.push(chunk.mean)
+        if self._var is not None and chunk.var is not None:
+            self._var.push(chunk.var)
+        self._count.push(chunk.count)
+
+    def finish(self) -> None:
+        """Close the last shard of each member."""
+        self._minmax.finish()
+        self._mean.finish()
+        if self._var is not None:
+            self._var.finish()
+        self._count.finish()
+
+
+class ChannelWriter:
+    """Writes the raw array and every level of one channel as samples arrive.
+
+    Each push scales the block to the stored unit, appends it to raw, folds it
+    into every level, and appends each chunk the folder emits to its member
+    array. The writer holds one partial chunk of each array and the pending
+    rows of each level. Its memory does not grow with the length of the
+    channel. Every shard is written once, as it fills.
     """
-    start = 0
 
-    def write(block: npt.NDArray[np.float64]) -> None:
-        nonlocal start
-        minmax, mean, var, count = split_members(block, members.var is not None)
-        write_region(members.minmax, start, minmax)
-        write_region(members.mean, start, mean)
-        if members.var is not None and var is not None:
-            write_region(members.var, start, var)
-        write_region(members.count, start, count)
-        start += block.shape[0]
+    def __init__(
+        self,
+        key: int,
+        channel: ContinuousChannelMetadata,
+        raw: ShardLayout,
+        levels: Sequence[LevelMembers[ShardLayout]],
+        factor: float,
+        inner_len: int,
+    ) -> None:
+        """Start a channel.
 
-    return write
-
-
-def write_statistics_blocks(
-    members: LevelMembers[ZarrArray],
-    blocks: Iterable[npt.NDArray[np.float64]],
-) -> None:
-    """Write a stream of statistics blocks into a level's member arrays.
-
-    Each block is split into the members and written at a running row offset,
-    so the blocks must arrive in level order and cover the level from row 0.
-    Blocks of shard_shape[0] rows make every write cover a whole shard of
-    every member, and only the last block may be shorter. A level without a
-    var member drops the variance column. An empty stream writes nothing.
-
-    Args:
-        members: The member arrays of the level.
-        blocks: Statistics blocks in level order.
-    """
-    write = _statistics_writer(members)
-    for block in blocks:
-        write(block)
-
-
-def _write_levels_by_read_back(
-    group: ZarrGroup,
-    raw: ZarrArray,
-    plans: list[LevelPlan],
-    opts: WriteOpts,
-    levels: Sequence[LevelMembers[ZarrArray]] | None,
-) -> None:
-    """Write each level by reading the one below it back from disk.
-
-    Level 1 folds the stored raw samples and each later level folds the stored
-    float32 members of the level below. One shard of the level below is read per
-    fold step, so memory stays at one shard.
-
-    Args:
-        group: The channel group.
-        raw: The stored raw array.
-        plans: The level plans in level order.
-        opts: The write settings.
-        levels: The member arrays of each planned level, or None to create
-            them.
-    """
-    previous: LevelMembers[ZarrArray] | None = None
-    for index, plan in enumerate(plans):
-        sizing = level_sizing(
-            plan.bins, opts.inner_len, opts.target_shard_bytes
-        )
-        members = (
-            create_level(group, plan, sizing, opts.zstd_level, False)
-            if levels is None
-            else levels[index]
-        )
-        read_rows = DECIMATION_FACTOR * sizing.shard_shape[0]
-        folded: Iterator[npt.NDArray[np.float64]]
-        if previous is None:
-            folded = _rebuffer_and_fold(
-                iter_array_blocks(cast("BlockReadableArray", raw), read_rows),
-                fold_raw_block,
+        Args:
+            key: The channel number.
+            channel: The channel metadata.
+            raw: The layout of the raw array.
+            levels: The layout of each level's members, in level order.
+            factor: The multiplier applied to every sample.
+            inner_len: The rows of one chunk of a level.
+        """
+        self._key = key
+        self._channel = channel
+        self._factor = factor
+        self._num_samples = channel.num_samples()
+        self._received = 0
+        self._raw = ArrayWriter(raw)
+        self._folder = (
+            LevelFolder(
+                len(levels),
+                inner_len,
+                bool(levels) and levels[0].var is not None,
             )
-        else:
-            folded = _rebuffer_and_fold(
-                iter_member_blocks(
-                    cast("LevelMembers[BlockReadableArray]", previous),
-                    read_rows,
-                ),
-                fold_statistics_block,
-            )
-        write_statistics_blocks(members, regroup(folded, sizing.shard_shape[0]))
-        previous = members
-
-
-def _write_levels_in_one_pass(
-    group: ZarrGroup,
-    raw: ZarrArray,
-    plans: list[LevelPlan],
-    opts: WriteOpts,
-    levels: Sequence[LevelMembers[ZarrArray]] | None,
-) -> None:
-    """Write every level in one pass over the stored raw samples.
-
-    Level 1 folds the raw samples. Each later level folds the float64
-    statistics of the level below, never its stored float32 members, so the
-    variance keeps its full precision. The levels form one chain of generators
-    that is drained once, and a shard of statistics rows per level is in
-    flight.
-
-    Args:
-        group: The channel group.
-        raw: The stored raw array.
-        plans: The level plans in level order, at least one.
-        opts: The write settings.
-        levels: The member arrays of each planned level, or None to create
-            them.
-    """
-    first = level_sizing(plans[0].bins, opts.inner_len, opts.target_shard_bytes)
-    stream: Iterator[npt.NDArray[np.float64]] = _rebuffer_and_fold(
-        iter_array_blocks(
-            cast("BlockReadableArray", raw),
-            DECIMATION_FACTOR * first.shard_shape[0],
-        ),
-        fold_raw_block,
-    )
-    for index, plan in enumerate(plans):
-        sizing = level_sizing(
-            plan.bins, opts.inner_len, opts.target_shard_bytes
+            if levels
+            else None
         )
-        members = (
-            create_level(group, plan, sizing, opts.zstd_level, True)
-            if levels is None
-            else levels[index]
-        )
-        stream = tap(
-            regroup(stream, sizing.shard_shape[0]), _statistics_writer(members)
-        )
-        if index + 1 < len(plans):
-            stream = _rebuffer_and_fold(stream, fold_statistics_block)
-    for _ in stream:
-        pass
-
-
-def write_levels(
-    group: ZarrGroup,
-    raw: ZarrArray,
-    rate_hz: float,
-    opts: WriteOpts,
-    levels: Sequence[LevelMembers[ZarrArray]] | None = None,
-) -> None:
-    """Write the levels of a channel by folding its stored raw samples.
-
-    The levels are planned from the length of raw and from rate_hz, and every
-    array is sized and compressed per opts. Raw too short for level 1 gets no
-    level.
-
-    With opts.write_var false, each level is folded from the stored members of
-    the level below. With it true, every level is folded in one pass from the
-    raw samples through float64 statistics. The variance then stays exact on a
-    channel with a large DC offset.
-
-    Args:
-        group: The channel group.
-        raw: The stored raw array.
-        rate_hz: The sample rate in hertz.
-        opts: The write settings.
-        levels: The member arrays of each planned level, in level order, when
-            the caller created them. With None the function creates them.
-    """
-    plans = plan_levels(raw.shape[0], rate_hz, opts.max_levels, opts.min_bins)
-    if not plans:
-        return
-    if opts.write_var:
-        _write_levels_in_one_pass(group, raw, plans, opts, levels)
-    else:
-        _write_levels_by_read_back(group, raw, plans, opts, levels)
-
-
-def write_continuous_channel(
-    parent: ZarrGroup,
-    key: int,
-    source: ContinuousChannelSource,
-    *,
-    reference_us: int,
-    opts: WriteOpts,
-) -> None:
-    """Write one continuous channel as the subgroup named str(key).
-
-    A voltage unit resolves under opts.voltage_policy before the group is
-    created, and the raw samples are scaled to match. A channel too short for
-    level 1 gets raw and nothing else.
-
-    Args:
-        parent: The group that receives the channel group.
-        key: The channel number that names the group.
-        source: The source of the channel.
-        reference_us: The reference time in microseconds.
-        opts: The write settings.
-
-    Raises:
-        ValueError: If the source's rate is not positive, if its provenance
-            is not a JSON object of finite values, or, under voltage_policy
-            require_uv, if a voltage unit is not "uV".
-    """
-    resolved = resolve_unit(source.unit, opts.voltage_policy)
-    group = create_channel_group(
-        parent, key, source, reference_us=reference_us, unit=resolved.unit
-    )
-    raw = write_raw(
-        group,
-        source,
-        raw_sizing(
-            source.num_samples(), opts.inner_len, opts.target_shard_bytes
-        ),
-        opts.zstd_level,
-        resolved.factor,
-    )
-    write_levels(group, raw, source.rate_hz(), opts)
-
-
-@dataclass(slots=True)
-class _RawSink:
-    """Collect one channel's blocks of a sweep and write them to its raw array.
-
-    Attributes:
-        key: The channel number.
-        channel: The channel metadata.
-        group: The channel group.
-        raw: The raw array that receives the samples.
-        levels: The member arrays of each planned level of the channel.
-        factor: The multiplier applied to every sample.
-        regrouper: Re-cuts incoming blocks into whole shards.
-        num_samples: The sample count that the channel declares.
-        received: The samples pushed so far.
-        written: The samples written to raw so far.
-    """
-
-    key: int
-    channel: ContinuousChannelMetadata
-    group: ZarrGroup
-    raw: ZarrArray
-    levels: list[LevelMembers[ZarrArray]]
-    factor: float
-    regrouper: Regrouper[np.float32]
-    num_samples: int
-    received: int = 0
-    written: int = 0
+        self._levels = [_LevelWriters(layouts) for layouts in levels]
 
     def _label(self) -> str:
-        return f"channel {self.key} ({self.channel.id!r})"
-
-    def _write(self, block: npt.NDArray[np.float32]) -> None:
-        write_region(self.raw, self.written, block)
-        self.written += block.shape[0]
+        return f"channel {self._key} ({self._channel.id!r})"
 
     def push(self, block: npt.ArrayLike) -> None:
-        """Write each whole shard that the samples of block complete.
+        """Write the samples of block and fold them into every level.
 
-        The samples are cast to float32 and multiplied by factor. Samples
-        that do not fill a shard wait for the next push.
+        The samples are cast to float32 and multiplied by the factor.
 
         Args:
             block: The next samples of the channel.
@@ -607,32 +361,154 @@ class _RawSink:
                 f"{self._label()} gives a block of rank {samples.ndim}; "
                 "each block must be a rank-1 array"
             )
-        self.received += samples.shape[0]
-        if self.received > self.num_samples:
+        self._received += samples.shape[0]
+        if self._received > self._num_samples:
             raise ValueError(
-                f"{self._label()} yields at least {self.received} samples "
-                f"and declares {self.num_samples}; its blocks must total "
-                f"{self.num_samples}"
+                f"{self._label()} yields at least {self._received} samples "
+                f"and declares {self._num_samples}; its blocks must total "
+                f"{self._num_samples}"
             )
-        for shard in self.regrouper.push(scale_block(samples, self.factor)):
-            self._write(shard)
+        if not samples.shape[0]:
+            return
+        scaled = np.ascontiguousarray(scale_block(samples, self._factor))
+        self._raw.push(scaled)
+        if self._folder is not None:
+            self._route(self._folder.push(scaled))
 
     def finish(self) -> None:
-        """Write the samples that wait for a shard to fill.
+        """Fold the tails and close the last shard of every array.
 
         Raises:
             ValueError: If the channel received fewer samples than it
                 declares.
         """
-        if self.received != self.num_samples:
+        if self._received != self._num_samples:
             raise ValueError(
-                f"{self._label()} yields {self.received} samples and "
-                f"declares {self.num_samples}; its blocks must total "
-                f"{self.num_samples}"
+                f"{self._label()} yields {self._received} samples and "
+                f"declares {self._num_samples}; its blocks must total "
+                f"{self._num_samples}"
             )
-        tail = self.regrouper.flush()
-        if tail is not None:
-            self._write(tail)
+        self._raw.finish()
+        if self._folder is not None:
+            self._route(self._folder.finish())
+        for writers in self._levels:
+            writers.finish()
+
+    def _route(self, chunks: Sequence[LevelChunk]) -> None:
+        """Write each chunk to the members of its level."""
+        for chunk in chunks:
+            self._levels[chunk.level - 1].push(chunk)
+
+
+def _add_channel_nodes(
+    nodes: dict[str, NodeMetadata],
+    key: int,
+    channel: ContinuousChannelMetadata,
+    resolved: ResolvedUnit,
+    reference_us: int,
+    opts: WriteOpts,
+) -> list[LevelPlan]:
+    """Add the nodes of one channel to nodes and return its level plans.
+
+    The nodes are the channel group, its raw array, and every level group
+    with its members, keyed by their path below the parent of the channel.
+    """
+    num_samples = channel.num_samples()
+    plans = plan_levels(
+        num_samples, channel.rate_hz(), opts.max_levels, opts.min_bins
+    )
+    nodes[str(key)] = _channel_group_metadata(
+        channel, reference_us=reference_us, unit=resolved.unit
+    )
+    nodes[f"{key}/{RAW_KEY}"] = _raw_metadata(
+        num_samples,
+        raw_sizing(num_samples, opts.inner_len, opts.target_shard_bytes),
+        opts.zstd_level,
+    )
+    for plan in plans:
+        nodes.update(
+            _level_metadata(
+                plan,
+                level_sizing(
+                    plan.bins, opts.inner_len, opts.target_shard_bytes
+                ),
+                opts.zstd_level,
+                opts.write_var,
+                prefix=f"{key}/",
+            )
+        )
+    return plans
+
+
+def _channel_writer(
+    handles: dict[str, ZarrGroup | ZarrArray],
+    key: int,
+    channel: ContinuousChannelMetadata,
+    plans: Sequence[LevelPlan],
+    factor: float,
+    opts: WriteOpts,
+) -> ChannelWriter:
+    """Return the writer of a channel whose nodes handles holds."""
+    levels = []
+    for plan in plans:
+        members = _level_members(handles, plan, opts.write_var, f"{key}/")
+        levels.append(
+            LevelMembers(
+                minmax=shard_layout(members.minmax),
+                mean=shard_layout(members.mean),
+                var=None if members.var is None else shard_layout(members.var),
+                count=shard_layout(members.count),
+            )
+        )
+    return ChannelWriter(
+        key,
+        channel,
+        shard_layout(cast("ZarrArray", handles[f"{key}/{RAW_KEY}"])),
+        levels,
+        factor,
+        opts.inner_len,
+    )
+
+
+def write_continuous_channel(
+    parent: ZarrGroup,
+    key: int,
+    source: ContinuousChannelSource,
+    *,
+    reference_us: int,
+    opts: WriteOpts,
+) -> None:
+    """Write one continuous channel as the subgroup named str(key).
+
+    A voltage unit resolves under opts.voltage_policy before the group is
+    created, and the raw samples are scaled to match. The source is read in
+    blocks of one raw shard. A channel too short for level 1 gets raw and
+    nothing else.
+
+    Args:
+        parent: The group that receives the channel group.
+        key: The channel number that names the group.
+        source: The source of the channel.
+        reference_us: The reference time in microseconds.
+        opts: The write settings.
+
+    Raises:
+        ValueError: If the source's rate is not positive, if its provenance
+            is not a JSON object of finite values, if a read returns fewer
+            samples than the source declares, or, under voltage_policy
+            require_uv, if a voltage unit is not "uV".
+    """
+    resolved = resolve_unit(source.unit, opts.voltage_policy)
+    nodes: dict[str, NodeMetadata] = {}
+    plans = _add_channel_nodes(nodes, key, source, resolved, reference_us, opts)
+    handles = create_nodes(parent, nodes)
+    writer = _channel_writer(handles, key, source, plans, resolved.factor, opts)
+    block_samples = raw_sizing(
+        source.num_samples(), opts.inner_len, opts.target_shard_bytes
+    ).shard_shape[0]
+    for block in iter_raw_blocks(source, block_samples):
+        writer.push(block)
+    writer.finish()
 
 
 def write_continuous_channels(
@@ -648,10 +524,10 @@ def write_continuous_channels(
     The channel groups, the raw arrays, and the level groups and members of
     every channel are created in one call, with the attributes and shapes that
     write_continuous_channel gives them. One pass over the windows of source
-    fills the raw array of every channel, a shard at a time. The levels of
-    each channel are then folded from its stored raw samples. Memory holds one
-    shard of raw per channel and the current window. A source without channels
-    writes nothing, and iter_windows is not called.
+    writes the raw array and every level of every channel. Memory holds one
+    partial chunk per array, the pending rows of each level, and the current
+    window. A source without channels writes nothing, and iter_windows is not
+    called.
 
     Args:
         parent: The group that receives the channel groups.
@@ -666,8 +542,8 @@ def write_continuous_channels(
             voltage_policy require_uv, if a window does not hold one block
             per channel, if a block is not rank 1, or if a channel's blocks
             do not total its num_samples. A unit or provenance error comes
-            before any node is created. A window or block error comes before
-            the first level is folded and leaves the created nodes in place.
+            before any node is created. A window or block error leaves the
+            created nodes and the shards written so far in place.
     """
     channels = list(source.channels())
     if not channels:
@@ -675,70 +551,27 @@ def write_continuous_channels(
     nodes: dict[str, NodeMetadata] = {}
     plans_by_key: dict[int, list[LevelPlan]] = {}
     factors: dict[int, float] = {}
-    sizings: dict[int, ChunkShard] = {}
     for key, channel in enumerate(channels, start=first_key):
         resolved = resolve_unit(channel.unit, opts.voltage_policy)
-        num_samples = channel.num_samples()
-        sizing = raw_sizing(
-            num_samples, opts.inner_len, opts.target_shard_bytes
+        plans_by_key[key] = _add_channel_nodes(
+            nodes, key, channel, resolved, reference_us, opts
         )
-        plans = plan_levels(
-            num_samples, channel.rate_hz(), opts.max_levels, opts.min_bins
-        )
-        nodes[str(key)] = _channel_group_metadata(
-            channel, reference_us=reference_us, unit=resolved.unit
-        )
-        nodes[f"{key}/{RAW_KEY}"] = _raw_metadata(
-            num_samples, sizing, opts.zstd_level
-        )
-        for plan in plans:
-            nodes.update(
-                _level_metadata(
-                    plan,
-                    level_sizing(
-                        plan.bins, opts.inner_len, opts.target_shard_bytes
-                    ),
-                    opts.zstd_level,
-                    opts.write_var,
-                    prefix=f"{key}/",
-                )
-            )
-        plans_by_key[key] = plans
         factors[key] = resolved.factor
-        sizings[key] = sizing
     handles = create_nodes(parent, nodes)
-    sinks = [
-        _RawSink(
-            key,
-            channel,
-            cast("ZarrGroup", handles[str(key)]),
-            cast("ZarrArray", handles[f"{key}/{RAW_KEY}"]),
-            [
-                _level_members(handles, plan, opts.write_var, f"{key}/")
-                for plan in plans_by_key[key]
-            ],
-            factors[key],
-            Regrouper(sizings[key].shard_shape[0]),
-            channel.num_samples(),
+    writers = [
+        _channel_writer(
+            handles, key, channel, plans_by_key[key], factors[key], opts
         )
         for key, channel in enumerate(channels, start=first_key)
     ]
     for index, window in enumerate(source.iter_windows()):
-        if len(window) != len(sinks):
+        if len(window) != len(writers):
             raise ValueError(
                 f"window {index} holds {len(window)} blocks and the source "
-                f"has {len(sinks)} channels; a window must hold one block "
+                f"has {len(writers)} channels; a window must hold one block "
                 "for each channel"
             )
-        for sink, block in zip(sinks, window, strict=True):
-            sink.push(block)
-    for sink in sinks:
-        sink.finish()
-    for sink in sinks:
-        write_levels(
-            sink.group,
-            sink.raw,
-            sink.channel.rate_hz(),
-            opts,
-            levels=sink.levels,
-        )
+        for writer, block in zip(writers, window, strict=True):
+            writer.push(block)
+    for writer in writers:
+        writer.finish()
