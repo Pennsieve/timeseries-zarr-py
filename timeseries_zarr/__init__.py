@@ -29,6 +29,7 @@ from timeseries_zarr.read_event import (
     Waveform,
 )
 from timeseries_zarr.read_recording import Recording
+from timeseries_zarr.sizing import channel_writer_bytes
 from timeseries_zarr.sources import bundle_sources, recording_meta
 from timeseries_zarr.stack import BinMember, Stack
 from timeseries_zarr.types import (
@@ -72,6 +73,7 @@ __all__ = [
     "WriteOpts",
     "__version__",
     "bundle_sources",
+    "channel_writer_bytes",
     "decode_channels_rows",
     "decode_text_rows",
     "open_bundle",

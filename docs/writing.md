@@ -26,10 +26,13 @@ do not depend on it.
 writer folds every level from float64 statistics whatever the setting, so the variance
 stays exact on a channel with a large DC offset.
 
-The writer holds about 2.6 MiB per channel at the defaults with 8 levels, whatever the
-length of the recording: one partial chunk of `raw` and, for each level, up to
-`inner_len` rows of float64 statistics. A `MultiChannelSource` also holds its current
-window.
+The writer holds about 4.8 MiB per channel at the defaults, which write 15 levels,
+whatever the length of the recording. That is one partial chunk of `raw` and, for each
+level, up to `inner_len` rows of float64 statistics, plus the index of each open shard.
+`max_levels=8` lowers the figure to about 2.6 MiB.
+`timeseries_zarr.channel_writer_bytes(opts)` returns the estimate in bytes for the
+`max_levels` of `opts`. A `MultiChannelSource` also holds two windows, the one that the
+writer folds and the one that it reads.
 
 `voltage_policy="convert"` scales a voltage channel to microvolts and labels it `uV`.
 `"require_uv"` raises `ValueError` for a voltage channel in any other unit.
@@ -139,11 +142,9 @@ takes one key for each channel, in channel order. A list of one single-channel s
 one three-channel source, with one event source, uses the keys 0 through 3 for the
 continuous channels and the key 4 for the event channel.
 
-While it sweeps, the writer holds one shard of `raw` for each channel, plus the current
-window. A shard is at most 16 MiB at the default `target_shard_bytes`, so 256 channels
-hold up to 4 GiB. Lower `target_shard_bytes` for a wide recording. After the sweep, the
-writer folds the levels of each channel from its stored `raw` array, one channel at a
-time.
+While it sweeps, the writer holds `channel_writer_bytes(opts)` for each channel, plus two
+windows. At the defaults, 256 channels hold about 1.2 GiB of channel state.
+Each shard file is written once, as its chunks complete, and nothing is read back.
 
 The writer raises `ValueError` when a source breaks the window contract in one of three
 ways:
