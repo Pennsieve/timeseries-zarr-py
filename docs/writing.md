@@ -26,10 +26,11 @@ do not depend on it.
 writer folds every level from float64 statistics whatever the setting, so the variance
 stays exact on a channel with a large DC offset.
 
-The writer holds about 4.8 MiB per channel at the defaults, which write 15 levels,
+The writer holds about 5.8 MiB per channel at the defaults, which write 15 levels,
 whatever the length of the recording. That is one partial chunk of `raw` and, for each
-level, up to `inner_len` rows of float64 statistics, plus the index of each open shard.
-`max_levels=8` lowers the figure to about 2.6 MiB.
+level, up to `inner_len` rows of float64 statistics, plus the index of each open shard
+and up to 1 MiB of encoded chunks that wait to be written. `max_levels=8` lowers the
+figure to about 3.6 MiB.
 `timeseries_zarr.channel_writer_bytes(opts)` returns the estimate in bytes for the
 `max_levels` of `opts`. A `MultiChannelSource` also holds two windows, the one that the
 writer folds and the one that it reads.
@@ -143,7 +144,7 @@ one three-channel source, with one event source, uses the keys 0 through 3 for t
 continuous channels and the key 4 for the event channel.
 
 While it sweeps, the writer holds `channel_writer_bytes(opts)` for each channel, plus two
-windows. At the defaults, 256 channels hold about 1.2 GiB of channel state.
+windows. At the defaults, 256 channels hold about 1.4 GiB of channel state.
 Each shard file is written once, as its chunks complete, and nothing is read back.
 
 The writer raises `ValueError` when a source breaks the window contract in one of three

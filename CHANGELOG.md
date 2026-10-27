@@ -33,5 +33,8 @@ transposes it once into contiguous rows for each channel.
 `timeseries_zarr.channel_writer_bytes(opts)` returns the memory of the writer of one
 channel in bytes.
 
+The writer of a channel holds up to 1 MiB of encoded chunks and appends them to their
+shard files in batches, which opens each file fewer times.
+
 `Bundle.stack` and `stack_channels` read one array per channel and take
 `max_workers`, the number of threads that read the channels.

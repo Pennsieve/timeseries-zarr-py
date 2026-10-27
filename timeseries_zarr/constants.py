@@ -133,6 +133,9 @@ TARGET_SHARD_BYTES: Final = 16 * 2**20
 ENCODE_GROUP_BYTES: Final = 2**20
 """Smallest run of chunk bytes (1 MiB) that one thread-pool task encodes."""
 
+CHANNEL_APPEND_BYTES: Final = 2**20
+"""Most encoded bytes (1 MiB) that the writer of one channel holds unwritten."""
+
 EVENTS_SEARCH_LIMIT_BYTES: Final = 2**20
 """Largest events array in bytes (1 MiB) that a window search reads whole."""
 

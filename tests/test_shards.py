@@ -10,7 +10,9 @@ import zarr
 from numcodecs.zstd import Zstd
 
 from timeseries_zarr.shards import (
+    AppendBudget,
     ArrayWriter,
+    BatchedShardSink,
     BufferShardSink,
     ChunkEncoder,
     FileShardSink,
@@ -236,6 +238,60 @@ def test_file_sink_holds_no_open_file_between_appends(tmp_path):
     )
 
 
+def test_batched_sink_passes_the_bytes_on_in_one_append_on_close():
+    sink = ListSink()
+    batched = BatchedShardSink(sink, AppendBudget(100))
+    batched.append(b"ab")
+    batched.append(b"cd")
+    assert sink.parts == []
+    batched.close()
+    assert sink.parts == [b"abcd"]
+    assert sink.closed
+
+
+def test_batched_sink_with_no_bytes_closes_without_an_append():
+    sink = ListSink()
+    BatchedShardSink(sink, AppendBudget(100)).close()
+    assert sink.parts == []
+    assert sink.closed
+
+
+def test_budget_flushes_the_sink_that_holds_the_most():
+    budget = AppendBudget(10)
+    small, large = ListSink(), ListSink()
+    batched_small = BatchedShardSink(small, budget)
+    batched_large = BatchedShardSink(large, budget)
+    batched_small.append(b"abc")
+    batched_large.append(b"defgh")
+    batched_large.append(b"ijk")
+    assert large.parts == [b"defghijk"]
+    assert small.parts == []
+    assert budget.held == 3
+
+
+def test_budget_holds_at_most_its_limit_after_each_append():
+    budget = AppendBudget(50)
+    sinks = [BatchedShardSink(ListSink(), budget) for _ in range(5)]
+    rng = np.random.default_rng(0)
+    for size in rng.integers(1, 30, 200):
+        sinks[int(size) % 5].append(bytes(int(size)))
+        assert budget.held <= 50
+    assert budget.held == sum(sink.held for sink in sinks)
+
+
+def test_budget_of_zero_passes_each_append_on():
+    sink = ListSink()
+    batched = BatchedShardSink(sink, AppendBudget(0))
+    batched.append(b"ab")
+    batched.append(b"cd")
+    assert sink.parts == [b"ab", b"cd"]
+
+
+def test_budget_rejects_a_negative_limit():
+    with pytest.raises(ValueError, match="0 or more"):
+        AppendBudget(-1)
+
+
 def test_buffer_sink_saves_the_joined_bytes_once_on_close():
     saved = []
     sink = BufferShardSink(saved.append)
@@ -278,7 +334,9 @@ def test_buffer_sink_shard_equals_file_sink_shard(tmp_path):
 # ArrayWriter
 
 
-def written_shards(values, block_lengths=None, executor=None, **kwargs):
+def written_shards(
+    values, block_lengths=None, executor=None, budget=None, **kwargs
+):
     sinks = {}
     layout = make_layout(
         sinks,
@@ -287,7 +345,7 @@ def written_shards(values, block_lengths=None, executor=None, **kwargs):
         trailing=values.shape[1:],
         **kwargs,
     )
-    writer = ArrayWriter(layout, executor)
+    writer = ArrayWriter(layout, executor, budget)
     if block_lengths is None:
         writer.push(values)
     else:
@@ -389,6 +447,16 @@ def test_array_writer_encodes_on_an_executor_to_the_same_bytes():
         )
     assert pooled == inline
     assert pooled_ragged == inline
+
+
+@pytest.mark.parametrize("limit", [0, 100, 1000, 10**6])
+def test_array_writer_with_a_budget_writes_the_same_shards(limit):
+    values = make_values(SHARD_ROWS * 6 + 9)
+    inline = written_shards(values)
+    budget = AppendBudget(limit)
+    batched = written_shards(values, [5, 700, 100, 3, 700, 37], budget=budget)
+    assert batched == inline
+    assert budget.held == 0
 
 
 def test_array_writer_runs_a_large_chunk_through_groups(monkeypatch):
