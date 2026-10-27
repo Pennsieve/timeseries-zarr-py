@@ -4,7 +4,6 @@ from timeseries_zarr.constants import (
     CANVAS_PIXELS,
     CHANNEL_KINDS,
     CHANNELS_KEY,
-    COUNT_COLUMN,
     COUNT_KEY,
     COUNT_LADDER_BASE_US,
     DECIMATION_FACTOR,
@@ -20,16 +19,12 @@ from timeseries_zarr.constants import (
     LABELS_KEY,
     LEVEL_PERIOD_TOLERANCE,
     MAJOR_VERSION,
-    MAX_COLUMN,
     MAX_LABELS,
     MAX_LEVELS,
-    MEAN_COLUMN,
     MEAN_KEY,
-    MIN_COLUMN,
     MINMAX_KEY,
     RASTER_BUDGET,
     RAW_KEY,
-    STATISTIC_COLUMNS,
     TEXT_KEY,
     TIME_DIMENSION,
     UINT8_BYTES,
@@ -37,7 +32,6 @@ from timeseries_zarr.constants import (
     UINT32_BYTES,
     UNIT_TO_UV,
     VALUES_KEY,
-    VAR_COLUMN,
     VAR_KEY,
     WAVEFORM_MEAN_KEY,
     WAVEFORMS_KEY,
@@ -95,11 +89,6 @@ def test_max_levels_is_the_last_level_whose_bin_count_fits_uint32():
     limit = np.iinfo(np.uint32).max
     assert limit >= DECIMATION_FACTOR**MAX_LEVELS
     assert limit < DECIMATION_FACTOR ** (MAX_LEVELS + 1)
-
-
-def test_statistic_columns_are_distinct_and_cover_the_block():
-    columns = [MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN, COUNT_COLUMN]
-    assert sorted(columns) == list(range(STATISTIC_COLUMNS))
 
 
 def test_max_labels_is_the_uint16_range():

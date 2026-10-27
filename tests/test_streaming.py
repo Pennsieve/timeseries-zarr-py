@@ -1,10 +1,8 @@
 import numpy as np
 import pytest
 
-from timeseries_zarr.constants import STATISTIC_COLUMNS, VAR_COLUMN
 from timeseries_zarr.fold import (
     Statistics,
-    assemble_statistics,
     fold_raw,
     fold_statistics,
 )
@@ -12,14 +10,12 @@ from timeseries_zarr.streaming import (
     Regrouper,
     _rebuffer_and_fold,
     iter_array_blocks,
-    iter_member_blocks,
     iter_raw_blocks,
     regroup,
-    scale,
     scale_block,
-    tap,
 )
-from timeseries_zarr.types import LevelMembers
+
+STATISTIC_COLUMNS = 5
 
 
 def fold_raw_block(raw):
@@ -414,123 +410,6 @@ def test_regrouper_rejects_non_positive_rows(rows: int) -> None:
         Regrouper(rows)
 
 
-def test_tap_passes_each_block_to_the_sink_before_yielding_it():
-    events = []
-    blocks = [np.arange(2.0), np.arange(2.0, 5.0)]
-
-    def sink(block):
-        events.append(("sink", block.shape[0]))
-
-    for block in tap(blocks, sink):
-        events.append(("got", block.shape[0]))
-    assert events == [("sink", 2), ("got", 2), ("sink", 3), ("got", 3)]
-
-
-def test_tap_yields_the_blocks_unchanged():
-    blocks = [np.arange(2.0), np.arange(2.0, 5.0)]
-    out = list(tap(blocks, lambda block: None))
-    assert all(got is want for got, want in zip(out, blocks, strict=True))
-
-
-def test_tap_calls_the_sink_only_as_blocks_are_requested():
-    calls = []
-    stream = tap([np.arange(2.0), np.arange(2.0)], calls.append)
-    assert calls == []
-    next(stream)
-    assert len(calls) == 1
-
-
-def test_tap_empty_stream_never_calls_the_sink():
-    calls = []
-    assert list(tap([], calls.append)) == []
-    assert calls == []
-
-
-def test_tap_propagates_a_sink_exception_to_the_consumer():
-    def sink(block):
-        raise RuntimeError("sink failed")
-
-    with pytest.raises(RuntimeError, match="sink failed"):
-        next(tap([np.arange(2.0)], sink))
-
-
-def _members(length=997, with_var=True):
-    minmax, mean, var, count = fold_raw(_gappy(length)).members(with_var)
-    return LevelMembers(minmax=minmax, mean=mean, var=var, count=count)
-
-
-@pytest.mark.parametrize("block_len", [1, 3, 4, 7, 16, 1000])
-def test_iter_member_blocks_concatenates_to_the_assembled_level(block_len):
-    members = _members()
-    out = list(iter_member_blocks(members, block_len))
-    want = assemble_statistics(
-        members.minmax, members.mean, members.var, members.count
-    )
-    assert np.array_equal(np.concatenate(out, axis=0), want, equal_nan=True)
-
-
-def test_iter_member_blocks_window_sizes_end_with_the_remainder():
-    members = _members(length=150)
-    sizes = [b.shape[0] for b in iter_member_blocks(members, 4)]
-    assert sizes == [4] * 9 + [2]
-
-
-def test_iter_member_blocks_without_var_leaves_the_variance_column_nan():
-    out = list(iter_member_blocks(_members(with_var=False), 16))
-    assert all(np.isnan(block[:, VAR_COLUMN]).all() for block in out)
-
-
-def test_iter_member_blocks_empty_level_yields_nothing():
-    members = LevelMembers(
-        minmax=np.empty((0, 2), dtype=np.float32),
-        mean=np.empty(0, dtype=np.float32),
-        var=None,
-        count=np.empty(0, dtype=np.uint32),
-    )
-    assert list(iter_member_blocks(members, 4)) == []
-
-
-@pytest.mark.parametrize("block_len", [0, -1])
-def test_iter_member_blocks_rejects_non_positive_block_len(block_len):
-    with pytest.raises(ValueError, match="positive"):
-        list(iter_member_blocks(_members(), block_len))
-
-
-@pytest.mark.parametrize("name", ["mean", "var", "count"])
-@pytest.mark.parametrize("extra", [1, -1])
-def test_iter_member_blocks_rejects_members_with_different_row_counts(
-    name, extra
-):
-    members = _members(length=150)
-    member = getattr(members, name)
-    resized = np.concatenate([member, member[:1]]) if extra > 0 else member[:-1]
-    mismatched = LevelMembers(
-        **{
-            "minmax": members.minmax,
-            "mean": members.mean,
-            "var": members.var,
-            "count": members.count,
-            name: resized,
-        }
-    )
-    with pytest.raises(ValueError, match=name):
-        list(iter_member_blocks(mismatched, 4))
-
-
-def test_scale_multiplies_and_keeps_float32():
-    block = np.array([1.0, -2.0, 3.5], dtype=np.float32)
-    (out,) = scale([block], 1e6)
-    assert out.dtype == np.float32
-    assert np.array_equal(out, block * np.float32(1e6))
-
-
-def test_scale_yields_the_same_objects_at_factor_one():
-    blocks = [np.arange(3, dtype=np.float32), np.arange(2, dtype=np.float32)]
-    out = list(scale(blocks, 1.0))
-    assert len(out) == 2
-    assert all(a is b for a, b in zip(out, blocks, strict=True))
-
-
 def test_scale_block_multiplies_in_float32() -> None:
     block = np.array([1.0, -2.0, 3.5], dtype=np.float32)
     out = scale_block(block, 1e6)
@@ -541,12 +420,3 @@ def test_scale_block_multiplies_in_float32() -> None:
 def test_scale_block_returns_the_same_object_at_factor_one() -> None:
     block = np.arange(3, dtype=np.float32)
     assert scale_block(block, 1.0) is block
-
-
-def test_scale_leaves_non_finite_samples_non_finite():
-    block = np.array([np.nan, np.inf, -np.inf, 1.0], dtype=np.float32)
-    (out,) = scale([block], 1e3)
-    assert np.isnan(out[0])
-    assert out[1] == np.inf
-    assert out[2] == -np.inf
-    assert out[3] == 1000.0

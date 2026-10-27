@@ -85,27 +85,6 @@ level-16 bin would exceed.
 ENVELOPE_PAIR_SIZE: Final = 2
 """Length of the trailing (min, max) axis on every coarser pyramid level."""
 
-STATISTIC_COLUMNS: Final = 5
-"""Columns of an in-flight float64 statistics block.
-
-In order: minimum, maximum, mean, variance, count of finite samples.
-"""
-
-MIN_COLUMN: Final = 0
-"""Column of a statistics block holding a bin's minimum."""
-
-MAX_COLUMN: Final = 1
-"""Column of a statistics block holding a bin's maximum."""
-
-MEAN_COLUMN: Final = 2
-"""Column of a statistics block holding a bin's mean."""
-
-VAR_COLUMN: Final = 3
-"""Column of a statistics block holding a bin's population variance."""
-
-COUNT_COLUMN: Final = 4
-"""Column of a statistics block holding a bin's count of finite samples."""
-
 MAX_LABELS: Final = 2**16
 """Most distinct labels an event channel can hold (the uint16 label range)."""
 
