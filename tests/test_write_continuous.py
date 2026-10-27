@@ -1460,3 +1460,94 @@ def test_write_continuous_channels_stops_dispatching_after_a_failed_window(
     with pytest.raises(RuntimeError, match="disk full"):
         _write_many(tmp_path, source, opts)
     assert len(pushed) == 3
+
+
+def _matrix_windows(
+    samples: Sequence[np.ndarray], rows: int, dtype: Any = np.float32
+) -> list[np.ndarray]:
+    """Cut equal-length channels into (rows, channels) windows."""
+    data = np.stack(samples, axis=1).astype(dtype)
+    return [data[start : start + rows] for start in range(0, len(data), rows)]
+
+
+@pytest.mark.parametrize("workers", [1, 3])
+def test_write_continuous_channels_writes_a_rank_2_window_as_its_columns(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    workers: int,
+) -> None:
+    samples = [_series(1000, seed=index) for index in range(3)]
+    channels = [
+        continuous_source(each, id=f"c{index}")
+        for index, each in enumerate(samples)
+    ]
+    windows = _matrix_windows(samples, 64)
+    opts = dataclasses.replace(_OPTS_ONE_PASS, max_workers=workers)
+    _write_many(tmp_path, _WindowSource(channels, windows), opts, name="matrix")
+    as_lists = [list(window.T) for window in windows]
+    _write_many(tmp_path, _WindowSource(channels, as_lists), opts, name="lists")
+    left, right = _files(tmp_path / "matrix"), _files(tmp_path / "lists")
+    assert len(left) > 20
+    assert left == right
+
+
+def test_write_continuous_channels_hands_each_job_a_contiguous_block_of_a_rank_2_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+) -> None:
+    flags: list[tuple[bool, tuple[int, ...]]] = []
+    push = ChannelWriter.push
+
+    def spy(self: ChannelWriter, block: Any) -> None:
+        flags.append((block.flags.c_contiguous, block.shape))
+        push(self, block)
+
+    monkeypatch.setattr(ChannelWriter, "push", spy)
+    samples = [_series(200, seed=index) for index in range(2)]
+    channels = [continuous_source(each) for each in samples]
+    source = _WindowSource(channels, _matrix_windows(samples, 100))
+    _write_many(tmp_path, source, _OPTS)
+    assert flags == [(True, (100,))] * 4
+
+
+@pytest.mark.parametrize("dtype", [np.int16, np.float64])
+def test_write_continuous_channels_casts_a_rank_2_window_to_float32(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    dtype: Any,
+) -> None:
+    samples = [np.arange(300, dtype=np.float32) + 10 * i for i in range(2)]
+    channels = [continuous_source(each) for each in samples]
+    source = _WindowSource(channels, _matrix_windows(samples, 128, dtype))
+    root = _write_many(tmp_path, source, _OPTS)
+    for index, each in enumerate(samples):
+        assert np.array_equal(root[str(index)][RAW_KEY][:], each)
+
+
+def test_write_continuous_channels_accepts_an_empty_rank_2_window(
+    tmp_path: Path, continuous_source: type[ArrayContinuousSource]
+) -> None:
+    samples = [np.arange(40, dtype=np.float32) for _ in range(2)]
+    channels = [continuous_source(each) for each in samples]
+    windows = [np.zeros((0, 2), np.float32), *_matrix_windows(samples, 40)]
+    root = _write_many(tmp_path, _WindowSource(channels, windows), _OPTS)
+    assert np.array_equal(root["1"][RAW_KEY][:], samples[1])
+
+
+@pytest.mark.parametrize("columns", [1, 3])
+def test_write_continuous_channels_rejects_a_rank_2_window_with_the_wrong_column_count(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    columns: int,
+) -> None:
+    channels = [
+        continuous_source(_series(1000, seed=1), id="a"),
+        continuous_source(_series(1000, seed=2), id="b"),
+    ]
+    source = _WindowSource(channels, [np.zeros((8, columns), np.float32)])
+    with pytest.raises(
+        ValueError,
+        match=rf"window 0 holds {columns} blocks and the source has 2 channels",
+    ):
+        _write_many(tmp_path, source, _OPTS)

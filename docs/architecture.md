@@ -8,7 +8,8 @@ reaches back into an earlier one.
 `protocols.py` declares `ContinuousChannelSource`, `MultiChannelSource`, and
 `EventChannelSource`. A continuous source exposes one channel's metadata and windowed
 sample reads. A multi-channel source exposes the metadata of every channel through
-`channels()` and yields one window, with one block per channel, from `iter_windows()`.
+`channels()` and yields one window from `iter_windows()`. A window is a `(rows, channels)`
+array or a sequence with one block per channel.
 `ContinuousChannelMetadata` declares the metadata that a continuous source and each
 channel of a multi-channel source share. An event source exposes its metadata, its event
 times, and the optional columns it provides. Its `columns()` method names them, and the
@@ -67,7 +68,8 @@ and `zarr_io.group_metadata` build the metadata, and a test pins that they store
 `zarr.json` as `create_array` and `create_group_with_attrs`. The writer then makes one
 pass over the windows of the source. Each window runs one job per channel on a pool of
 `WriteOpts.max_workers` threads, and each job pushes a block to the `ChannelWriter` of its
-channel. The loop reads the next window while the jobs run and waits for them before it
+channel. The loop transposes a `(rows, channels)` window once into contiguous rows for each
+channel. It reads the next window while the jobs run and waits for them before it
 dispatches the next. A window with fewer channels than threads also encodes the chunks of
 each job in groups on the idle threads. `write_continuous_channel` builds the same nodes
 and writer for one source, pushes blocks of one `raw` shard, and encodes their chunks in

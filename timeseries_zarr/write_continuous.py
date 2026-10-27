@@ -35,6 +35,7 @@ from timeseries_zarr.protocols import (
     ContinuousChannelMetadata,
     ContinuousChannelSource,
     MultiChannelSource,
+    Window,
     source_provenance,
 )
 from timeseries_zarr.shards import ArrayWriter, ShardLayout
@@ -57,6 +58,8 @@ from timeseries_zarr.zarr_io import (
     group_metadata,
     shard_layout,
 )
+
+_MATRIX_RANK = 2
 
 
 def _channel_group_metadata(
@@ -492,6 +495,33 @@ def _pool(workers: int) -> ThreadPoolExecutor | nullcontext[None]:
     return ThreadPoolExecutor(workers, thread_name_prefix="timeseries-zarr")
 
 
+def _check_block_count(index: int, count: int, channels: int) -> None:
+    """Raise ValueError unless a window holds one block for each channel."""
+    if count != channels:
+        raise ValueError(
+            f"window {index} holds {count} blocks and the source has "
+            f"{channels} channels; a window must hold one block for each "
+            "channel"
+        )
+
+
+def _window_blocks(window: Window, index: int, channels: int) -> Window:
+    """Return the blocks of a window, one for each channel.
+
+    A rank-2 array of (rows, channels) becomes a C-contiguous array of
+    (channels, rows) in one copy, so each block is a contiguous run of rows.
+    Any other window is the sequence of its blocks.
+
+    Raises:
+        ValueError: If the window does not hold one block for each channel.
+    """
+    if isinstance(window, np.ndarray) and window.ndim == _MATRIX_RANK:
+        _check_block_count(index, window.shape[1], channels)
+        return np.ascontiguousarray(window.T)
+    _check_block_count(index, len(window), channels)
+    return window
+
+
 def _wait_for(jobs: Sequence[tuple[ChannelWriter, Future[None]]]) -> None:
     """Wait for every job, then raise the error of the first that failed.
 
@@ -584,7 +614,7 @@ def write_continuous_channels(
         ValueError: If a rate is not positive, if provenance is not a JSON
             object of finite values, if a voltage unit is not "uV" under
             voltage_policy require_uv, if a window does not hold one block
-            per channel, if a block is not rank 1, or if a channel's blocks
+            per channel (for a rank-2 window, one column per channel), if a block is not rank 1, or if a channel's blocks
             do not total its num_samples. A unit or provenance error comes
             before any node is created. A window or block error leaves the
             created nodes and the shards written so far in place. Any error
@@ -624,16 +654,12 @@ def write_continuous_channels(
         ]
         jobs: list[tuple[ChannelWriter, Future[None]]] = []
         for index, window in enumerate(source.iter_windows()):
+            # The copy of a rank-2 window runs while the last jobs encode.
+            blocks = _window_blocks(window, index, len(writers))
             _wait_for(jobs)
-            if len(window) != len(writers):
-                raise ValueError(
-                    f"window {index} holds {len(window)} blocks and the "
-                    f"source has {len(writers)} channels; a window must hold "
-                    "one block for each channel"
-                )
             jobs = [
                 (writer, pool.submit(writer.push, block))
-                for writer, block in zip(writers, window, strict=True)
+                for writer, block in zip(writers, blocks, strict=True)
             ]
         _wait_for(jobs)
         _wait_for([(writer, pool.submit(writer.finish)) for writer in writers])
