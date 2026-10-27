@@ -1,13 +1,14 @@
 import dataclasses
+import resource
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
-from zarr import Array
 
 from tests.conftest import ArrayContinuousSource, ArrayMultiChannelSource
+from timeseries_zarr.bundle import write_bundle
 from timeseries_zarr.constants import (
     COUNT_KEY,
     MEAN_KEY,
@@ -15,38 +16,44 @@ from timeseries_zarr.constants import (
     RAW_KEY,
     VAR_KEY,
 )
-from timeseries_zarr.fold import fold_raw_block, split_members
 from timeseries_zarr.planning import level_period_us, plan_levels
-from timeseries_zarr.sizing import level_sizing, raw_sizing
+from timeseries_zarr.shards import FileShardSink
+from timeseries_zarr.sizing import level_sizing
 from timeseries_zarr.streaming import scale_block
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
 from timeseries_zarr.write_continuous import (
+    ChannelWriter,
     create_channel_group,
     create_level,
     create_raw,
     write_continuous_channel,
     write_continuous_channels,
-    write_levels,
-    write_raw,
-    write_statistics_blocks,
 )
-from timeseries_zarr.zarr_io import create_nodes, open_group, write_region
+from timeseries_zarr.zarr_io import create_nodes, open_group
 
 
 def _sizing():
     return ChunkShard(chunk_shape=(4,), shard_shape=(8,))
 
 
-def _record_writes(monkeypatch, module):
-    """Record (start, rows) for every write_region call made by module."""
-    writes = []
+def _record_shard_files(monkeypatch):
+    """Record the path of every shard file as it closes, and the bytes of each."""
+    closed = []
+    pending = {}
+    append = FileShardSink.append
+    close = FileShardSink.close
 
-    def spy(array, start, block):
-        writes.append((start, block.shape[0]))
-        write_region(array, start, block)
+    def spy_append(self, data):
+        pending[self._path] = pending.get(self._path, 0) + len(data)
+        append(self, data)
 
-    monkeypatch.setattr(f"{module}.write_region", spy)
-    return writes
+    def spy_close(self):
+        closed.append((self._path, pending.pop(self._path, 0)))
+        close(self)
+
+    monkeypatch.setattr(FileShardSink, "append", spy_append)
+    monkeypatch.setattr(FileShardSink, "close", spy_close)
+    return closed
 
 
 def _gappy_samples(n=26):
@@ -58,82 +65,82 @@ def _gappy_samples(n=26):
     return samples
 
 
-def test_write_raw_round_trips_samples_unchanged(tmp_path, continuous_source):
+def _write_raw_only(tmp_path, source):
+    """Write source as channel 0 with no levels and return its group."""
+    parent = open_group(tmp_path / "bundle")
+    write_continuous_channel(
+        parent,
+        0,
+        source,
+        reference_us=0,
+        opts=dataclasses.replace(_OPTS, max_levels=0),
+    )
+    return open_group(tmp_path / "bundle")["0"]
+
+
+def test_write_continuous_channel_round_trips_samples_unchanged(
+    tmp_path, continuous_source
+):
     samples = _gappy_samples()
-    group = open_group(tmp_path / "bundle")
-    write_raw(group, continuous_source(samples), _sizing(), 5)
-    stored = open_group(tmp_path / "bundle")[RAW_KEY][:]
+    stored = _write_raw_only(tmp_path, continuous_source(samples))[RAW_KEY][:]
     assert stored.dtype == np.float32
     assert np.array_equal(stored, samples, equal_nan=True)
 
 
-def test_write_raw_creates_one_array_named_raw_with_no_attributes(
+def test_write_continuous_channel_with_no_levels_holds_one_array_named_raw_with_no_attributes(
     tmp_path, continuous_source
 ):
-    group = open_group(tmp_path / "bundle")
-    write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
-    stored = open_group(tmp_path / "bundle")
-    assert list(stored.array_keys()) == ["raw"]
-    assert dict(stored["raw"].attrs) == {}
+    group = _write_raw_only(tmp_path, continuous_source(_gappy_samples()))
+    assert list(group.array_keys()) == ["raw"]
+    assert dict(group["raw"].attrs) == {}
 
 
-def test_write_raw_declares_shape_time_dimension_and_nan_fill(
+def test_write_continuous_channel_declares_raw_shape_time_dimension_and_nan_fill(
     tmp_path, continuous_source
 ):
-    group = open_group(tmp_path / "bundle")
-    write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
-    arr = open_group(tmp_path / "bundle")["raw"]
+    arr = _write_raw_only(tmp_path, continuous_source(_gappy_samples()))["raw"]
     assert arr.shape == (26,)
     assert arr.metadata.dimension_names == ("time",)
     assert np.isnan(arr.fill_value)
 
 
-def test_write_raw_chunk_and_shard_grid(tmp_path, continuous_source):
-    group = open_group(tmp_path / "bundle")
-    write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
-    arr = open_group(tmp_path / "bundle")["raw"]
-    assert arr.chunks == (4,)
-    assert arr.shards == (8,)
-
-
-def test_write_raw_returns_the_array(tmp_path, continuous_source):
-    group = open_group(tmp_path / "bundle")
-    result = write_raw(group, continuous_source(_gappy_samples()), _sizing(), 5)
-    assert isinstance(result, Array)
-    assert result.shape == (26,)
-
-
-def test_write_raw_empty_source_creates_a_zero_length_array(
+def test_write_continuous_channel_raw_chunk_and_shard_grid(
     tmp_path, continuous_source
 ):
-    group = open_group(tmp_path / "bundle")
-    write_raw(group, continuous_source(np.empty(0, np.float32)), _sizing(), 5)
-    arr = open_group(tmp_path / "bundle")["raw"]
-    assert arr.shape == (0,)
-    assert arr[:].shape == (0,)
+    arr = _write_raw_only(tmp_path, continuous_source(_gappy_samples()))["raw"]
+    assert arr.chunks == (8,)
+    assert arr.shards == (32,)
 
 
-def test_write_raw_writes_one_whole_shard_per_write(
+def test_write_continuous_channel_empty_source_creates_a_zero_length_raw_array(
+    tmp_path, continuous_source
+):
+    group = _write_raw_only(
+        tmp_path, continuous_source(np.empty(0, np.float32))
+    )
+    assert group["raw"].shape == (0,)
+    assert group["raw"][:].shape == (0,)
+
+
+def test_write_continuous_channel_writes_each_raw_shard_once_in_order(
     tmp_path, continuous_source, monkeypatch
 ):
-    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
-    samples = _gappy_samples(26)
-    group = open_group(tmp_path / "bundle")
-    write_raw(group, continuous_source(samples), _sizing(), 5)
-    assert writes == [(0, 8), (8, 8), (16, 8), (24, 2)]
-    stored = open_group(tmp_path / "bundle")["raw"][:]
-    assert np.array_equal(stored, samples, equal_nan=True)
+    closed = _record_shard_files(monkeypatch)
+    samples = _gappy_samples(70)
+    group = _write_raw_only(tmp_path, continuous_source(samples))
+    root = tmp_path / "bundle" / "0" / "raw" / "c"
+    assert [path for path, _ in closed] == [root / "0", root / "1", root / "2"]
+    assert np.array_equal(group[RAW_KEY][:], samples, equal_nan=True)
 
 
-def test_write_raw_writes_every_shard_of_an_all_gap_source(
+def test_write_continuous_channel_writes_every_raw_shard_of_an_all_gap_source(
     tmp_path, continuous_source
 ):
-    samples = np.full(20, np.nan, dtype=np.float32)
-    group = open_group(tmp_path / "bundle")
-    write_raw(group, continuous_source(samples), _sizing(), 5)
+    samples = np.full(70, np.nan, dtype=np.float32)
+    _write_raw_only(tmp_path, continuous_source(samples))
     shards = [
         f
-        for f in (tmp_path / "bundle" / "raw").rglob("*")
+        for f in (tmp_path / "bundle" / "0" / "raw").rglob("*")
         if f.is_file() and f.name != "zarr.json"
     ]
     assert len(shards) == 3
@@ -260,94 +267,6 @@ def test_create_level_rejects_a_level_below_one(tmp_path):
         create_level(parent, _level_plan(level=0), _level_sizing(), 5, False)
 
 
-def _statistics(rows=20, seed=0):
-    rng = np.random.default_rng(seed)
-    raw = (5000.0 + 8.0 * rng.standard_normal(4 * rows)).astype(np.float32)
-    raw[6] = np.nan
-    raw[30:38] = np.nan
-    raw[50] = np.inf
-    return fold_raw_block(raw)
-
-
-def _cut_rows(statistics, sizes):
-    out, start = [], 0
-    for size in sizes:
-        out.append(statistics[start : start + size])
-        start += size
-    return out
-
-
-def test_write_statistics_blocks_stores_every_member_as_split(tmp_path):
-    parent = open_group(tmp_path / "bundle")
-    members = create_level(parent, _level_plan(), _level_sizing(), 5, True)
-    statistics = _statistics()
-    write_statistics_blocks(members, _cut_rows(statistics, [8, 8, 4]))
-    group = open_group(tmp_path / "bundle")["1"]
-    minmax, mean, var, count = split_members(statistics, True)
-    assert np.array_equal(group[MINMAX_KEY][:], minmax, equal_nan=True)
-    assert np.array_equal(group[MEAN_KEY][:], mean, equal_nan=True)
-    assert np.array_equal(group[VAR_KEY][:], var, equal_nan=True)
-    assert np.array_equal(group[COUNT_KEY][:], count)
-
-
-def test_write_statistics_blocks_without_var_drops_the_variance_column(
-    tmp_path,
-):
-    parent = open_group(tmp_path / "bundle")
-    members = create_level(parent, _level_plan(), _level_sizing(), 5, False)
-    statistics = _statistics()
-    write_statistics_blocks(members, [statistics])
-    group = open_group(tmp_path / "bundle")["1"]
-    minmax, mean, _, count = split_members(statistics, False)
-    assert VAR_KEY not in list(group.array_keys())
-    assert np.array_equal(group[MEAN_KEY][:], mean, equal_nan=True)
-    assert np.array_equal(group[COUNT_KEY][:], count)
-
-
-def test_write_statistics_blocks_writes_each_block_at_a_running_offset(
-    tmp_path, monkeypatch
-):
-    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
-    parent = open_group(tmp_path / "bundle")
-    members = create_level(parent, _level_plan(), _level_sizing(), 5, True)
-    write_statistics_blocks(members, _cut_rows(_statistics(), [8, 8, 4]))
-    assert writes == [(0, 8)] * 4 + [(8, 8)] * 4 + [(16, 4)] * 4
-
-
-def test_write_statistics_blocks_without_var_writes_three_members_per_block(
-    tmp_path, monkeypatch
-):
-    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
-    parent = open_group(tmp_path / "bundle")
-    members = create_level(parent, _level_plan(), _level_sizing(), 5, False)
-    write_statistics_blocks(members, _cut_rows(_statistics(), [8, 12]))
-    assert writes == [(0, 8)] * 3 + [(8, 12)] * 3
-
-
-def test_write_statistics_blocks_empty_stream_leaves_the_fill_value(tmp_path):
-    parent = open_group(tmp_path / "bundle")
-    members = create_level(parent, _level_plan(), _level_sizing(), 5, True)
-    write_statistics_blocks(members, [])
-    assert np.isnan(members.minmax[:]).all()
-    assert not members.count[:].any()
-
-
-def test_write_statistics_blocks_writes_every_shard_of_an_all_gap_level(
-    tmp_path,
-):
-    parent = open_group(tmp_path / "bundle")
-    members = create_level(parent, _level_plan(), _level_sizing(), 5, True)
-    gap = fold_raw_block(np.full(80, np.nan, dtype=np.float32))
-    write_statistics_blocks(members, _cut_rows(gap, [8, 8, 4]))
-    for key in (MINMAX_KEY, MEAN_KEY, VAR_KEY, COUNT_KEY):
-        shards = [
-            f
-            for f in (tmp_path / "bundle" / "1" / key).rglob("*")
-            if f.is_file() and f.name != "zarr.json"
-        ]
-        assert len(shards) == 3, key
-
-
 _OPTS = WriteOpts(min_bins=2, max_levels=8, inner_len=8, target_shard_bytes=128)
 _OPTS_ONE_PASS = dataclasses.replace(_OPTS, write_var=True)
 
@@ -405,17 +324,17 @@ def _close(got, want):
     return bool(np.allclose(got[finite], want[finite], rtol=1e-5, atol=atol))
 
 
-def test_write_levels_writes_every_planned_level_from_the_stored_raw(
+def test_write_continuous_channel_writes_every_planned_level(
     tmp_path: Path,
     continuous_source: type[ArrayContinuousSource],
     opts: WriteOpts,
 ) -> None:
     samples = _series(1000)
     parent = open_group(tmp_path / "bundle")
-    sizing = raw_sizing(1000, opts.inner_len, opts.target_shard_bytes)
-    raw = write_raw(parent, continuous_source(samples), sizing, opts.zstd_level)
-    write_levels(parent, raw, 32000.0, opts)
-    group = open_group(tmp_path / "bundle")
+    write_continuous_channel(
+        parent, 0, continuous_source(samples), reference_us=0, opts=opts
+    )
+    group = open_group(tmp_path / "bundle")["0"]
     plans = plan_levels(1000, 32000.0, opts.max_levels, opts.min_bins)
     assert len(plans) >= 2
     assert sorted(group.group_keys()) == sorted(str(p.level) for p in plans)
@@ -436,27 +355,41 @@ def test_write_levels_writes_every_planned_level_from_the_stored_raw(
             assert VAR_KEY not in list(level.array_keys())
 
 
-def test_write_levels_writes_nothing_for_a_channel_too_short_for_a_level(
-    tmp_path: Path,
-    continuous_source: type[ArrayContinuousSource],
-    opts: WriteOpts,
-) -> None:
-    samples = np.arange(3, dtype=np.float32)
-    parent = open_group(tmp_path / "bundle")
-    sizing = raw_sizing(3, opts.inner_len, opts.target_shard_bytes)
-    raw = write_raw(parent, continuous_source(samples), sizing, opts.zstd_level)
-    write_levels(parent, raw, 32000.0, opts)
-    group = open_group(tmp_path / "bundle")
-    assert list(group.array_keys()) == [RAW_KEY]
-    assert list(group.group_keys()) == []
-
-
 def _write(tmp_path, source, opts, reference_us=0, name="bundle"):
     parent = open_group(tmp_path / name)
     write_continuous_channel(
         parent, 0, source, reference_us=reference_us, opts=opts
     )
     return open_group(tmp_path / name)["0"]
+
+
+def test_write_bundle_opens_more_arrays_than_the_file_descriptor_limit(
+    tmp_path,
+):
+    sources = [
+        ArrayContinuousSource(
+            _series(3000, seed=index),
+            id=f"c{index}",
+            name=f"c{index}",
+            rate_hz=512.0,
+            start_us=0,
+        )
+        for index in range(12)
+    ]
+    limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    in_use = len(list(Path("/dev/fd").iterdir()))
+    resource.setrlimit(resource.RLIMIT_NOFILE, (in_use + 48, limit[1]))
+    try:
+        write_bundle(
+            [ArrayMultiChannelSource(sources, window_rows=1000)],
+            [],
+            output_path=tmp_path / "bundle",
+            opts=_WIDE_ONE_PASS,
+        )
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, limit)
+    raw = open_group(tmp_path / "bundle")["11"]["raw"]
+    np.testing.assert_array_equal(raw[:], _series(3000, seed=11))
 
 
 def test_write_continuous_channel_attributes_sit_under_tsz_with_the_offset(
@@ -718,23 +651,27 @@ def test_write_continuous_channel_all_zero_source_writes_every_shard(
         assert len(shards) == wanted, path
 
 
-def test_write_continuous_channel_every_write_covers_a_whole_shard(
+def _assert_each_shard_file_written_once(root, closed):
+    """Check that every shard file below root closed once, after all its bytes."""
+    paths = [path for path, _ in closed]
+    on_disk = {
+        file
+        for file in root.rglob("*")
+        if file.is_file() and file.name != "zarr.json"
+    }
+    assert len(paths) > 10
+    assert len(set(paths)) == len(paths)
+    assert set(paths) == on_disk
+    for path, size in closed:
+        assert path.stat().st_size == size, path
+
+
+def test_write_continuous_channel_writes_each_shard_file_once(
     tmp_path, continuous_source, monkeypatch, opts
 ):
-    writes = []
-
-    def spy(array, start, block):
-        writes.append(
-            (array.name, start, block.shape[0], array.shape[0], array.shards[0])
-        )
-        write_region(array, start, block)
-
-    monkeypatch.setattr("timeseries_zarr.write_continuous.write_region", spy)
+    closed = _record_shard_files(monkeypatch)
     _write(tmp_path, continuous_source(_series(1000)), opts)
-    assert len(writes) > 10
-    for name, start, rows, length, shard_rows in writes:
-        assert start % shard_rows == 0, name
-        assert rows == min(shard_rows, length - start), name
+    _assert_each_shard_file_written_once(tmp_path / "bundle", closed)
 
 
 def test_write_continuous_channel_returns_none(tmp_path, continuous_source):
@@ -843,18 +780,17 @@ def _files(root: Path) -> dict[str, bytes]:
     }
 
 
-def _record_level_writes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    """Record the group name of every write_levels call."""
-    folded: list[str] = []
+def _record_pushes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record the length of every block pushed to a channel writer."""
+    pushed: list[int] = []
+    push = ChannelWriter.push
 
-    def spy(
-        group: Any, raw: Any, rate_hz: float, opts: WriteOpts, **kwargs: Any
-    ) -> None:
-        folded.append(group.name)
-        write_levels(group, raw, rate_hz, opts, **kwargs)
+    def spy(self: ChannelWriter, block: Any) -> None:
+        pushed.append(int(np.shape(block)[0]))
+        push(self, block)
 
-    monkeypatch.setattr("timeseries_zarr.write_continuous.write_levels", spy)
-    return folded
+    monkeypatch.setattr(ChannelWriter, "push", spy)
+    return pushed
 
 
 def _assert_levels_equal_the_definition(
@@ -930,7 +866,7 @@ def test_write_continuous_channels_names_the_groups_from_the_first_key_in_channe
 
 
 @pytest.mark.parametrize("window_rows", [1, 3, 7, 8, 13, 1000])
-def test_write_continuous_channels_every_write_covers_a_whole_shard_whatever_the_window_length(
+def test_write_continuous_channels_writes_each_shard_file_once_whatever_the_window_length(
     tmp_path: Path,
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
@@ -938,15 +874,7 @@ def test_write_continuous_channels_every_write_covers_a_whole_shard_whatever_the
     opts: WriteOpts,
     window_rows: int,
 ) -> None:
-    writes: list[tuple[str, int, int, int, int]] = []
-
-    def spy(array: Any, start: int, block: np.ndarray) -> None:
-        writes.append(
-            (array.name, start, block.shape[0], array.shape[0], array.shards[0])
-        )
-        write_region(array, start, block)
-
-    monkeypatch.setattr("timeseries_zarr.write_continuous.write_region", spy)
+    closed = _record_shard_files(monkeypatch)
     samples = [_series(1000, seed=1), _series(700, seed=2)]
     channels = [
         continuous_source(each, id=f"c{i}") for i, each in enumerate(samples)
@@ -954,18 +882,8 @@ def test_write_continuous_channels_every_write_covers_a_whole_shard_whatever_the
     root = _write_many(
         tmp_path, multi_channel_source(channels, window_rows), opts
     )
-    assert len(writes) > 10
-    for name, start, rows, length, shard_rows in writes:
-        assert start % shard_rows == 0, name
-        assert rows == min(shard_rows, length - start), name
+    _assert_each_shard_file_written_once(tmp_path / "bundle", closed)
     for index, expected in enumerate(samples):
-        shard_rows = raw_sizing(
-            expected.shape[0], opts.inner_len, opts.target_shard_bytes
-        ).shard_shape[0]
-        raw_starts = [
-            start for name, start, *_ in writes if name == f"/{index}/raw"
-        ]
-        assert raw_starts == list(range(0, expected.shape[0], shard_rows))
         stored = root[str(index)][RAW_KEY][:]
         assert np.array_equal(stored, expected, equal_nan=True)
 
@@ -1179,7 +1097,7 @@ def test_write_continuous_channels_rejects_a_window_with_the_wrong_block_count(
     monkeypatch: pytest.MonkeyPatch,
     count: int,
 ) -> None:
-    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
+    pushed = _record_pushes(monkeypatch)
     channels = [
         continuous_source(_series(1000, seed=1), id="a"),
         continuous_source(_series(1000, seed=2), id="b"),
@@ -1192,7 +1110,7 @@ def test_write_continuous_channels_rejects_a_window_with_the_wrong_block_count(
         match=rf"window 1 holds {count} blocks and the source has 2 channels",
     ):
         _write_many(tmp_path, source, _OPTS)
-    assert writes == []
+    assert pushed == [8, 8]
 
 
 @pytest.mark.parametrize(
@@ -1230,11 +1148,9 @@ def test_write_continuous_channels_rejects_a_block_that_is_not_rank_one(
 def test_write_continuous_channels_rejects_a_channel_with_too_few_samples(
     tmp_path: Path,
     continuous_source: type[ArrayContinuousSource],
-    monkeypatch: pytest.MonkeyPatch,
     counts: tuple[int, int] | None,
     message: str,
 ) -> None:
-    folded = _record_level_writes(monkeypatch)
     channels = [
         continuous_source(_series(1024, seed=1), id="ok"),
         continuous_source(_series(1024, seed=2), id="short"),
@@ -1253,12 +1169,11 @@ def test_write_continuous_channels_rejects_a_channel_with_too_few_samples(
         _write_many(
             tmp_path, _WindowSource(channels, windows), _OPTS, first_key=2
         )
-    assert folded == []
 
 
 @pytest.mark.parametrize(
-    ("declared", "sizes", "expected_writes", "received"),
-    [(40, (32, 16), [(0, 32)], 48), (40, (41,), [], 41), (0, (1,), [], 1)],
+    ("declared", "sizes", "closed_shards", "received"),
+    [(40, (32, 16), 1, 48), (40, (41,), 0, 41), (0, (1,), 0, 1)],
     ids=["after a shard", "in one block", "no samples declared"],
 )
 def test_write_continuous_channels_rejects_too_many_samples_before_writing_past_the_array(
@@ -1267,11 +1182,10 @@ def test_write_continuous_channels_rejects_too_many_samples_before_writing_past_
     monkeypatch: pytest.MonkeyPatch,
     declared: int,
     sizes: tuple[int, ...],
-    expected_writes: list[tuple[int, int]],
+    closed_shards: int,
     received: int,
 ) -> None:
-    writes = _record_writes(monkeypatch, "timeseries_zarr.write_continuous")
-    folded = _record_level_writes(monkeypatch)
+    closed = _record_shard_files(monkeypatch)
     scaled: list[int] = []
 
     def spy_scale(block: np.ndarray, factor: float) -> np.ndarray:
@@ -1289,10 +1203,11 @@ def test_write_continuous_channels_rejects_too_many_samples_before_writing_past_
         rf"and declares {declared}",
     ):
         _write_many(tmp_path, _WindowSource([channel], windows), _OPTS)
-    assert writes == expected_writes
-    assert all(start + rows <= declared for start, rows in writes)
+    assert [path.parent.parent.name for path, _ in closed] == (
+        ["raw"] * closed_shards
+    )
+    assert all(size > 0 for _, size in closed)
     assert scaled == list(sizes[:-1])
-    assert folded == []
 
 
 def test_write_continuous_channels_rejects_a_volts_unit_under_require_uv(
@@ -1360,3 +1275,59 @@ def test_write_continuous_channels_returns_none(
         parent, 0, source, reference_us=0, opts=_OPTS
     )
     assert result is None
+
+
+@pytest.mark.parametrize("write_var", [False, True])
+@pytest.mark.parametrize("window_rows", [37, 1000])
+def test_a_written_bundle_equals_the_definition_over_six_levels(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    write_var: bool,
+    window_rows: int,
+) -> None:
+    opts = WriteOpts(
+        min_bins=2,
+        max_levels=8,
+        inner_len=16,
+        target_shard_bytes=512,
+        write_var=write_var,
+    )
+    lengths = [16389, 16387]
+    samples = []
+    for seed, length in enumerate(lengths):
+        each = _series(length, offset=5000.0, scale=3.0, seed=seed)
+        each[1000:1010] = np.nan
+        each[7777] = np.inf
+        each[9000] = -np.inf
+        each[-1] = np.nan
+        samples.append(each)
+    channels = [
+        continuous_source(each, id=f"c{i}") for i, each in enumerate(samples)
+    ]
+    write_bundle(
+        [multi_channel_source(channels, window_rows)],
+        [],
+        output_path=tmp_path / "bundle",
+        opts=opts,
+    )
+    root = open_group(tmp_path / "bundle")
+    for index, each in enumerate(samples):
+        group = root[str(index)]
+        plans = plan_levels(each.shape[0], 32000.0, opts.max_levels, 2)
+        assert len(plans) == 6
+        assert np.array_equal(group[RAW_KEY][:], each, equal_nan=True)
+        for plan in plans:
+            want = _direct(each, 4**plan.level)
+            level = group[str(plan.level)]
+            minmax = level[MINMAX_KEY][:]
+            assert minmax.shape == (plan.bins, 2)
+            assert np.array_equal(
+                minmax, want[:, :2].astype(np.float32), equal_nan=True
+            )
+            assert np.array_equal(level[COUNT_KEY][:], want[:, 4])
+            assert _close(level[MEAN_KEY][:], want[:, 2]), plan.level
+            if write_var:
+                assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
+            else:
+                assert VAR_KEY not in list(level.array_keys())

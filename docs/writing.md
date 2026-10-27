@@ -17,8 +17,14 @@
 `max_levels=0` writes the raw samples and the event arrays with no levels or count
 levels.
 
-`write_var=True` uses more memory. The writer holds one shard of statistics per level
-while it writes.
+`write_var=True` adds the `var` member to every level and costs no extra memory. The
+writer folds every level from float64 statistics whatever the setting, so the variance
+stays exact on a channel with a large DC offset.
+
+The writer holds about 2.6 MiB per channel at the defaults with 8 levels, whatever the
+length of the recording: one partial chunk of `raw` and, for each level, up to
+`inner_len` rows of float64 statistics. A `MultiChannelSource` also holds its current
+window.
 
 `voltage_policy="convert"` scales a voltage channel to microvolts and labels it `uV`.
 `"require_uv"` raises `ValueError` for a voltage channel in any other unit.

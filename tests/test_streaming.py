@@ -3,10 +3,10 @@ import pytest
 
 from timeseries_zarr.constants import STATISTIC_COLUMNS, VAR_COLUMN
 from timeseries_zarr.fold import (
+    Statistics,
     assemble_statistics,
-    fold_raw_block,
-    fold_statistics_block,
-    split_members,
+    fold_raw,
+    fold_statistics,
 )
 from timeseries_zarr.streaming import (
     Regrouper,
@@ -20,6 +20,29 @@ from timeseries_zarr.streaming import (
     tap,
 )
 from timeseries_zarr.types import LevelMembers
+
+
+def fold_raw_block(raw):
+    """Fold raw samples to a (rows, STATISTIC_COLUMNS) block."""
+    return _stack(fold_raw(raw))
+
+
+def fold_statistics_block(block):
+    """Fold a (rows, STATISTIC_COLUMNS) block one level coarser."""
+    return _stack(fold_statistics(Statistics(*(c.copy() for c in block.T))))
+
+
+def _stack(statistics):
+    return np.stack(
+        [
+            statistics.minimum,
+            statistics.maximum,
+            statistics.mean,
+            statistics.variance,
+            statistics.count,
+        ],
+        axis=1,
+    )
 
 
 def _split(arr, sizes):
@@ -432,8 +455,7 @@ def test_tap_propagates_a_sink_exception_to_the_consumer():
 
 
 def _members(length=997, with_var=True):
-    statistics = fold_raw_block(_gappy(length))
-    minmax, mean, var, count = split_members(statistics, with_var)
+    minmax, mean, var, count = fold_raw(_gappy(length)).members(with_var)
     return LevelMembers(minmax=minmax, mean=mean, var=var, count=count)
 
 
