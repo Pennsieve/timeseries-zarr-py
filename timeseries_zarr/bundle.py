@@ -6,8 +6,6 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy.typing as npt
-
 from timeseries_zarr.attrs import check_provenance, root_attrs
 from timeseries_zarr.constants import TSZ_KEY, ZARR_METADATA_FILE
 from timeseries_zarr.protocols import (
@@ -15,6 +13,7 @@ from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
     MultiChannelSource,
+    Window,
     missing_members,
     source_provenance,
 )
@@ -58,7 +57,7 @@ class _ListedSource:
         """Return the channels listed when the source was wrapped."""
         return self.listed
 
-    def iter_windows(self) -> Iterator[Sequence[npt.ArrayLike]]:
+    def iter_windows(self) -> Iterator[Window]:
         """Yield the windows of the wrapped source."""
         return self.source.iter_windows()
 

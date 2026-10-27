@@ -104,22 +104,30 @@ class ContinuousChannelSource(ContinuousChannelMetadata, Protocol):
         ...
 
 
+type Window = Sequence[npt.ArrayLike] | npt.NDArray[np.generic]
+"""One window of a MultiChannelSource: a sequence of blocks or a (rows, channels) array."""
+
+
 @runtime_checkable
 class MultiChannelSource(Protocol):
     """Continuous channels the writer reads together, one window at a time.
 
     A source over a format that stores every channel in one stream implements
-    this protocol. channels returns the channels in channel order. iter_windows yields one
-    window at a time, and the writer calls it once per write. The writer reads
-    the next window while it writes the previous one, so the source must not
-    overwrite the arrays of a window it has yielded. A window is a
-    sequence with one rank-1 block per channel, in channel order. The writer
-    casts each block to float32, so a strided column view or an int16 block
-    works. The blocks of one window may differ in length, and a block
-    may be empty. A channel whose samples end before the others gives an empty
-    block in each later window. For each channel, the blocks concatenate to
-    its samples, and their lengths total num_samples. The columns of a (rows,
-    channels) array are the blocks of a window.
+    this protocol. channels returns the channels in channel order.
+    iter_windows yields one window at a time, and the writer calls it once per
+    write. The writer reads the next window while it writes the previous one,
+    so the source must not overwrite the arrays of a window it has yielded.
+
+    A window is a rank-2 array of (rows, channels), or a sequence with one
+    rank-1 block per channel, in channel order. The columns of the array are
+    the blocks. The writer copies an array into channel-major order once, so
+    each channel reads contiguous rows. The writer casts each block to
+    float32, so a strided column view or an int16 block works. The blocks of
+    one window may differ in length, and a block may be empty, but the columns
+    of an array all have its row count. A channel whose samples end before the
+    others gives an empty block in each later window, which only the sequence
+    form can express. For each channel, the blocks concatenate to its
+    samples, and their lengths total num_samples.
 
     Each channel may define provenance as ProvenanceSource declares it.
     """
@@ -128,8 +136,12 @@ class MultiChannelSource(Protocol):
         """Return the channels in channel order."""
         ...
 
-    def iter_windows(self) -> Iterator[Sequence[npt.ArrayLike]]:
-        """Yield each window as a sequence of one block per channel."""
+    def iter_windows(self) -> Iterator[Window]:
+        """Yield each window as one block per channel.
+
+        A window is a sequence of rank-1 blocks or an array of (rows,
+        channels).
+        """
         ...
 
 

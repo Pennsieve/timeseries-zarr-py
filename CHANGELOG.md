@@ -27,5 +27,8 @@ defaults to the CPUs available to the process. The writer reads the next window 
 previous one, so a source must not overwrite the arrays of a window it has yielded. A
 bundle is byte-identical at any thread count.
 
+A window of a `MultiChannelSource` may be a `(rows, channels)` array. The writer
+transposes it once into contiguous rows for each channel.
+
 `Bundle.stack` and `stack_channels` read one array per channel and take
 `max_workers`, the number of threads that read the channels.

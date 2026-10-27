@@ -56,13 +56,15 @@ A `MultiChannelSource` has two methods.
 `iter_windows()` yields one window at a time, and the writer calls it once per write. The
 writer reads the next window while it writes the previous one, so a source must not
 overwrite the arrays of a window it has yielded.
-A window is a sequence with one rank-1 block per channel, in channel order. The writer casts
-each block to float32, so a strided column view or an int16 block works. The blocks
-of one window may differ in length, and a block may be empty. A channel whose
+
+A window is a `(rows, channels)` array, or a sequence with one rank-1 block per channel in
+channel order. The columns of the array are the blocks, so `data[start:stop]` is a window.
+The writer copies an array into channel-major order once, so each channel reads contiguous
+rows. It casts each block to float32, so an int16 array works. The sequence form takes
+strided column views, such as `list(data[start:stop].T)`. In the sequence form, the
+blocks of one window may differ in length, and a block may be empty. A channel whose
 samples end before the others gives an empty block in each later window. For each
 channel, the blocks concatenate to its samples, and their lengths total `num_samples()`.
-The columns of a `(rows, channels)` array are the blocks of a window, so
-`list(data[start:stop].T)` is a window.
 
 Blocks may differ in length, so one source can hold channels of different sample rates.
 A one-second EDF record, for example, holds 256 samples of an EEG channel beside 1 sample
@@ -117,7 +119,7 @@ class Stream:
 
     def iter_windows(self):
         for start in range(0, self._data.shape[0], WINDOW_ROWS):
-            yield list(self._data[start : start + WINDOW_ROWS].T)
+            yield self._data[start : start + WINDOW_ROWS]
 
 
 rng = np.random.default_rng(0)
@@ -146,8 +148,8 @@ time.
 The writer raises `ValueError` when a source breaks the window contract in one of three
 ways:
 
-- A window does not hold one block for each channel. The message gives the window index
-  and both counts.
+- A window does not hold one block for each channel, or one column for each channel in the
+  array form. The message gives the window index and both counts.
 - A block is not rank 1. The message names the channel.
 - The blocks of a channel do not total its `num_samples()`. The message names the
   channel and gives both counts.
