@@ -94,6 +94,93 @@ class BufferShardSink:
         self._save(data)
 
 
+class AppendBudget:
+    """Bounds the bytes that a group of batched sinks holds unwritten.
+
+    When an append takes the bytes held past the limit, the sink that holds
+    the most passes its bytes on, until the total is within the limit. The
+    sinks of one budget are used from one thread at a time.
+    """
+
+    def __init__(self, limit: int) -> None:
+        """Set the limit.
+
+        Args:
+            limit: The most bytes held after an append returns.
+
+        Raises:
+            ValueError: If limit is negative.
+        """
+        if limit < 0:
+            raise ValueError(f"limit must be 0 or more, got {limit}")
+        self._limit = limit
+        self._held = 0
+        self._sinks: set[BatchedShardSink] = set()
+
+    @property
+    def held(self) -> int:
+        """The bytes appended to the sinks and not yet passed on."""
+        return self._held
+
+    def hold(self, sink: "BatchedShardSink", size: int) -> None:
+        """Count size more bytes in sink, then flush sinks to the limit."""
+        self._sinks.add(sink)
+        self._held += size
+        while self._held > self._limit:
+            max(self._sinks, key=lambda other: other.held).flush()
+
+    def release(self, sink: "BatchedShardSink", size: int) -> None:
+        """Stop counting the size bytes that sink has passed on."""
+        self._held -= size
+        self._sinks.discard(sink)
+
+
+class BatchedShardSink:
+    """Holds appended bytes and passes them to a sink in fewer appends.
+
+    The bytes pass on in order when the budget runs out and on close, so the
+    sink receives the bytes appended.
+    """
+
+    def __init__(self, sink: ShardSink, budget: AppendBudget) -> None:
+        """Wrap sink.
+
+        Args:
+            sink: Where the bytes go.
+            budget: The limit shared with the other sinks of a writer.
+        """
+        self._sink = sink
+        self._budget = budget
+        self._parts: list[bytes] = []
+        self._held = 0
+
+    @property
+    def held(self) -> int:
+        """The bytes appended and not yet passed on."""
+        return self._held
+
+    def append(self, data: bytes) -> None:
+        """Hold data after the bytes already appended."""
+        self._parts.append(data)
+        self._held += len(data)
+        self._budget.hold(self, len(data))
+
+    def flush(self) -> None:
+        """Pass the bytes held to the sink in one append."""
+        if not self._parts:
+            return
+        data = b"".join(self._parts)
+        self._parts = []
+        self._held = 0
+        self._budget.release(self, len(data))
+        self._sink.append(data)
+
+    def close(self) -> None:
+        """Pass the bytes held to the sink, then close it."""
+        self.flush()
+        self._sink.close()
+
+
 @dataclass(frozen=True)
 class ShardLayout:
     """The shape and encoding of one sharded array, as the shard writer needs it.
@@ -216,7 +303,10 @@ class ArrayWriter:
     """Writes the shards of one array from blocks of rows of any length."""
 
     def __init__(
-        self, layout: ShardLayout, executor: Executor | None = None
+        self,
+        layout: ShardLayout,
+        executor: Executor | None = None,
+        budget: AppendBudget | None = None,
     ) -> None:
         """Start an array.
 
@@ -226,10 +316,14 @@ class ArrayWriter:
                 ENCODE_GROUP_BYTES. The caller of push may run on a worker of
                 the executor while another worker is idle. Chunks encode in
                 the calling thread when None.
+            budget: Holds encoded chunks and passes them to each shard sink
+                in fewer appends. Each chunk passes on as it is appended when
+                None.
         """
         self._layout = layout
         self._encoder = ChunkEncoder(layout)
         self._executor = executor
+        self._budget = budget
         self._partial = np.empty(
             (layout.chunk_rows, *layout.trailing_shape), dtype=layout.dtype
         )
@@ -330,10 +424,10 @@ class ArrayWriter:
         layout = self._layout
         for chunk in encoded:
             if self._shard is None:
-                self._shard = ShardWriter(
-                    layout.open_sink(self._chunks // layout.chunks_per_shard),
-                    layout.chunks_per_shard,
-                )
+                sink = layout.open_sink(self._chunks // layout.chunks_per_shard)
+                if self._budget is not None:
+                    sink = BatchedShardSink(sink, self._budget)
+                self._shard = ShardWriter(sink, layout.chunks_per_shard)
             self._shard.append(chunk)
             self._chunks += 1
             if self._chunks % layout.chunks_per_shard == 0:

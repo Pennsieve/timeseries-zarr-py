@@ -237,18 +237,18 @@ def test_member_sizing_differs_from_sizing_a_member_by_its_own_width():
     assert own_width.shard_shape[0] == 2 * shared.shard_shape[0]
 
 
-def test_channel_writer_bytes_at_the_defaults_with_8_levels_is_2_6_mib():
+def test_channel_writer_bytes_at_the_defaults_with_8_levels_is_3_6_mib():
     opts = WriteOpts(max_levels=8)
     chunk = 8192
     raw = chunk * 4 + 512 * 16
     level = chunk * 40 + 256 * 16
-    assert channel_writer_bytes(opts) == raw + 8 * level
-    assert 2.5 < channel_writer_bytes(opts) / 2**20 < 2.7
+    assert channel_writer_bytes(opts) == raw + 8 * level + 2**20
+    assert 3.5 < channel_writer_bytes(opts) / 2**20 < 3.7
 
 
-def test_channel_writer_bytes_without_levels_is_the_raw_chunk_and_index():
+def test_channel_writer_bytes_without_levels_is_raw_and_the_append_bytes():
     opts = WriteOpts(max_levels=0)
-    assert channel_writer_bytes(opts) == 8192 * 4 + 512 * 16
+    assert channel_writer_bytes(opts) == 8192 * 4 + 512 * 16 + 2**20
 
 
 @pytest.mark.parametrize("max_levels", [1, 5, 15])
@@ -272,7 +272,9 @@ def test_channel_writer_bytes_scales_with_the_chunk_length():
 
 def test_channel_writer_bytes_counts_one_slot_for_a_shard_of_one_chunk():
     opts = WriteOpts(inner_len=100, target_shard_bytes=1, max_levels=2)
-    assert channel_writer_bytes(opts) == 100 * 4 + 16 + 2 * (100 * 40 + 16)
+    assert channel_writer_bytes(opts) == (
+        100 * 4 + 16 + 2 * (100 * 40 + 16) + 2**20
+    )
 
 
 def test_channel_writer_bytes_does_not_depend_on_write_var_or_workers():

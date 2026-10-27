@@ -21,6 +21,7 @@ import numpy.typing as npt
 
 from timeseries_zarr.attrs import continuous_channel_attrs, level_group_attrs
 from timeseries_zarr.constants import (
+    CHANNEL_APPEND_BYTES,
     COUNT_KEY,
     ENVELOPE_PAIR_SIZE,
     MEAN_KEY,
@@ -38,7 +39,7 @@ from timeseries_zarr.protocols import (
     Window,
     source_provenance,
 )
-from timeseries_zarr.shards import ArrayWriter, ShardLayout
+from timeseries_zarr.shards import AppendBudget, ArrayWriter, ShardLayout
 from timeseries_zarr.sizing import level_sizing, member_sizing, raw_sizing
 from timeseries_zarr.streaming import iter_raw_blocks, scale_block
 from timeseries_zarr.types import (
@@ -275,15 +276,20 @@ class _LevelWriters:
     """The member writers of one level."""
 
     def __init__(
-        self, layouts: LevelMembers[ShardLayout], executor: Executor | None
+        self,
+        layouts: LevelMembers[ShardLayout],
+        executor: Executor | None,
+        budget: AppendBudget,
     ) -> None:
         """Start a writer for each member that layouts holds."""
-        self._minmax = ArrayWriter(layouts.minmax, executor)
-        self._mean = ArrayWriter(layouts.mean, executor)
+        self._minmax = ArrayWriter(layouts.minmax, executor, budget)
+        self._mean = ArrayWriter(layouts.mean, executor, budget)
         self._var = (
-            None if layouts.var is None else ArrayWriter(layouts.var, executor)
+            None
+            if layouts.var is None
+            else ArrayWriter(layouts.var, executor, budget)
         )
-        self._count = ArrayWriter(layouts.count, executor)
+        self._count = ArrayWriter(layouts.count, executor, budget)
 
     def push(self, chunk: LevelChunk) -> None:
         """Write the rows of chunk to each member."""
@@ -308,7 +314,8 @@ class ChannelWriter:
     Each push scales the block to the stored unit, appends it to raw, folds it
     into every level, and appends each chunk the folder emits to its member
     array. The writer holds one partial chunk of each array and the pending
-    rows of each level. Its memory does not grow with the length of the
+    rows of each level, and up to CHANNEL_APPEND_BYTES of encoded chunks that
+    wait to be written. Its memory does not grow with the length of the
     channel. Every shard is written once, as it fills. The bytes written do not
     depend on the executor.
     """
@@ -341,7 +348,8 @@ class ChannelWriter:
         self._factor = factor
         self._num_samples = channel.num_samples()
         self._received = 0
-        self._raw = ArrayWriter(raw, executor)
+        budget = AppendBudget(CHANNEL_APPEND_BYTES)
+        self._raw = ArrayWriter(raw, executor, budget)
         self._folder = (
             LevelFolder(
                 len(levels),
@@ -351,7 +359,9 @@ class ChannelWriter:
             if levels
             else None
         )
-        self._levels = [_LevelWriters(layouts, executor) for layouts in levels]
+        self._levels = [
+            _LevelWriters(layouts, executor, budget) for layouts in levels
+        ]
 
     @property
     def label(self) -> str:

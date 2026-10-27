@@ -3,6 +3,7 @@
 from math import ceil, prod
 
 from timeseries_zarr.constants import (
+    CHANNEL_APPEND_BYTES,
     ENVELOPE_PAIR_SIZE,
     FLOAT32_BYTES,
     INNER_CHUNK_SAMPLES,
@@ -135,9 +136,10 @@ def channel_writer_bytes(opts: WriteOpts) -> int:
     """Return the bytes of memory that the writer of one channel holds.
 
     The estimate covers the state that lives as long as the channel: the
-    partial chunk of raw with its shard index, and for each of
-    opts.max_levels levels the pending statistics of one chunk with the
-    shard index of minmax. It does not depend on the length of the channel.
+    partial chunk of raw with its shard index, for each of opts.max_levels
+    levels the pending statistics of one chunk with the shard index of
+    minmax, and CHANNEL_APPEND_BYTES of encoded chunks that wait to be
+    written. It does not depend on the length of the channel.
     The window and the output of the chunks in flight are not part of it.
 
     Args:
@@ -155,4 +157,5 @@ def channel_writer_bytes(opts: WriteOpts) -> int:
         opts.inner_len * FLOAT32_BYTES
         + _index_bytes(raw)
         + opts.max_levels * per_level
+        + CHANNEL_APPEND_BYTES
     )

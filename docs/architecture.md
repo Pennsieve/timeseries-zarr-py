@@ -80,6 +80,9 @@ depend on the thread count.
 rows of an inner chunk into little-endian bytes compressed with Zstd. A `ShardWriter`
 appends encoded chunks to a `ShardSink`, then writes the shard index and its CRC-32C. An
 `ArrayWriter` cuts blocks of any length into chunks and holds at most one partial chunk.
+A `ChannelWriter` gives all its arrays one `AppendBudget` of `CHANNEL_APPEND_BYTES`. Each
+shard sink then holds encoded chunks and writes them in one append when the budget runs
+out or the shard closes. The sink that holds the most is written first.
 The module imports `numcodecs` and `google_crc32c` and never zarr, and its shards match
 the bytes that zarr writes for the same array. `zarr_io.shard_layout` reads the layout and
 the shard sinks of an existing array from its metadata. It raises `ValueError` for any
