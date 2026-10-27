@@ -7,9 +7,7 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.constants import DECIMATION_FACTOR
-from timeseries_zarr.fold import assemble_statistics
 from timeseries_zarr.protocols import ContinuousChannelSource
-from timeseries_zarr.types import LevelMembers
 
 
 class BlockReadableArray(Protocol):
@@ -214,25 +212,6 @@ def regroup[T: np.generic](
         yield tail
 
 
-def tap[T: np.generic](
-    blocks: Iterable[npt.NDArray[T]],
-    sink: Callable[[npt.NDArray[T]], None],
-) -> Iterator[npt.NDArray[T]]:
-    """Yield each block unchanged after passing it to sink.
-
-    sink runs once per block, in order, when the consumer asks for the block
-    and before the block is yielded. An exception from sink reaches the
-    consumer. An empty stream never calls sink.
-
-    Args:
-        blocks: The blocks to pass through.
-        sink: The function that receives each block.
-    """
-    for block in blocks:
-        sink(block)
-        yield block
-
-
 def scale_block(
     block: npt.NDArray[np.float32], factor: float
 ) -> npt.NDArray[np.float32]:
@@ -247,59 +226,3 @@ def scale_block(
     if factor == 1.0:
         return block
     return block * np.float32(factor)
-
-
-def scale(
-    blocks: Iterable[npt.NDArray[np.float32]], factor: float
-) -> Iterator[npt.NDArray[np.float32]]:
-    """Yield each block multiplied by factor, in float32.
-
-    A factor of 1.0 yields the input blocks themselves. NaN and infinity stay
-    non-finite.
-
-    Args:
-        blocks: The blocks to scale.
-        factor: The multiplier.
-    """
-    for block in blocks:
-        yield scale_block(block, factor)
-
-
-def iter_member_blocks(
-    members: LevelMembers[BlockReadableArray], block_len: int
-) -> Iterator[npt.NDArray[np.float64]]:
-    """Yield statistics blocks read back from a level's member arrays.
-
-    Walks the level in block_len-row windows, the last possibly shorter, and
-    assembles each window from minmax, mean, count, and var when present with
-    assemble_statistics. A level with no rows yields nothing.
-
-    Args:
-        members: The member arrays of the level.
-        block_len: The number of rows in each window.
-
-    Raises:
-        ValueError: If block_len is not positive or if the members do not all
-            have the same number of rows.
-    """
-    if block_len <= 0:
-        raise ValueError("block_len must be positive")
-    rows = members.minmax.shape[0]
-    others = (
-        ("mean", members.mean),
-        ("var", members.var),
-        ("count", members.count),
-    )
-    for name, member in others:
-        if member is not None and member.shape[0] != rows:
-            raise ValueError(
-                f"{name} has {member.shape[0]} rows but minmax has {rows}"
-            )
-    for start in range(0, rows, block_len):
-        stop = min(start + block_len, rows)
-        yield assemble_statistics(
-            members.minmax[start:stop],
-            members.mean[start:stop],
-            None if members.var is None else members.var[start:stop],
-            members.count[start:stop],
-        )

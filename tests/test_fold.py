@@ -3,22 +3,17 @@ import warnings
 import numpy as np
 import pytest
 
-from timeseries_zarr.constants import (
-    COUNT_COLUMN,
-    MAX_COLUMN,
-    MEAN_COLUMN,
-    MIN_COLUMN,
-    STATISTIC_COLUMNS,
-    VAR_COLUMN,
-)
 from timeseries_zarr.fold import (
     LevelFolder,
     Statistics,
     _block_split,
-    assemble_statistics,
     fold_raw,
     fold_statistics,
 )
+
+# Columns of the (rows, 5) reference block that the tests build from the definition.
+MIN_COLUMN, MAX_COLUMN, MEAN_COLUMN, VAR_COLUMN, COUNT_COLUMN = range(5)
+STATISTIC_COLUMNS = 5
 
 
 @pytest.mark.parametrize(
@@ -140,13 +135,6 @@ def _members(length=4133, with_var=True):
     return _stack(statistics), statistics.members(with_var)
 
 
-def _stored(statistics):
-    """The statistics block as it reads back from float32 members."""
-    out = statistics.copy()
-    out[:, :COUNT_COLUMN] = statistics[:, :COUNT_COLUMN].astype(np.float32)
-    return out
-
-
 def test_statistics_members_returns_the_on_disk_dtypes_and_shapes():
     statistics, (minmax, mean, var, count) = _members()
     rows = statistics.shape[0]
@@ -195,69 +183,6 @@ def test_statistics_members_without_var_returns_none_and_the_same_others():
     for kept, dropped in zip(with_var[:2], without[:2], strict=True):
         assert np.array_equal(kept, dropped, equal_nan=True)
     assert np.array_equal(with_var[3], without[3])
-
-
-def test_assemble_stats_inverts_statistics_members_up_to_float32_rounding():
-    statistics, members = _members()
-    out = assemble_statistics(*members)
-    assert out.shape == statistics.shape
-    assert out.dtype == np.float64
-    assert np.array_equal(out, _stored(statistics), equal_nan=True)
-
-
-def test_assemble_stats_without_var_leaves_the_variance_column_nan():
-    statistics, members = _members(with_var=False)
-    out = assemble_statistics(*members)
-    want = _stored(statistics)
-    want[:, VAR_COLUMN] = np.nan
-    assert np.array_equal(out, want, equal_nan=True)
-
-
-def test_assemble_stats_keeps_a_count_beyond_float32_precision_exact():
-    count = np.array([2**30, 2**24 + 1], dtype=np.uint32)
-    minmax = np.zeros((2, 2), dtype=np.float32)
-    mean = np.zeros(2, dtype=np.float32)
-    out = assemble_statistics(minmax, mean, None, count)
-    assert out[:, COUNT_COLUMN].tolist() == [2.0**30, 2.0**24 + 1]
-
-
-def test_assemble_stats_empty_level_yields_zero_rows():
-    out = assemble_statistics(
-        np.empty((0, 2), dtype=np.float32),
-        np.empty(0, dtype=np.float32),
-        None,
-        np.empty(0, dtype=np.uint32),
-    )
-    assert out.shape == (0, STATISTIC_COLUMNS)
-
-
-@pytest.mark.parametrize("shape", [(5,), (5, 3), (5, 2, 1)])
-def test_assemble_stats_rejects_a_minmax_that_is_not_rows_by_two(shape):
-    members = [np.zeros(5, dtype=np.float32) for _ in range(2)]
-    with pytest.raises(ValueError, match="minmax"):
-        assemble_statistics(
-            np.zeros(shape, dtype=np.float32),
-            members[0],
-            members[1],
-            np.zeros(5, dtype=np.uint32),
-        )
-
-
-@pytest.mark.parametrize("member", ["mean", "var", "count"])
-def test_assemble_stats_rejects_a_member_with_the_wrong_row_count(member):
-    arrays = {
-        "mean": np.zeros(5, dtype=np.float32),
-        "var": np.zeros(5, dtype=np.float32),
-        "count": np.zeros(5, dtype=np.uint32),
-    }
-    arrays[member] = np.zeros(4, dtype=arrays[member].dtype)
-    with pytest.raises(ValueError, match=member):
-        assemble_statistics(
-            np.zeros((5, 2), dtype=np.float32),
-            arrays["mean"],
-            arrays["var"],
-            arrays["count"],
-        )
 
 
 def _stack(statistics):

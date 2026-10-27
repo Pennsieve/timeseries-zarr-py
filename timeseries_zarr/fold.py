@@ -17,16 +17,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.constants import (
-    COUNT_COLUMN,
-    DECIMATION_FACTOR,
-    ENVELOPE_PAIR_SIZE,
-    MAX_COLUMN,
-    MEAN_COLUMN,
-    MIN_COLUMN,
-    STATISTIC_COLUMNS,
-    VAR_COLUMN,
-)
+from timeseries_zarr.constants import DECIMATION_FACTOR, ENVELOPE_PAIR_SIZE
 
 
 def _block_split(
@@ -48,51 +39,6 @@ def _block_split(
     if block <= 0:
         raise ValueError("block must be positive")
     return (length // block, length % block)
-
-
-def assemble_statistics(
-    minmax: npt.NDArray[Any],
-    mean: npt.NDArray[Any],
-    var: npt.NDArray[Any] | None,
-    count: npt.NDArray[Any],
-) -> npt.NDArray[np.float64]:
-    """Assemble the member arrays of one level into a float64 statistics block.
-
-    The inverse of Statistics.members, up to the float32 rounding the stored
-    statistics already carry. An empty level yields zero rows.
-
-    Args:
-        minmax: Array of shape (rows, 2) with the minimum in column 0 and the
-            maximum in column 1.
-        mean: Array of shape (rows,).
-        var: Array of shape (rows,). None leaves the variance column NaN.
-        count: Array of shape (rows,).
-
-    Returns:
-        The float64 statistics block.
-
-    Raises:
-        ValueError: minmax is not (rows, 2), or mean, var, or count has a
-            different number of rows.
-    """
-    if minmax.shape[1:] != (ENVELOPE_PAIR_SIZE,):
-        raise ValueError(
-            f"minmax has shape (rows, {ENVELOPE_PAIR_SIZE}), got {minmax.shape}"
-        )
-    rows = minmax.shape[0]
-    for name, member in (("mean", mean), ("var", var), ("count", count)):
-        if member is not None and member.shape != (rows,):
-            raise ValueError(
-                f"{name} has shape ({rows},) to match minmax, "
-                f"got {member.shape}"
-            )
-    out = np.empty((rows, STATISTIC_COLUMNS), dtype=np.float64)
-    out[:, MIN_COLUMN] = minmax[:, 0]
-    out[:, MAX_COLUMN] = minmax[:, 1]
-    out[:, MEAN_COLUMN] = mean
-    out[:, VAR_COLUMN] = np.nan if var is None else var
-    out[:, COUNT_COLUMN] = count
-    return out
 
 
 @dataclass(frozen=True, eq=False)
