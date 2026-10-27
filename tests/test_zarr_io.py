@@ -9,7 +9,7 @@ from zarr.buffer import default_buffer_prototype
 from zarr.buffer.cpu import Buffer
 from zarr.codecs import ShardingCodec, ZstdCodec
 from zarr.core.sync import sync
-from zarr.errors import GroupNotFoundError
+from zarr.errors import ContainsGroupError, GroupNotFoundError
 from zarr.storage import (
     FsspecStore,
     LocalStore,
@@ -24,11 +24,14 @@ from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.shards import ArrayWriter, BufferShardSink, FileShardSink
 from timeseries_zarr.zarr_io import (
     _local_location,
+    array_metadata,
     close_store,
     consolidate,
     create_array,
     create_group_with_attrs,
+    create_nodes,
     descendants,
+    group_metadata,
     open_group,
     open_root,
     read_int,
@@ -1233,3 +1236,149 @@ def test_shard_layout_rejects_a_read_only_store(tmp_path):
     )
     with pytest.raises(ValueError, match="read-only"):
         shard_layout(array)
+
+
+_ARRAY_CASES = [
+    pytest.param(
+        (100_000,), np.float32, (8192,), (65_536,), {}, ("time",), id="raw"
+    ),
+    pytest.param(
+        (5000, 2),
+        np.float32,
+        (1024, 2),
+        (4096, 2),
+        {},
+        ("time", None),
+        id="minmax",
+    ),
+    pytest.param((300,), np.uint32, (64,), (128,), {}, ("time",), id="count"),
+    pytest.param(
+        (9,), np.float32, (3,), (9,), {"k": [1, "a"]}, None, id="attrs"
+    ),
+    pytest.param(
+        (0,), np.float32, (8192,), (65_536,), {}, ("time",), id="empty"
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("shape", "dtype", "chunk", "shard", "attrs", "names"), _ARRAY_CASES
+)
+def test_array_metadata_writes_the_zarr_json_that_create_array_writes(
+    tmp_path, shape, dtype, chunk, shard, attrs, names
+):
+    expected = create_array(
+        open_group(tmp_path / "expected"),
+        "member",
+        shape,
+        dtype,
+        chunk,
+        shard,
+        attrs,
+        4,
+        dimension_names=names,
+    )
+    root = open_group(tmp_path / "actual")
+    metadata = array_metadata(
+        shape, dtype, chunk, shard, 4, attrs, dimension_names=names
+    )
+    create_nodes(root, {"member": metadata})
+    assert (tmp_path / "actual" / "member" / "zarr.json").read_bytes() == (
+        tmp_path / "expected" / "member" / "zarr.json"
+    ).read_bytes()
+    assert expected.metadata == metadata
+
+
+def test_group_metadata_writes_the_zarr_json_that_create_group_with_attrs_writes(
+    tmp_path,
+):
+    attrs = {"tsz": {"period_us": 125, "unit": "uV"}}
+    create_group_with_attrs(open_group(tmp_path / "expected"), "1", attrs)
+    create_nodes(open_group(tmp_path / "actual"), {"1": group_metadata(attrs)})
+    assert (tmp_path / "actual" / "1" / "zarr.json").read_bytes() == (
+        tmp_path / "expected" / "1" / "zarr.json"
+    ).read_bytes()
+
+
+def test_group_metadata_without_attributes_writes_the_same_zarr_json(tmp_path):
+    create_group_with_attrs(open_group(tmp_path / "expected"), "1", {})
+    create_nodes(open_group(tmp_path / "actual"), {"1": group_metadata({})})
+    assert (tmp_path / "actual" / "1" / "zarr.json").read_bytes() == (
+        tmp_path / "expected" / "1" / "zarr.json"
+    ).read_bytes()
+
+
+def test_array_metadata_rejects_dimension_names_of_the_wrong_length():
+    with pytest.raises(ValueError, match="dimension_names"):
+        array_metadata(
+            (8, 2), np.float32, (4, 2), (8, 2), 3, {}, dimension_names=("time",)
+        )
+
+
+def test_create_nodes_returns_a_handle_for_each_path(tmp_path):
+    root = open_group(tmp_path / "bundle")
+    handles = create_nodes(
+        root,
+        {
+            "0": group_metadata({"a": 1}),
+            "0/raw": array_metadata((8,), np.float32, (4,), (8,), 3, {}),
+            "0/1": group_metadata({}),
+            "0/1/count": array_metadata((2,), np.uint32, (2,), (2,), 3, {}),
+        },
+    )
+    assert sorted(handles) == ["0", "0/1", "0/1/count", "0/raw"]
+    assert isinstance(handles["0"], Group)
+    assert isinstance(handles["0/raw"], Array)
+    assert handles["0/1/count"].path == "0/1/count"
+    assert dict(handles["0"].attrs) == {"a": 1}
+    assert sorted(open_group(tmp_path / "bundle")["0"].keys()) == ["1", "raw"]
+
+
+def test_create_nodes_creates_the_nodes_below_a_nested_group(tmp_path):
+    root = open_group(tmp_path / "bundle")
+    parent = create_group_with_attrs(root, "parent", {"keep": True})
+    handles = create_nodes(
+        parent,
+        {"7/raw": array_metadata((8,), np.float32, (4,), (8,), 3, {})},
+    )
+    assert handles["7/raw"].path == "parent/7/raw"
+    assert (tmp_path / "bundle" / "parent" / "7" / "zarr.json").is_file()
+    assert dict(open_group(tmp_path / "bundle")["parent"].attrs) == {
+        "keep": True
+    }
+
+
+def test_create_nodes_leaves_an_existing_parent_group_as_it_is(tmp_path):
+    root = open_group(tmp_path / "bundle", {"root": 1})
+    create_nodes(
+        root, {"0": group_metadata({"a": 1}), "0/b": group_metadata({})}
+    )
+    assert dict(open_group(tmp_path / "bundle").attrs) == {"root": 1}
+
+
+def test_create_nodes_rejects_a_group_that_exists(tmp_path):
+    root = open_group(tmp_path / "bundle")
+    create_group_with_attrs(root, "0", {})
+    with pytest.raises(ContainsGroupError):
+        create_nodes(root, {"0": group_metadata({})})
+
+
+def test_create_nodes_handle_writes_every_all_fill_shard(tmp_path):
+    root = open_group(tmp_path / "bundle")
+    handles = create_nodes(
+        root,
+        {"lvl": array_metadata((12,), np.float32, (4,), (8,), 5, {})},
+    )
+    array = handles["lvl"]
+    write_region(array, 0, np.zeros(8, dtype=np.float32))
+    write_region(array, 8, np.zeros(4, dtype=np.float32))
+    assert _shard_files(tmp_path / "bundle", "lvl") == ["lvl/c/0", "lvl/c/1"]
+
+
+def test_create_nodes_works_in_a_memory_store():
+    root = zarr.open_group(MemoryStore(), mode="a", zarr_format=3)
+    handles = create_nodes(
+        root, {"0/raw": array_metadata((8,), np.float32, (4,), (8,), 3, {})}
+    )
+    assert handles["0/raw"].shape == (8,)
+    assert root["0"]["raw"].shape == (8,)

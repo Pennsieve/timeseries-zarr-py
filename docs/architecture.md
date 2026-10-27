@@ -60,11 +60,15 @@ folds from the stored members of the level below. With `write_var` on, every lev
 from the raw samples in one pass through float64 statistics. That keeps the variance
 exact on a channel with a large DC offset.
 
-`write_continuous_channels` writes every channel of a multi-channel source. It creates
-each channel group and its `raw` array, then makes one pass over the windows of the
-source. Each channel has a `Regrouper`, so every write to `raw` covers a whole shard
-whatever the length of the blocks. After the pass, the writer folds the levels of each
-channel from its stored `raw` array.
+`write_continuous_channels` writes every channel of a multi-channel source. It builds
+the metadata of every channel group, `raw` array, level group, and level member, and
+`zarr_io.create_nodes` creates them all in one concurrent call. `zarr_io.array_metadata`
+and `zarr_io.group_metadata` build the metadata, and a test pins that they store the same
+`zarr.json` as `create_array` and `create_group_with_attrs`. The writer then makes one
+pass over the windows of the source. Each channel has a `Regrouper`, so every write to
+`raw` covers a whole shard whatever the length of the blocks. After the pass, the writer
+folds the levels of each channel from its stored `raw` array into the level arrays that
+the first call created.
 
 `shards.py` writes the shards of one array as its rows arrive. A `ChunkEncoder` turns the
 rows of an inner chunk into little-endian bytes compressed with Zstd. A `ShardWriter`

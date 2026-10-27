@@ -30,7 +30,7 @@ from timeseries_zarr.write_continuous import (
     write_raw,
     write_statistics_blocks,
 )
-from timeseries_zarr.zarr_io import open_group, write_region
+from timeseries_zarr.zarr_io import create_nodes, open_group, write_region
 
 
 def _sizing():
@@ -847,9 +847,11 @@ def _record_level_writes(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """Record the group name of every write_levels call."""
     folded: list[str] = []
 
-    def spy(group: Any, raw: Any, rate_hz: float, opts: WriteOpts) -> None:
+    def spy(
+        group: Any, raw: Any, rate_hz: float, opts: WriteOpts, **kwargs: Any
+    ) -> None:
         folded.append(group.name)
-        write_levels(group, raw, rate_hz, opts)
+        write_levels(group, raw, rate_hz, opts, **kwargs)
 
     monkeypatch.setattr("timeseries_zarr.write_continuous.write_levels", spy)
     return folded
@@ -1308,6 +1310,41 @@ def test_write_continuous_channels_rejects_a_volts_unit_under_require_uv(
     with pytest.raises(ValueError, match="voltage unit"):
         _write_many(tmp_path, source, strict)
     assert source.calls == 0
+    assert list(open_group(tmp_path / "bundle").keys()) == []
+
+
+def test_write_continuous_channels_creates_every_node_in_one_call(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    calls: list[list[str]] = []
+
+    def spy(root: Any, nodes: Any) -> Any:
+        calls.append(sorted(nodes))
+        return create_nodes(root, nodes)
+
+    monkeypatch.setattr("timeseries_zarr.write_continuous.create_nodes", spy)
+    samples = [_series(1000, seed=1), np.arange(3, dtype=np.float32)]
+    channels = [
+        continuous_source(each, id=f"c{i}") for i, each in enumerate(samples)
+    ]
+    _write_many(tmp_path, multi_channel_source(channels), _OPTS, first_key=5)
+    levels = len(plan_levels(1000, 32000.0, _OPTS.max_levels, _OPTS.min_bins))
+    assert levels >= 2
+    members = [COUNT_KEY, MEAN_KEY, MINMAX_KEY]
+    assert calls == [
+        sorted(
+            ["5", "5/raw", "6", "6/raw"]
+            + [
+                path
+                for level in range(1, levels + 1)
+                for path in [f"5/{level}"]
+                + [f"5/{level}/{member}" for member in members]
+            ]
+        )
+    ]
 
 
 def test_write_continuous_channels_returns_none(

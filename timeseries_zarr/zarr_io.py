@@ -1,6 +1,6 @@
 """Zarr v3 calls for the writer and the reader."""
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -14,7 +14,11 @@ from zarr.abc.store import Store
 from zarr.buffer import default_buffer_prototype
 from zarr.codecs import BytesCodec, Crc32cCodec, ShardingCodec
 from zarr.codecs.zstd import ZstdCodec
+from zarr.core.array import AsyncArray
+from zarr.core.chunk_key_encodings import DefaultChunkKeyEncoding
 from zarr.core.common import JSON
+from zarr.core.dtype import parse_data_type
+from zarr.core.group import GroupMetadata
 from zarr.core.metadata import ArrayV3Metadata
 from zarr.core.sync import sync
 from zarr.storage import FsspecStore, LocalStore, StorePath, WrapperStore
@@ -31,6 +35,7 @@ from timeseries_zarr.shards import (
 type ZarrGroup = Group
 type ZarrArray = Array[Any]
 type BundleLocation = str | Path | Store | StorePath
+type NodeMetadata = GroupMetadata | ArrayV3Metadata
 
 _LOCAL_HOSTS = ("", "localhost")
 _LOCAL_PROTOCOLS = frozenset({"file", "local"})
@@ -129,6 +134,119 @@ def create_array(
         dimension_names=dimension_names,
         config={"write_empty_chunks": True},
     )
+
+
+def group_metadata(attrs: dict[str, object]) -> GroupMetadata:
+    """Return the metadata of a v3 group carrying the given attributes.
+
+    The metadata stores to the same zarr.json as create_group_with_attrs.
+
+    Args:
+        attrs: The attributes of the group, stored verbatim.
+    """
+    return GroupMetadata(
+        attributes=cast("dict[str, JSON]", attrs), zarr_format=3
+    )
+
+
+def array_metadata(
+    shape: tuple[int, ...],
+    dtype: npt.DTypeLike,
+    chunk_shape: tuple[int, ...],
+    shard_shape: tuple[int, ...],
+    zstd_level: int,
+    attrs: dict[str, object],
+    *,
+    dimension_names: Sequence[str | None] | None = None,
+) -> ArrayV3Metadata:
+    """Return the metadata of a sharded v3 array with Zstd-compressed chunks.
+
+    The metadata stores to the same zarr.json as create_array with the default
+    compress. The fill value follows the rule of create_array: NaN for a float
+    dtype and 0 for any other.
+
+    Args:
+        shape: The shape of the array.
+        dtype: The element type of the array.
+        chunk_shape: The shape of an inner chunk. It must divide shard_shape
+            along each axis.
+        shard_shape: The shape of an outer shard.
+        zstd_level: The Zstd level of the inner chunks.
+        attrs: The attributes of the array, stored verbatim.
+        dimension_names: One name for each axis, with None for an axis that
+            has no name. Omitted when None.
+
+    Raises:
+        ValueError: If dimension_names does not have one entry per axis, or if
+            chunk_shape does not divide shard_shape.
+    """
+    numpy_dtype = np.dtype(dtype)
+    return ArrayV3Metadata(
+        shape=shape,
+        data_type=parse_data_type(numpy_dtype, zarr_format=3),
+        chunk_grid={
+            "name": "regular",
+            "configuration": {"chunk_shape": shard_shape},
+        },
+        chunk_key_encoding=DefaultChunkKeyEncoding(separator="/"),
+        fill_value=(
+            float("nan") if np.issubdtype(numpy_dtype, np.floating) else 0
+        ),
+        codecs=[
+            ShardingCodec(
+                chunk_shape=chunk_shape,
+                codecs=[BytesCodec(), ZstdCodec(level=zstd_level)],
+            )
+        ],
+        attributes=cast("dict[str, JSON]", attrs),
+        dimension_names=dimension_names,
+    )
+
+
+def create_nodes(
+    root: Group, nodes: Mapping[str, NodeMetadata]
+) -> dict[str, ZarrGroup | ZarrArray]:
+    """Create every node of nodes below root in one concurrent call.
+
+    A node that names a missing parent group gets an empty one. A parent that
+    exists is left as it is. An array handle writes every chunk, including one
+    whose values all equal the fill value, as create_array does.
+
+    Args:
+        root: The group that the keys of nodes are relative to.
+        nodes: The metadata of each node by path below root, such as 0/1/minmax.
+
+    Returns:
+        The handle of each node by the same path.
+
+    Raises:
+        zarr.errors.ContainsGroupError: If a group of nodes already exists.
+        zarr.errors.ContainsArrayError: If an array of nodes already exists.
+    """
+    prefix = root.path
+
+    def full_path(path: str) -> str:
+        return f"{prefix}/{path}" if prefix else path
+
+    created = dict(
+        zarr.create_hierarchy(
+            store=root.store,
+            nodes={full_path(path): nodes[path] for path in nodes},
+        )
+    )
+    handles: dict[str, ZarrGroup | ZarrArray] = {}
+    for path, metadata in nodes.items():
+        node = created[full_path(path)]
+        if isinstance(metadata, ArrayV3Metadata):
+            node = Array(
+                AsyncArray(
+                    metadata,
+                    node.store_path,
+                    config={"write_empty_chunks": True},
+                )
+            )
+        handles[path] = node
+    return handles
 
 
 def shard_layout(array: Array[Any]) -> ShardLayout:
