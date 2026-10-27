@@ -133,6 +133,12 @@ TARGET_SHARD_BYTES: Final = 16 * 2**20
 ENCODE_GROUP_BYTES: Final = 2**20
 """Smallest run of chunk bytes (1 MiB) that one thread-pool task encodes."""
 
+WINDOW_BATCH_ROWS: Final = 2**18
+"""Rows of a channel (256 Ki) that the writer gathers from windows for one job."""
+
+WINDOW_BATCH_BYTES: Final = 2**26
+"""Bytes of windows (64 MiB) at which the writer stops gathering for one job."""
+
 CHANNEL_APPEND_BYTES: Final = 2**20
 """Most encoded bytes (1 MiB) that the writer of one channel holds unwritten."""
 

@@ -9,6 +9,7 @@ PUBLIC_NAMES = {
     "MAX_LABELS",
     "MAX_LEVELS",
     "UNIT_TO_UV",
+    "WINDOW_BATCH_BYTES",
     "BinMember",
     "Bins",
     "Bundle",

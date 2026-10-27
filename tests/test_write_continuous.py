@@ -781,6 +781,24 @@ def _files(root: Path) -> dict[str, bytes]:
     }
 
 
+def _one_window_per_job(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dispatch the jobs of each window before the next window is read."""
+    monkeypatch.setattr("timeseries_zarr.write_continuous.WINDOW_BATCH_ROWS", 1)
+
+
+def _record_writes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record the samples of every job that writes a channel."""
+    written: list[int] = []
+    write = ChannelWriter._write
+
+    def spy(self: ChannelWriter, samples: np.ndarray) -> None:
+        written.append(samples.shape[0])
+        write(self, samples)
+
+    monkeypatch.setattr(ChannelWriter, "_write", spy)
+    return written
+
+
 def _record_pushes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Record the length of every block pushed to a channel writer."""
     pushed: list[int] = []
@@ -1098,6 +1116,7 @@ def test_write_continuous_channels_rejects_a_window_with_the_wrong_block_count(
     monkeypatch: pytest.MonkeyPatch,
     count: int,
 ) -> None:
+    _one_window_per_job(monkeypatch)
     pushed = _record_pushes(monkeypatch)
     channels = [
         continuous_source(_series(1000, seed=1), id="a"),
@@ -1186,6 +1205,7 @@ def test_write_continuous_channels_rejects_too_many_samples_before_writing_past_
     closed_shards: int,
     received: int,
 ) -> None:
+    _one_window_per_job(monkeypatch)
     closed = _record_shard_files(monkeypatch)
     scaled: list[int] = []
 
@@ -1420,6 +1440,7 @@ def test_write_continuous_channels_raises_a_failed_job_with_its_channel_label(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
 ) -> None:
+    _one_window_per_job(monkeypatch)
     push = ChannelWriter.push
 
     def failing(self: ChannelWriter, block: Any) -> None:
@@ -1445,6 +1466,7 @@ def test_write_continuous_channels_stops_dispatching_after_a_failed_window(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
 ) -> None:
+    _one_window_per_job(monkeypatch)
     pushed = _record_pushes(monkeypatch)
     push = ChannelWriter.push
 
@@ -1460,6 +1482,57 @@ def test_write_continuous_channels_stops_dispatching_after_a_failed_window(
     with pytest.raises(RuntimeError, match="disk full"):
         _write_many(tmp_path, source, opts)
     assert len(pushed) == 3
+
+
+@pytest.mark.parametrize(
+    ("batch_rows", "batch_bytes", "written"),
+    [(100, 2**26, [120, 110]), (10**6, 240, [60, 60, 60, 50])],
+    ids=["rows", "bytes"],
+)
+def test_write_continuous_channels_gathers_windows_into_one_job(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+    batch_rows: int,
+    batch_bytes: int,
+    written: list[int],
+) -> None:
+    monkeypatch.setattr(
+        "timeseries_zarr.write_continuous.WINDOW_BATCH_ROWS", batch_rows
+    )
+    monkeypatch.setattr(
+        "timeseries_zarr.write_continuous.WINDOW_BATCH_BYTES", batch_bytes
+    )
+    writes = _record_writes(monkeypatch)
+    samples = _series(230, seed=3)
+    windows = [[samples[start : start + 30]] for start in range(0, 230, 30)]
+    channel = continuous_source(samples, id="a")
+    root = _write_many(tmp_path, _WindowSource([channel], windows), _OPTS)
+    assert writes == written
+    assert np.array_equal(root["0"][RAW_KEY][:], samples, equal_nan=True)
+
+
+def test_write_continuous_channels_writes_the_same_bundle_with_and_without_gathering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    channels = [
+        continuous_source(_series(1000, seed=index), id=f"c{index}")
+        for index in range(3)
+    ]
+    opts = dataclasses.replace(_OPTS_ONE_PASS, max_workers=3)
+    monkeypatch.setattr(
+        "timeseries_zarr.write_continuous.WINDOW_BATCH_ROWS", 150
+    )
+    source = multi_channel_source(channels, window_rows=37)
+    _write_many(tmp_path, source, opts, name="gathered")
+    _one_window_per_job(monkeypatch)
+    _write_many(tmp_path, source, opts, name="alone")
+    left, right = _files(tmp_path / "gathered"), _files(tmp_path / "alone")
+    assert len(left) > 20
+    assert left == right
 
 
 def _matrix_windows(
@@ -1496,6 +1569,7 @@ def test_write_continuous_channels_hands_each_job_a_contiguous_block_of_a_rank_2
     monkeypatch: pytest.MonkeyPatch,
     continuous_source: type[ArrayContinuousSource],
 ) -> None:
+    _one_window_per_job(monkeypatch)
     flags: list[tuple[bool, tuple[int, ...]]] = []
     push = ChannelWriter.push
 

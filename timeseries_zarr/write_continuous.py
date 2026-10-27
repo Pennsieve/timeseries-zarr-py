@@ -24,11 +24,14 @@ from timeseries_zarr.constants import (
     CHANNEL_APPEND_BYTES,
     COUNT_KEY,
     ENVELOPE_PAIR_SIZE,
+    FLOAT32_BYTES,
     MEAN_KEY,
     MINMAX_KEY,
     RAW_KEY,
     TIME_DIMENSION,
     VAR_KEY,
+    WINDOW_BATCH_BYTES,
+    WINDOW_BATCH_ROWS,
 )
 from timeseries_zarr.fold import LevelChunk, LevelFolder
 from timeseries_zarr.planning import plan_levels, raw_shape
@@ -381,12 +384,38 @@ class ChannelWriter:
                 more samples than it declares. Nothing from block is written
                 first.
         """
+        self._write(self._samples(block))
+
+    def push_blocks(self, blocks: Sequence[npt.ArrayLike]) -> None:
+        """Write consecutive blocks as one block.
+
+        Args:
+            blocks: The next blocks of the channel, in order.
+
+        Raises:
+            ValueError: As push does for the joined blocks.
+        """
+        if len(blocks) == 1:
+            self.push(blocks[0])
+            return
+        self._write(np.concatenate([self._samples(block) for block in blocks]))
+
+    def _samples(self, block: npt.ArrayLike) -> npt.NDArray[np.float32]:
+        """Return block as float32 samples.
+
+        Raises:
+            ValueError: If block is not rank 1.
+        """
         samples = np.asarray(block, dtype=np.float32)
         if samples.ndim != 1:
             raise ValueError(
                 f"{self.label} gives a block of rank {samples.ndim}; "
                 "each block must be a rank-1 array"
             )
+        return samples
+
+    def _write(self, samples: npt.NDArray[np.float32]) -> None:
+        """Write and fold samples that passed _samples."""
         self._received += samples.shape[0]
         if self._received > self._num_samples:
             raise ValueError(
@@ -532,6 +561,41 @@ def _window_blocks(window: Window, index: int, channels: int) -> Window:
     return window
 
 
+def _block_length(block: npt.ArrayLike) -> int:
+    """Return the samples of a block, or 0 for a scalar that push rejects."""
+    shape = block.shape if isinstance(block, np.ndarray) else np.shape(block)
+    return int(shape[0]) if shape else 0
+
+
+def _window_bytes(blocks: Window) -> int:
+    """Return the bytes the blocks of a window hold, float32 for an array-like."""
+    if isinstance(blocks, np.ndarray):
+        return int(blocks.nbytes)
+    return sum(
+        int(block.nbytes)
+        if isinstance(block, np.ndarray)
+        else _block_length(block) * FLOAT32_BYTES
+        for block in blocks
+    )
+
+
+def _dispatch(
+    pool: ThreadPoolExecutor,
+    writers: Sequence[ChannelWriter],
+    batch: Sequence[Window],
+) -> list[tuple[ChannelWriter, Future[None]]]:
+    """Submit one job per channel that writes its blocks of every window."""
+    return [
+        (
+            writer,
+            pool.submit(
+                writer.push_blocks, [blocks[channel] for blocks in batch]
+            ),
+        )
+        for channel, writer in enumerate(writers)
+    ]
+
+
 def _wait_for(jobs: Sequence[tuple[ChannelWriter, Future[None]]]) -> None:
     """Wait for every job, then raise the error of the first that failed.
 
@@ -604,13 +668,15 @@ def write_continuous_channels(
     The channel groups, the raw arrays, and the level groups and members of
     every channel are created in one call, with the attributes and shapes that
     write_continuous_channel gives them. One pass over the windows of source
-    writes the raw array and every level of every channel. Each window
-    dispatches one job per channel to opts.max_workers threads, and the next
-    window is read while the jobs run. A source must not overwrite the arrays
-    of a window it has yielded. When there are fewer channels than threads,
+    writes the raw array and every level of every channel. Consecutive
+    windows are gathered into a batch of WINDOW_BATCH_ROWS rows of a channel
+    or WINDOW_BATCH_BYTES, whichever comes first. Each batch dispatches one
+    job per channel to opts.max_workers threads, and the next batch is read
+    while the jobs run. A source must not overwrite the arrays of a window it
+    has yielded. When there are fewer channels than threads,
     each job also encodes its chunks in groups on the idle threads. Memory
     holds one partial chunk per array, the pending rows of each level, and two
-    windows. A source without channels writes nothing, and iter_windows is not
+    batches. A source without channels writes nothing, and iter_windows is not
     called.
 
     Args:
@@ -663,15 +729,22 @@ def write_continuous_channels(
             for key, channel in enumerate(channels, start=first_key)
         ]
         jobs: list[tuple[ChannelWriter, Future[None]]] = []
+        batch: list[Window] = []
+        rows = 0
+        size = 0
         for index, window in enumerate(source.iter_windows()):
             # The copy of a rank-2 window runs while the last jobs encode.
             blocks = _window_blocks(window, index, len(writers))
-            _wait_for(jobs)
-            jobs = [
-                (writer, pool.submit(writer.push, block))
-                for writer, block in zip(writers, blocks, strict=True)
-            ]
+            batch.append(blocks)
+            rows += max(_block_length(block) for block in blocks)
+            size += _window_bytes(blocks)
+            if rows >= WINDOW_BATCH_ROWS or size >= WINDOW_BATCH_BYTES:
+                _wait_for(jobs)
+                jobs = _dispatch(pool, writers, batch)
+                batch, rows, size = [], 0, 0
         _wait_for(jobs)
+        if batch:
+            _wait_for(_dispatch(pool, writers, batch))
         _wait_for([(writer, pool.submit(writer.finish)) for writer in writers])
     finally:
         pool.shutdown(wait=True, cancel_futures=True)

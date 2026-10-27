@@ -66,11 +66,13 @@ the metadata of every channel group, `raw` array, level group, and level member,
 `zarr_io.create_nodes` creates them all in one concurrent call. `zarr_io.array_metadata`
 and `zarr_io.group_metadata` build the metadata, and a test pins that they store the same
 `zarr.json` as `create_array` and `create_group_with_attrs`. The writer then makes one
-pass over the windows of the source. Each window runs one job per channel on a pool of
-`WriteOpts.max_workers` threads, and each job pushes a block to the `ChannelWriter` of its
-channel. The loop transposes a `(rows, channels)` window once into contiguous rows for each
-channel. It reads the next window while the jobs run and waits for them before it
-dispatches the next. A window with fewer channels than threads also encodes the chunks of
+pass over the windows of the source. The loop gathers consecutive windows into a batch of
+`WINDOW_BATCH_ROWS` rows or `WINDOW_BATCH_BYTES`, whichever comes first. Each batch runs one
+job per channel on a pool of `WriteOpts.max_workers` threads, and each job joins its
+channel's blocks and pushes them to the `ChannelWriter` of the channel as one block. The
+loop transposes a `(rows, channels)` window once into contiguous rows for each channel. It
+gathers the next batch while the jobs run and waits for them before it dispatches the
+next. A window with fewer channels than threads also encodes the chunks of
 each job in groups on the idle threads. `write_continuous_channel` builds the same nodes
 and writer for one source, pushes blocks of one `raw` shard, and encodes their chunks in
 groups on the pool. A channel is written by one job at a time, so the bytes on disk do not
