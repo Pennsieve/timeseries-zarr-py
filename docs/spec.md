@@ -11,7 +11,7 @@ TS-Zarr bundle over HTTP range requests and renders any window at any zoom witho
 downloading the recording and without a server-side service. The format defines how
 samples, per-bin statistics, events, and annotations are laid out, and the metadata a
 reader needs to find and interpret them. Discussion of the specification takes place
-in the `timeseries-zarr-paper` repository.
+in the issue tracker of this repository.
 
 ## Status of this document
 
@@ -531,16 +531,13 @@ Multi-word keys use snake_case, as Zarr's own metadata does (`zarr_format`,
 ## Implementations
 
 `timeseries-zarr-py` is the reference producer. `@pennsieve/timeseries-zarr-reader` is
-the reference reader. The `timeseries-zarr-paper` repository holds a synthetic
-reference bundle, its seeded generator, which validates its output, and a tutorial
-notebook that reads a bundle with the standard `zarr` library. Implementations MUST
+the reference reader. Implementations MUST
 state the versions of this specification they support.
 
 ## Citing
 
 Cite this specification by its version and the repository that publishes it,
-`timeseries-zarr-paper`. The accompanying paper gives the design rationale and the
-error analysis and is the preferred citation for the method.
+`timeseries-zarr-py`.
 
 ## Version history
 
