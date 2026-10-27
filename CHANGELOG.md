@@ -33,6 +33,10 @@ transposes it once into contiguous rows for each channel.
 `timeseries_zarr.channel_writer_bytes(opts)` returns the memory of the writer of one
 channel in bytes.
 
+The writer gathers consecutive windows into batches of up to 262,144 rows of a channel or
+64 MiB and folds each batch in one call per channel, so short windows no longer cost one
+job and one fold per window.
+
 The writer of a channel holds up to 1 MiB of encoded chunks and appends them to their
 shard files in batches, which opens each file fewer times.
 

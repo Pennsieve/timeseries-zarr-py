@@ -6,7 +6,12 @@ from timeseries_zarr.columns import (
     decode_text_rows,
     text_width,
 )
-from timeseries_zarr.constants import MAX_LABELS, MAX_LEVELS, UNIT_TO_UV
+from timeseries_zarr.constants import (
+    MAX_LABELS,
+    MAX_LEVELS,
+    UNIT_TO_UV,
+    WINDOW_BATCH_BYTES,
+)
 from timeseries_zarr.protocols import (
     ContinuousChannelMetadata,
     ContinuousChannelSource,
@@ -48,6 +53,7 @@ __all__ = [
     "MAX_LABELS",
     "MAX_LEVELS",
     "UNIT_TO_UV",
+    "WINDOW_BATCH_BYTES",
     "BinMember",
     "Bins",
     "Bundle",

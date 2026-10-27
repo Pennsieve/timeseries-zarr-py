@@ -32,8 +32,10 @@ level, up to `inner_len` rows of float64 statistics, plus the index of each open
 and up to 1 MiB of encoded chunks that wait to be written. `max_levels=8` lowers the
 figure to about 3.6 MiB.
 `timeseries_zarr.channel_writer_bytes(opts)` returns the estimate in bytes for the
-`max_levels` of `opts`. A `MultiChannelSource` also holds two windows, the one that the
-writer folds and the one that it reads.
+`max_levels` of `opts`. A `MultiChannelSource` also holds two batches of windows, the one
+that the writer folds and the one that it gathers. The writer gathers consecutive windows
+until they hold 262,144 rows of a channel or 64 MiB, so a batch holds at most 64 MiB plus
+one window.
 
 `voltage_policy="convert"` scales a voltage channel to microvolts and labels it `uV`.
 `"require_uv"` raises `ValueError` for a voltage channel in any other unit.
@@ -58,7 +60,7 @@ A `MultiChannelSource` has two methods.
 `provenance()`.
 
 `iter_windows()` yields one window at a time, and the writer calls it once per write. The
-writer reads the next window while it writes the previous one, so a source must not
+writer reads the next windows while it writes the previous batch, so a source must not
 overwrite the arrays of a window it has yielded.
 
 A window is a `(rows, channels)` array, or a sequence with one rank-1 block per channel in
@@ -144,7 +146,7 @@ one three-channel source, with one event source, uses the keys 0 through 3 for t
 continuous channels and the key 4 for the event channel.
 
 While it sweeps, the writer holds `channel_writer_bytes(opts)` for each channel, plus two
-windows. At the defaults, 256 channels hold about 1.4 GiB of channel state.
+batches of windows. At the defaults, 256 channels hold about 1.4 GiB of channel state.
 Each shard file is written once, as its chunks complete, and nothing is read back.
 
 The writer raises `ValueError` when a source breaks the window contract in one of three
