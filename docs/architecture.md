@@ -71,7 +71,9 @@ rows of an inner chunk into little-endian bytes compressed with Zstd. A `ShardWr
 appends encoded chunks to a `ShardSink`, then writes the shard index and its CRC-32C. An
 `ArrayWriter` cuts blocks of any length into chunks and holds at most one partial chunk.
 The module imports `numcodecs` and `google_crc32c` and never zarr, and its shards match
-the bytes that zarr writes for the same array.
+the bytes that zarr writes for the same array. `zarr_io.shard_layout` reads the layout and
+the shard sinks of an existing array from its metadata. It raises `ValueError` for any
+codec chain other than the one `shards.py` encodes.
 
 `write_event.py` writes one event channel: the `events` array, each optional column the
 source names, and the count levels of a dense channel. Event times are stored from the

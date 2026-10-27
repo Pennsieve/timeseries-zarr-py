@@ -12,12 +12,20 @@ import zarr
 from zarr import Array, Group
 from zarr.abc.store import Store
 from zarr.buffer import default_buffer_prototype
+from zarr.codecs import BytesCodec, Crc32cCodec, ShardingCodec
 from zarr.codecs.zstd import ZstdCodec
 from zarr.core.common import JSON
+from zarr.core.metadata import ArrayV3Metadata
 from zarr.core.sync import sync
 from zarr.storage import FsspecStore, LocalStore, StorePath, WrapperStore
 
 from timeseries_zarr.extras import missing_extra_message
+from timeseries_zarr.shards import (
+    BufferShardSink,
+    FileShardSink,
+    ShardLayout,
+    ShardSink,
+)
 
 # Handle types the other modules use to name what they pass and get.
 type ZarrGroup = Group
@@ -121,6 +129,111 @@ def create_array(
         dimension_names=dimension_names,
         config={"write_empty_chunks": True},
     )
+
+
+def shard_layout(array: Array[Any]) -> ShardLayout:
+    """Return the layout that the shard writer needs to write array.
+
+    The shard writer encodes one codec chain: the sharding codec over the bytes
+    codec (little-endian) then the zstd codec with no frame checksum, with the
+    bytes and crc32c codecs for the index and the index at the end of the
+    shard. Axes after the first are not chunked. The sink of a shard writes the
+    file under the root of a LocalStore, and calls set on any other store.
+
+    Args:
+        array: A v3 array in a writable store.
+
+    Raises:
+        ValueError: If the array is not a v3 array in a writable store, if its
+            codec chain is not the chain above, or if an axis after the first
+            is split into several chunks or shards.
+    """
+    metadata = array.metadata
+    if not isinstance(metadata, ArrayV3Metadata):
+        raise ValueError(
+            f"{array.path} must be a Zarr v3 array, got format "
+            f"{metadata.zarr_format}"
+        )
+    dtype = np.dtype(array.dtype)
+    zstd_level = _zstd_level(array.path, metadata, dtype)
+    chunks = array.chunks
+    shards = array.shards
+    if shards is None or not (chunks[1:] == shards[1:] == array.shape[1:]):
+        raise ValueError(
+            f"{array.path} must hold whole rows in every chunk and shard, "
+            f"got shape {array.shape}, chunks {chunks}, shards {shards}"
+        )
+    store = array.store_path.store
+    if store.read_only:
+        raise ValueError(f"the store of {array.path} is read-only")
+    fill_value = np.asarray(metadata.fill_value).item()
+    trailing = (0,) * (len(array.shape) - 1)
+    root = Path(store.root) if isinstance(store, LocalStore) else None
+
+    def open_sink(index: int) -> ShardSink:
+        key = metadata.encode_chunk_key((index, *trailing))
+        if root is not None:
+            return FileShardSink(root / array.store_path.path / key)
+        target = array.store_path / key
+
+        def save(data: bytes) -> None:
+            sync(target.set(default_buffer_prototype().buffer.from_bytes(data)))
+
+        return BufferShardSink(save)
+
+    return ShardLayout(
+        dtype=dtype,
+        chunk_rows=chunks[0],
+        chunks_per_shard=shards[0] // chunks[0],
+        trailing_shape=array.shape[1:],
+        length=array.shape[0],
+        zstd_level=zstd_level,
+        fill_value=fill_value,
+        open_sink=open_sink,
+    )
+
+
+def _zstd_level(
+    path: str, metadata: ArrayV3Metadata, dtype: np.dtype[Any]
+) -> int:
+    """Return the Zstd level of metadata when it holds the chain shard_layout encodes.
+
+    Raises:
+        ValueError: If the codec chain is anything else.
+    """
+    found = f"{path} has codecs {metadata.codecs}"
+    match metadata.codecs:
+        case (ShardingCodec() as sharding,):
+            pass
+        case _:
+            raise ValueError(f"{found}; expected one sharding_indexed codec")
+    # A one-byte dtype has no byte order, and zarr stores None for it.
+    endians = ("little", None) if dtype.itemsize == 1 else ("little",)
+    match sharding.codecs:
+        case (
+            BytesCodec(endian=endian),
+            ZstdCodec(level=level, checksum=False),
+        ) if endian in endians:
+            pass
+        case _:
+            raise ValueError(
+                f"{found}; the inner codecs must be bytes (little-endian) "
+                "then zstd without a checksum"
+            )
+    match sharding.index_codecs:
+        case (BytesCodec(endian="little"), Crc32cCodec()):
+            pass
+        case _:
+            raise ValueError(
+                f"{found}; the index codecs must be bytes (little-endian) "
+                "then crc32c"
+            )
+    if sharding.index_location != "end":
+        raise ValueError(
+            f"{found}; the index location must be end, got "
+            f"{sharding.index_location}"
+        )
+    return int(level)
 
 
 def write_region(

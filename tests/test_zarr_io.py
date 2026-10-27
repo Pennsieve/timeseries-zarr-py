@@ -5,8 +5,10 @@ import numpy as np
 import pytest
 import zarr
 from zarr import Array, Group
+from zarr.buffer import default_buffer_prototype
 from zarr.buffer.cpu import Buffer
 from zarr.codecs import ShardingCodec, ZstdCodec
+from zarr.core.sync import sync
 from zarr.errors import GroupNotFoundError
 from zarr.storage import (
     FsspecStore,
@@ -19,6 +21,7 @@ from zarr.storage import (
 
 from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.extras import missing_extra_message
+from timeseries_zarr.shards import ArrayWriter, BufferShardSink, FileShardSink
 from timeseries_zarr.zarr_io import (
     _local_location,
     close_store,
@@ -31,6 +34,7 @@ from timeseries_zarr.zarr_io import (
     read_int,
     read_rows,
     read_store_text,
+    shard_layout,
     store_location,
     write_region,
 )
@@ -998,3 +1002,234 @@ def test_open_root_names_an_fsspec_store_without_consolidated_metadata_by_url():
         )
     finally:
         filesystem.rm("/zarr-io-bare", recursive=True)
+
+
+def sharded_array(tmp_path, shape=(1000,), dtype=np.float32, name="raw", **kw):
+    chunks = kw.pop("chunks", (64, *shape[1:]))
+    shards = kw.pop("shards", (256, *shape[1:]))
+    group = open_group(tmp_path / "bundle")
+    return create_array(
+        group, name, shape, dtype, chunks, shards, {}, kw.pop("level", 3)
+    )
+
+
+def rewrite_metadata(array, edit):
+    """Return the array reopened after edit changes its zarr.json text."""
+    root = array.store_path.store.root
+    path = root / array.store_path.path / "zarr.json"
+    path.write_text(edit(path.read_text()))
+    return zarr.open_array(LocalStore(root), path=array.store_path.path)
+
+
+def test_shard_layout_reads_the_geometry_of_a_rank_1_array(tmp_path):
+    layout = shard_layout(sharded_array(tmp_path, level=7))
+    assert layout.dtype == np.float32
+    assert layout.chunk_rows == 64
+    assert layout.chunks_per_shard == 4
+    assert layout.trailing_shape == ()
+    assert layout.length == 1000
+    assert layout.zstd_level == 7
+    assert np.isnan(layout.fill_value)
+
+
+def test_shard_layout_reads_the_trailing_shape_of_a_rank_2_array(tmp_path):
+    layout = shard_layout(sharded_array(tmp_path, shape=(500, 2)))
+    assert layout.trailing_shape == (2,)
+    assert layout.length == 500
+    assert layout.chunk_rows == 64
+
+
+def test_shard_layout_takes_zero_as_the_fill_of_an_integer_array(tmp_path):
+    layout = shard_layout(sharded_array(tmp_path, dtype=np.uint32))
+    assert layout.dtype == np.uint32
+    assert layout.fill_value == 0
+
+
+def test_shard_layout_accepts_a_one_byte_dtype(tmp_path):
+    layout = shard_layout(sharded_array(tmp_path, dtype=np.uint8))
+    assert layout.dtype == np.uint8
+
+
+def test_shard_layout_sink_writes_a_shard_file_under_a_local_store(tmp_path):
+    array = sharded_array(tmp_path, name="raw")
+    layout = shard_layout(array)
+    sink = layout.open_sink(2)
+    assert isinstance(sink, FileShardSink)
+    sink.append(b"x")
+    sink.close()
+    assert (tmp_path / "bundle" / "raw" / "c" / "2").read_bytes() == b"x"
+
+
+def test_shard_layout_sink_names_the_chunk_key_of_a_nested_rank_2_array(
+    tmp_path,
+):
+    group = open_group(tmp_path / "bundle")
+    child = create_group_with_attrs(group, "0", {})
+    array = create_array(
+        child, "minmax", (500, 2), np.float32, (64, 2), (256, 2), {}, 3
+    )
+    sink = shard_layout(array).open_sink(1)
+    sink.append(b"y")
+    sink.close()
+    path = tmp_path / "bundle" / "0" / "minmax" / "c" / "1" / "0"
+    assert path.read_bytes() == b"y"
+
+
+def test_shard_layout_sink_sets_the_key_in_a_store_that_is_not_local():
+    store = MemoryStore()
+    array = zarr.create_array(
+        store,
+        name="a/raw",
+        shape=(600,),
+        chunks=(64,),
+        shards=(256,),
+        dtype=np.float32,
+        compressors=ZstdCodec(level=3),
+        zarr_format=3,
+    )
+    sink = shard_layout(array).open_sink(1)
+    assert isinstance(sink, BufferShardSink)
+    sink.append(b"zz")
+    sink.close()
+    stored = sync(store.get("a/raw/c/1", default_buffer_prototype()))
+    assert stored.to_bytes() == b"zz"
+
+
+def test_shard_layout_sink_goes_through_a_wrapped_local_store(tmp_path):
+    sharded_array(tmp_path)
+    wrapped = LoggingStore(LocalStore(tmp_path / "bundle"))
+    array = zarr.open_array(wrapped, path="raw")
+    assert isinstance(shard_layout(array).open_sink(0), BufferShardSink)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "shape"),
+    [
+        (np.float32, (700,)),
+        (np.uint32, (700,)),
+        (np.float32, (700, 2)),
+    ],
+)
+def test_shard_layout_writes_shards_that_zarr_reads(tmp_path, dtype, shape):
+    array = sharded_array(tmp_path, shape=shape, dtype=dtype)
+    values = np.arange(np.prod(shape)).reshape(shape).astype(dtype)
+    writer = ArrayWriter(shard_layout(array))
+    writer.push(values)
+    writer.finish()
+    reopened = open_group(tmp_path / "bundle")["raw"]
+    assert np.array_equal(reopened[:], values)
+
+
+def test_shard_layout_writes_shards_that_zarr_reads_from_a_memory_store():
+    store = MemoryStore()
+    array = zarr.create_array(
+        store,
+        name="raw",
+        shape=(700, 2),
+        chunks=(64, 2),
+        shards=(256, 2),
+        dtype=np.float32,
+        compressors=ZstdCodec(level=3),
+        zarr_format=3,
+    )
+    values = np.arange(1400, dtype=np.float32).reshape(700, 2)
+    writer = ArrayWriter(shard_layout(array))
+    writer.push(values)
+    writer.finish()
+    assert np.array_equal(zarr.open_array(store, path="raw")[:], values)
+
+
+def test_shard_layout_rejects_an_array_that_is_not_sharded():
+    array = zarr.create_array(
+        MemoryStore(), shape=(100,), chunks=(10,), dtype=np.float32
+    )
+    with pytest.raises(ValueError, match="expected one sharding_indexed"):
+        shard_layout(array)
+
+
+def test_shard_layout_rejects_a_v2_array():
+    array = zarr.create_array(
+        MemoryStore(),
+        shape=(100,),
+        chunks=(10,),
+        dtype=np.float32,
+        zarr_format=2,
+    )
+    with pytest.raises(ValueError, match="must be a Zarr v3 array"):
+        shard_layout(array)
+
+
+def test_shard_layout_rejects_a_shard_without_compression(tmp_path):
+    group = open_group(tmp_path / "bundle")
+    array = create_array(
+        group, "text", (100,), np.uint8, (10,), (20,), {}, 3, compress=False
+    )
+    with pytest.raises(ValueError, match="inner codecs must be bytes"):
+        shard_layout(array)
+
+
+def test_shard_layout_rejects_a_zstd_frame_checksum(tmp_path):
+    array = sharded_array(tmp_path)
+    reopened = rewrite_metadata(
+        array,
+        lambda text: text.replace('"checksum": false', '"checksum": true'),
+    )
+    with pytest.raises(ValueError, match="without a checksum"):
+        shard_layout(reopened)
+
+
+def test_shard_layout_rejects_a_big_endian_chunk(tmp_path):
+    array = sharded_array(tmp_path)
+
+    def edit(text):
+        head, tail = text.split('"codecs": [', 1)
+        return (
+            head
+            + '"codecs": ['
+            + tail.replace('"endian": "little"', '"endian": "big"', 1)
+        )
+
+    with pytest.raises(ValueError, match="inner codecs must be bytes"):
+        shard_layout(rewrite_metadata(array, edit))
+
+
+def test_shard_layout_rejects_the_index_at_the_start(tmp_path):
+    array = sharded_array(tmp_path)
+    reopened = rewrite_metadata(
+        array,
+        lambda text: text.replace(
+            '"index_location": "end"', '"index_location": "start"'
+        ),
+    )
+    with pytest.raises(ValueError, match="index location must be end"):
+        shard_layout(reopened)
+
+
+def test_shard_layout_rejects_an_index_without_a_checksum(tmp_path):
+    array = sharded_array(tmp_path)
+    reopened = rewrite_metadata(
+        array,
+        lambda text: text.replace(
+            '{\n            "name": "crc32c"\n          }', '{"name": "bytes"}'
+        ),
+    )
+    with pytest.raises(ValueError, match="index codecs must be bytes"):
+        shard_layout(reopened)
+
+
+def test_shard_layout_rejects_a_chunked_trailing_axis(tmp_path):
+    group = open_group(tmp_path / "bundle")
+    array = create_array(
+        group, "wide", (500, 4), np.float32, (64, 2), (256, 4), {}, 3
+    )
+    with pytest.raises(ValueError, match="whole rows"):
+        shard_layout(array)
+
+
+def test_shard_layout_rejects_a_read_only_store(tmp_path):
+    sharded_array(tmp_path)
+    array = zarr.open_array(
+        LocalStore(tmp_path / "bundle", read_only=True), path="raw"
+    )
+    with pytest.raises(ValueError, match="read-only"):
+        shard_layout(array)
