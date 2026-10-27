@@ -34,6 +34,7 @@ PUBLIC_NAMES = {
     "WriteOpts",
     "__version__",
     "bundle_sources",
+    "channel_writer_bytes",
     "decode_channels_rows",
     "decode_text_rows",
     "open_bundle",

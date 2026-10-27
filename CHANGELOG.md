@@ -30,5 +30,8 @@ bundle is byte-identical at any thread count.
 A window of a `MultiChannelSource` may be a `(rows, channels)` array. The writer
 transposes it once into contiguous rows for each channel.
 
+`timeseries_zarr.channel_writer_bytes(opts)` returns the memory of the writer of one
+channel in bytes.
+
 `Bundle.stack` and `stack_channels` read one array per channel and take
 `max_workers`, the number of threads that read the channels.

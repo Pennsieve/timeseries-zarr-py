@@ -6,6 +6,7 @@ from timeseries_zarr.constants import (
     INNER_CHUNK_SAMPLES,
 )
 from timeseries_zarr.sizing import (
+    channel_writer_bytes,
     chunk_and_shard,
     chunk_shape_for_level,
     level_sizing,
@@ -13,7 +14,7 @@ from timeseries_zarr.sizing import (
     raw_sizing,
     shard_shape_for_level,
 )
-from timeseries_zarr.types import ChunkShard
+from timeseries_zarr.types import ChunkShard, WriteOpts
 
 
 @pytest.mark.parametrize(
@@ -234,3 +235,47 @@ def test_member_sizing_differs_from_sizing_a_member_by_its_own_width():
     own_width = chunk_and_shard((100_000_000,), FLOAT32_BYTES)
     shared = member_sizing(level_sizing(100_000_000))
     assert own_width.shard_shape[0] == 2 * shared.shard_shape[0]
+
+
+def test_channel_writer_bytes_at_the_defaults_with_8_levels_is_2_6_mib():
+    opts = WriteOpts(max_levels=8)
+    chunk = 8192
+    raw = chunk * 4 + 512 * 16
+    level = chunk * 40 + 256 * 16
+    assert channel_writer_bytes(opts) == raw + 8 * level
+    assert 2.5 < channel_writer_bytes(opts) / 2**20 < 2.7
+
+
+def test_channel_writer_bytes_without_levels_is_the_raw_chunk_and_index():
+    opts = WriteOpts(max_levels=0)
+    assert channel_writer_bytes(opts) == 8192 * 4 + 512 * 16
+
+
+@pytest.mark.parametrize("max_levels", [1, 5, 15])
+def test_channel_writer_bytes_grows_by_one_level_for_each_level(max_levels):
+    one = channel_writer_bytes(WriteOpts(max_levels=1))
+    none = channel_writer_bytes(WriteOpts(max_levels=0))
+    assert channel_writer_bytes(WriteOpts(max_levels=max_levels)) == (
+        none + max_levels * (one - none)
+    )
+
+
+def test_channel_writer_bytes_scales_with_the_chunk_length():
+    def estimate(inner_len):
+        opts = WriteOpts(
+            inner_len=inner_len, target_shard_bytes=1, max_levels=8
+        )
+        return channel_writer_bytes(opts)
+
+    assert estimate(200) - estimate(100) == 100 * (4 + 8 * 40)
+
+
+def test_channel_writer_bytes_counts_one_slot_for_a_shard_of_one_chunk():
+    opts = WriteOpts(inner_len=100, target_shard_bytes=1, max_levels=2)
+    assert channel_writer_bytes(opts) == 100 * 4 + 16 + 2 * (100 * 40 + 16)
+
+
+def test_channel_writer_bytes_does_not_depend_on_write_var_or_workers():
+    base = channel_writer_bytes(WriteOpts())
+    assert channel_writer_bytes(WriteOpts(write_var=True)) == base
+    assert channel_writer_bytes(WriteOpts(max_workers=3)) == base

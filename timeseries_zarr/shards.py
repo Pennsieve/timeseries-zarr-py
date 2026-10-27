@@ -27,7 +27,6 @@ from numcodecs.zstd import Zstd
 from timeseries_zarr.constants import ENCODE_GROUP_BYTES
 
 _MISSING = 2**64 - 1
-_INDEX_ENTRY_BYTES = 16
 _CHECKSUM_BYTES = 4
 
 

@@ -6,10 +6,15 @@ from timeseries_zarr.constants import (
     ENVELOPE_PAIR_SIZE,
     FLOAT32_BYTES,
     INNER_CHUNK_SAMPLES,
+    SHARD_INDEX_ENTRY_BYTES,
+    STATISTIC_ROW_BYTES,
     TARGET_SHARD_BYTES,
 )
 from timeseries_zarr.planning import raw_shape
-from timeseries_zarr.types import ChunkShard
+from timeseries_zarr.types import ChunkShard, WriteOpts
+
+_LONG_ARRAY_ROWS = 2**62
+"""A length that fills every shard, so a sizing has its full shard width."""
 
 
 def chunk_shape_for_level(
@@ -117,4 +122,37 @@ def member_sizing(sizing: ChunkShard) -> ChunkShard:
     """
     return ChunkShard(
         chunk_shape=sizing.chunk_shape[:1], shard_shape=sizing.shard_shape[:1]
+    )
+
+
+def _index_bytes(sizing: ChunkShard) -> int:
+    """Return the bytes of the index of one open shard of an array."""
+    chunks = sizing.shard_shape[0] // sizing.chunk_shape[0]
+    return chunks * SHARD_INDEX_ENTRY_BYTES
+
+
+def channel_writer_bytes(opts: WriteOpts) -> int:
+    """Return the bytes of memory that the writer of one channel holds.
+
+    The estimate covers the state that lives as long as the channel: the
+    partial chunk of raw with its shard index, and for each of
+    opts.max_levels levels the pending statistics of one chunk with the
+    shard index of minmax. It does not depend on the length of the channel.
+    The window and the output of the chunks in flight are not part of it.
+
+    Args:
+        opts: The write settings.
+
+    Returns:
+        The estimate in bytes.
+    """
+    raw = raw_sizing(_LONG_ARRAY_ROWS, opts.inner_len, opts.target_shard_bytes)
+    level = level_sizing(
+        _LONG_ARRAY_ROWS, opts.inner_len, opts.target_shard_bytes
+    )
+    per_level = opts.inner_len * STATISTIC_ROW_BYTES + _index_bytes(level)
+    return (
+        opts.inner_len * FLOAT32_BYTES
+        + _index_bytes(raw)
+        + opts.max_levels * per_level
     )

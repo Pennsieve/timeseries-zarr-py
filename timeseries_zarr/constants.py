@@ -103,6 +103,12 @@ UINT16_BYTES: Final = 2
 UINT32_BYTES: Final = 4
 """Byte width of one uint32 count, for shard-size computation."""
 
+SHARD_INDEX_ENTRY_BYTES: Final = 16
+"""Bytes of the shard index for one inner chunk: an (offset, length) pair of uint64."""
+
+STATISTIC_ROW_BYTES: Final = 40
+"""Bytes of one pending level row: five float64 statistics."""
+
 EVENT_LEVEL_THRESHOLD: Final = 64_000
 """Events above which an event channel carries count levels."""
 
