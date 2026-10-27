@@ -44,7 +44,10 @@ float64 statistics block with one column each for the minimum, maximum, mean, po
 variance, and count of finite samples. `fold.py` also splits a block into the member
 arrays a level stores and assembles one from them. `Statistics` holds the same five
 statistics as one float64 array each. `fold_raw` and `fold_statistics` fold it on
-column views, and `Statistics.members` converts it to the member arrays. See
+column views, and `Statistics.members` converts it to the member arrays. A `LevelFolder`
+holds the state of one channel's pyramid. It folds raw samples into every level as they
+arrive and emits one chunk of every member each time a level fills `inner_len` rows. A
+level never holds more than one chunk of pending rows. See
 [the format spec](./spec.md) for the exact rules and the NaN behavior.
 
 `streaming.py` drives the folds one block at a time. It buffers across block boundaries,

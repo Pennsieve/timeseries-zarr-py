@@ -519,3 +519,240 @@ def fold_statistics(statistics: Statistics) -> Statistics:
             _combine_columns(_children(statistics, n_full * block, 1, tail_len))
         )
     return _join(parts)
+
+
+@dataclass(frozen=True, eq=False)
+class LevelChunk:
+    """One inner chunk of every member of one level, in on-disk dtypes.
+
+    Attributes:
+        level: The level number, counted from 1.
+        minmax: float32 array of shape (rows, 2) with the minimum in column 0
+            and the maximum in column 1.
+        mean: float32 array of shape (rows,).
+        var: float32 array of shape (rows,), or None when the folder does not
+            keep the variance.
+        count: uint32 array of shape (rows,).
+    """
+
+    level: int
+    minmax: npt.NDArray[np.float32]
+    mean: npt.NDArray[np.float32]
+    var: npt.NDArray[np.float32] | None
+    count: npt.NDArray[np.uint32]
+
+    @property
+    def rows(self) -> int:
+        """The number of bins in the chunk."""
+        return int(self.mean.shape[0])
+
+
+def _slice(statistics: Statistics, start: int, stop: int) -> Statistics:
+    """Return the rows start to stop of statistics as views."""
+    return Statistics(
+        statistics.minimum[start:stop],
+        statistics.maximum[start:stop],
+        statistics.mean[start:stop],
+        statistics.variance[start:stop],
+        statistics.count[start:stop],
+    )
+
+
+def _copy(statistics: Statistics) -> Statistics:
+    """Return statistics with its own memory."""
+    return Statistics(
+        statistics.minimum.copy(),
+        statistics.maximum.copy(),
+        statistics.mean.copy(),
+        statistics.variance.copy(),
+        statistics.count.copy(),
+    )
+
+
+_STATISTIC_FIELDS = 5
+
+
+class _Level:
+    """The pending rows and the unfolded input of one level of a LevelFolder."""
+
+    def __init__(self, inner_len: int) -> None:
+        """Allocate a pending buffer of inner_len rows."""
+        self.buffer = np.empty((_STATISTIC_FIELDS, inner_len), dtype=np.float64)
+        self.filled = 0
+        self.carry_raw: npt.NDArray[np.float32] | None = None
+        self.carry_statistics: Statistics | None = None
+
+    def pending(self, start: int, stop: int) -> Statistics:
+        """Return the pending rows start to stop as views."""
+        view = self.buffer[:, start:stop]
+        return Statistics(view[0], view[1], view[2], view[3], view[4])
+
+
+class LevelFolder:
+    """Fold every level of one channel as its raw samples arrive.
+
+    Level 1 folds the raw samples. Each later level folds the float64
+    statistics of the level below, never its stored float32 members, so the
+    variance keeps its full precision. A level holds at most inner_len pending
+    rows plus the 1 to 3 unfolded input rows of an unfinished block of 4, so
+    the state does not grow with the length of the channel.
+
+    A level emits a chunk of exactly inner_len rows each time its pending rows
+    fill. finish emits the last chunk of each level, which holds the
+    remaining rows and may be shorter. The chunks of one level concatenate to
+    the fold of the whole channel.
+    """
+
+    def __init__(self, levels: int, inner_len: int, with_var: bool) -> None:
+        """Create a folder.
+
+        Args:
+            levels: The number of levels to fold, at least 1.
+            inner_len: The rows of one emitted chunk, at least 1.
+            with_var: Whether the emitted chunks carry the variance.
+
+        Raises:
+            ValueError: levels or inner_len is less than 1.
+        """
+        if levels < 1:
+            raise ValueError(f"levels must be at least 1, got {levels}")
+        if inner_len < 1:
+            raise ValueError(f"inner_len must be at least 1, got {inner_len}")
+        self._inner_len = inner_len
+        self._with_var = with_var
+        self._levels = [_Level(inner_len) for _ in range(levels)]
+        self._finished = False
+        self._emitted: list[LevelChunk] = []
+
+    @property
+    def pending_rows(self) -> list[int]:
+        """The rows each level holds that no chunk has emitted yet."""
+        return [level.filled for level in self._levels]
+
+    def push(self, block: npt.NDArray[np.float32]) -> list[LevelChunk]:
+        """Fold raw samples into every level.
+
+        Args:
+            block: The next raw samples of the channel, rank 1, any length.
+
+        Returns:
+            The chunks that filled, in the order they filled.
+
+        Raises:
+            ValueError: block is not rank 1.
+            RuntimeError: finish was called.
+        """
+        if self._finished:
+            raise RuntimeError("push after finish")
+        if block.ndim != 1:
+            raise ValueError(f"raw samples are rank 1, got shape {block.shape}")
+        self._feed_raw(block)
+        return self._drain()
+
+    def finish(self) -> list[LevelChunk]:
+        """Fold the unfolded tails and emit the last chunk of every level.
+
+        Returns:
+            The final chunks, finest level first.
+
+        Raises:
+            RuntimeError: finish was called before.
+        """
+        if self._finished:
+            raise RuntimeError("finish called twice")
+        self._finished = True
+        for index, level in enumerate(self._levels):
+            if index == 0 and level.carry_raw is not None:
+                tail = fold_raw(level.carry_raw)
+                level.carry_raw = None
+                self._append(0, tail)
+            elif index > 0 and level.carry_statistics is not None:
+                tail = fold_statistics(level.carry_statistics)
+                level.carry_statistics = None
+                self._append(index, tail)
+            if level.filled:
+                self._emit(index, level.pending(0, level.filled))
+                level.filled = 0
+        return self._drain()
+
+    def _drain(self) -> list[LevelChunk]:
+        """Return and clear the emitted chunks."""
+        emitted, self._emitted = self._emitted, []
+        return emitted
+
+    def _feed_raw(self, block: npt.NDArray[np.float32]) -> None:
+        """Fold block into level 1 behind the carried samples."""
+        level = self._levels[0]
+        start = 0
+        if level.carry_raw is not None:
+            take = min(
+                DECIMATION_FACTOR - level.carry_raw.shape[0], block.shape[0]
+            )
+            joined = np.concatenate([level.carry_raw, block[:take]])
+            start = take
+            if joined.shape[0] < DECIMATION_FACTOR:
+                level.carry_raw = joined
+                return
+            level.carry_raw = None
+            self._append(0, fold_raw(joined))
+        whole = (
+            (block.shape[0] - start) // DECIMATION_FACTOR * DECIMATION_FACTOR
+        )
+        if whole:
+            self._append(0, fold_raw(block[start : start + whole]))
+        if start + whole < block.shape[0]:
+            level.carry_raw = block[start + whole :].copy()
+
+    def _feed_statistics(self, index: int, rows: Statistics) -> None:
+        """Fold the rows of level index to the level above it."""
+        level = self._levels[index + 1]
+        start = 0
+        carry = level.carry_statistics
+        if carry is not None:
+            take = min(DECIMATION_FACTOR - carry.rows, rows.rows)
+            joined = _join([carry, _slice(rows, 0, take)])
+            start = take
+            if joined.rows < DECIMATION_FACTOR:
+                level.carry_statistics = _copy(joined)
+                return
+            level.carry_statistics = None
+            self._append(index + 1, fold_statistics(joined))
+        whole = (rows.rows - start) // DECIMATION_FACTOR * DECIMATION_FACTOR
+        if whole:
+            self._append(
+                index + 1, fold_statistics(_slice(rows, start, start + whole))
+            )
+        if start + whole < rows.rows:
+            level.carry_statistics = _copy(
+                _slice(rows, start + whole, rows.rows)
+            )
+
+    def _append(self, index: int, rows: Statistics) -> None:
+        """Add rows to the pending rows of level index, emitting full chunks."""
+        level = self._levels[index]
+        start = 0
+        while start < rows.rows:
+            if level.filled == 0 and rows.rows - start >= self._inner_len:
+                stop = start + self._inner_len
+                self._emit(index, _slice(rows, start, stop))
+            else:
+                stop = min(rows.rows, start + self._inner_len - level.filled)
+                level.buffer[:, level.filled : level.filled + stop - start] = [
+                    rows.minimum[start:stop],
+                    rows.maximum[start:stop],
+                    rows.mean[start:stop],
+                    rows.variance[start:stop],
+                    rows.count[start:stop],
+                ]
+                level.filled += stop - start
+                if level.filled == self._inner_len:
+                    self._emit(index, level.pending(0, level.filled))
+                    level.filled = 0
+            start = stop
+
+    def _emit(self, index: int, chunk: Statistics) -> None:
+        """Record chunk as an emitted chunk and fold it into the next level."""
+        minmax, mean, var, count = chunk.members(self._with_var)
+        self._emitted.append(LevelChunk(index + 1, minmax, mean, var, count))
+        if index + 1 < len(self._levels):
+            self._feed_statistics(index, chunk)

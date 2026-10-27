@@ -12,6 +12,7 @@ from timeseries_zarr.constants import (
     VAR_COLUMN,
 )
 from timeseries_zarr.fold import (
+    LevelFolder,
     Statistics,
     _block_split,
     assemble_statistics,
@@ -727,3 +728,142 @@ def test_statistics_members_stores_a_value_beyond_float32_as_infinity_quietly():
         warnings.simplefilter("error")
         _, _, var, _ = statistics.members(True)
     assert np.isposinf(var[0])
+
+
+def _whole_fold(raw, levels):
+    """The statistics of every level, folded in one call each."""
+    out = []
+    statistics = fold_raw(raw)
+    for _ in range(levels):
+        out.append(statistics)
+        statistics = fold_statistics(statistics)
+    return out
+
+
+def _drive(raw, levels, inner_len, cuts, with_var=True):
+    """Push raw through a LevelFolder in blocks ending at cuts; return chunks."""
+    folder = LevelFolder(levels, inner_len, with_var)
+    chunks = []
+    previous = 0
+    for cut in [*cuts, raw.shape[0]]:
+        chunks += folder.push(raw[previous:cut])
+        previous = cut
+        assert all(rows <= inner_len for rows in folder.pending_rows)
+    chunks += folder.finish()
+    return chunks, folder
+
+
+def _chunk_members(chunk):
+    return chunk.minmax, chunk.mean, chunk.var, chunk.count
+
+
+def _level_chunks(chunks, level):
+    return [chunk for chunk in chunks if chunk.level == level]
+
+
+@pytest.mark.parametrize("length", [1, 7, 100, 4133, 20_001])
+@pytest.mark.parametrize("inner_len", [1, 3, 8, 64])
+@pytest.mark.parametrize("cuts", [[], [1, 2, 3, 4, 5], [13, 1000, 1001]])
+def test_level_folder_chunks_concatenate_to_the_whole_fold(
+    length, inner_len, cuts
+):
+    raw = _gappy_series(max(length, 261))[:length]
+    cuts = [cut for cut in cuts if cut < length]
+    levels = 4
+    chunks, _ = _drive(raw, levels, inner_len, cuts)
+    for level, whole in enumerate(_whole_fold(raw, levels), start=1):
+        got = _level_chunks(chunks, level)
+        want = whole.members(True)
+        for position in range(4):
+            joined = np.concatenate([_chunk_members(c)[position] for c in got])
+            assert joined.dtype == want[position].dtype
+            assert np.allclose(
+                joined, want[position], rtol=1e-12, atol=0.0, equal_nan=True
+            )
+            assert np.array_equal(np.isnan(joined), np.isnan(want[position]))
+
+
+def test_level_folder_stores_minmax_and_count_bit_identical_to_the_whole_fold():
+    raw = _gappy_series(30_011)
+    chunks, _ = _drive(raw, 5, 16, [5, 4099, 4100])
+    for level, whole in enumerate(_whole_fold(raw, 5), start=1):
+        got = _level_chunks(chunks, level)
+        want = whole.members(True)
+        assert np.array_equal(
+            np.concatenate([c.minmax for c in got]), want[0], equal_nan=True
+        )
+        assert np.array_equal(np.concatenate([c.count for c in got]), want[3])
+
+
+def test_level_folder_emits_inner_len_rows_except_in_the_last_chunk():
+    raw = _gappy_series(40_003)
+    chunks, _ = _drive(raw, 4, 32, [999, 12_345])
+    for level in range(1, 5):
+        sizes = [chunk.rows for chunk in _level_chunks(chunks, level)]
+        assert sizes
+        assert set(sizes[:-1]) <= {32}
+        assert 1 <= sizes[-1] <= 32
+
+
+def test_level_folder_emits_a_chunk_as_soon_as_it_fills():
+    folder = LevelFolder(2, 8, True)
+    assert folder.push(np.ones(31, dtype=np.float32)) == []
+    emitted = folder.push(np.ones(1, dtype=np.float32))
+    assert [(chunk.level, chunk.rows) for chunk in emitted] == [(1, 8)]
+    assert folder.pending_rows == [0, 2]
+
+
+def test_level_folder_holds_at_most_one_chunk_per_level_for_a_huge_block():
+    folder = LevelFolder(4, 16, True)
+    chunks = folder.push(_gappy_series(100_000))
+    assert all(rows <= 16 for rows in folder.pending_rows)
+    assert {chunk.level for chunk in chunks} == {1, 2, 3, 4}
+
+
+def test_level_folder_finish_folds_the_tails():
+    raw = np.arange(23, dtype=np.float32)
+    chunks, _ = _drive(raw, 3, 100, [])
+    assert [(c.level, c.rows) for c in chunks] == [(1, 6), (2, 2), (3, 1)]
+    assert chunks[0].count.tolist() == [4, 4, 4, 4, 4, 3]
+    assert chunks[2].count.tolist() == [23]
+
+
+def test_level_folder_omits_the_variance_when_asked():
+    chunks, _ = _drive(_gappy_series(500), 2, 8, [], with_var=False)
+    assert all(chunk.var is None for chunk in chunks)
+
+
+def test_level_folder_ignores_an_empty_block():
+    folder = LevelFolder(2, 8, True)
+    assert folder.push(np.empty(0, dtype=np.float32)) == []
+    assert folder.finish() == []
+
+
+def test_level_folder_keeps_the_variance_exact_on_a_large_offset():
+    rng = np.random.default_rng(9)
+    raw = (1e6 + rng.standard_normal(65_536)).astype(np.float32)
+    chunks, _ = _drive(raw, 4, 64, [10_001])
+    top = _level_chunks(chunks, 4)
+    want = _whole_fold(raw, 4)[3].members(True)[2]
+    got = np.concatenate([chunk.var for chunk in top])
+    assert np.array_equal(got, want)
+
+
+def test_level_folder_rejects_a_block_that_is_not_rank_1():
+    with pytest.raises(ValueError, match="rank 1"):
+        LevelFolder(1, 8, True).push(np.zeros((4, 2), dtype=np.float32))
+
+
+@pytest.mark.parametrize(("levels", "inner_len"), [(0, 8), (1, 0)])
+def test_level_folder_rejects_a_count_below_1(levels, inner_len):
+    with pytest.raises(ValueError, match="at least 1"):
+        LevelFolder(levels, inner_len, True)
+
+
+def test_level_folder_rejects_a_push_after_finish():
+    folder = LevelFolder(1, 8, True)
+    folder.finish()
+    with pytest.raises(RuntimeError, match="after finish"):
+        folder.push(np.zeros(4, dtype=np.float32))
+    with pytest.raises(RuntimeError, match="twice"):
+        folder.finish()
