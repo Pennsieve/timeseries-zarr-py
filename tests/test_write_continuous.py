@@ -1,5 +1,6 @@
 import dataclasses
 import resource
+import threading
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from timeseries_zarr.constants import (
     VAR_KEY,
 )
 from timeseries_zarr.planning import level_period_us, plan_levels
-from timeseries_zarr.shards import FileShardSink
+from timeseries_zarr.shards import ArrayWriter, FileShardSink
 from timeseries_zarr.sizing import level_sizing
 from timeseries_zarr.streaming import scale_block
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
@@ -1331,3 +1332,131 @@ def test_a_written_bundle_equals_the_definition_over_six_levels(
                 assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
             else:
                 assert VAR_KEY not in list(level.array_keys())
+
+
+def _three_channels(
+    continuous_source: type[ArrayContinuousSource],
+) -> list[ArrayContinuousSource]:
+    return [
+        continuous_source(_series(1000, seed=1), id="a"),
+        continuous_source(
+            _series(333, offset=0.005, scale=0.001, seed=2),
+            id="b",
+            rate_hz=1000.0,
+            unit="volts",
+        ),
+        continuous_source(_series(700, seed=3), id="c", rate_hz=250.0),
+    ]
+
+
+@pytest.mark.parametrize("channel_count", [1, 3, 8])
+@pytest.mark.parametrize("workers", [2, 4])
+def test_write_continuous_channels_writes_identical_bundles_at_any_worker_count(
+    tmp_path: Path,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+    workers: int,
+    channel_count: int,
+) -> None:
+    channels = (_three_channels(continuous_source) * 3)[:channel_count]
+    opts = dataclasses.replace(_OPTS_ONE_PASS, max_workers=1)
+    source = multi_channel_source(channels, window_rows=[7, 5, 13] * 3)
+    _write_many(tmp_path, source, opts, name="one")
+    pooled = dataclasses.replace(opts, max_workers=workers)
+    _write_many(tmp_path, source, pooled, name="many")
+    left, right = _files(tmp_path / "one"), _files(tmp_path / "many")
+    assert len(left) > 20
+    assert left == right
+
+
+def test_write_continuous_channels_encodes_chunk_groups_on_the_pool_for_a_narrow_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    monkeypatch.setattr("timeseries_zarr.shards.ENCODE_GROUP_BYTES", 64)
+    threads: set[str] = set()
+    encode_group = ArrayWriter._encode_group
+
+    def spy(self: ArrayWriter, chunks: Any) -> Any:
+        threads.add(threading.current_thread().name)
+        return encode_group(self, chunks)
+
+    monkeypatch.setattr(ArrayWriter, "_encode_group", spy)
+    source = multi_channel_source(
+        [continuous_source(_series(1000, seed=1))], window_rows=500
+    )
+    one = dataclasses.replace(_OPTS_ONE_PASS, max_workers=1)
+    _write_many(tmp_path, source, one, name="one")
+    assert threads == set()
+    four = dataclasses.replace(_OPTS_ONE_PASS, max_workers=4)
+    _write_many(tmp_path, source, four, name="four")
+    assert threads
+    assert all(name.startswith("timeseries-zarr") for name in threads)
+    assert _files(tmp_path / "one") == _files(tmp_path / "four")
+
+
+@pytest.mark.parametrize("workers", [1, 4])
+def test_write_continuous_channel_writes_identical_bundles_at_any_worker_count(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+    workers: int,
+) -> None:
+    monkeypatch.setattr("timeseries_zarr.shards.ENCODE_GROUP_BYTES", 64)
+    channel = continuous_source(_series(3000, seed=4), id="a")
+    for name, count in (("one", 1), ("many", workers)):
+        opts = dataclasses.replace(_OPTS_ONE_PASS, max_workers=count)
+        write_continuous_channel(
+            open_group(tmp_path / name), 0, channel, reference_us=0, opts=opts
+        )
+    assert _files(tmp_path / "one") == _files(tmp_path / "many")
+
+
+def test_write_continuous_channels_raises_a_failed_job_with_its_channel_label(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    push = ChannelWriter.push
+
+    def failing(self: ChannelWriter, block: Any) -> None:
+        if self.label.startswith("channel 4 "):
+            raise RuntimeError("disk full")
+        push(self, block)
+
+    monkeypatch.setattr(ChannelWriter, "push", failing)
+    channels = [
+        continuous_source(_series(1000, seed=index), id=f"c{index}")
+        for index in range(3)
+    ]
+    source = multi_channel_source(channels, window_rows=100)
+    opts = dataclasses.replace(_OPTS, max_workers=3)
+    with pytest.raises(RuntimeError, match="disk full") as caught:
+        _write_many(tmp_path, source, opts, first_key=3)
+    assert caught.value.__notes__ == ["while writing channel 4 ('c1')"]
+
+
+def test_write_continuous_channels_stops_dispatching_after_a_failed_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    continuous_source: type[ArrayContinuousSource],
+    multi_channel_source: type[ArrayMultiChannelSource],
+) -> None:
+    pushed = _record_pushes(monkeypatch)
+    push = ChannelWriter.push
+
+    def failing(self: ChannelWriter, block: Any) -> None:
+        if len(pushed) > 2:
+            raise RuntimeError("disk full")
+        push(self, block)
+
+    monkeypatch.setattr(ChannelWriter, "push", failing)
+    channels = [continuous_source(_series(1000, seed=1), id="a")]
+    source = multi_channel_source(channels, window_rows=100)
+    opts = dataclasses.replace(_OPTS, max_workers=1)
+    with pytest.raises(RuntimeError, match="disk full"):
+        _write_many(tmp_path, source, opts)
+    assert len(pushed) == 3

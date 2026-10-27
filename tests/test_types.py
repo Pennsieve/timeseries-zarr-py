@@ -1,4 +1,5 @@
 import dataclasses
+import os
 from datetime import UTC, datetime
 from typing import get_args
 
@@ -141,6 +142,39 @@ def test_writeopts_defaults():
     assert opts.target_shard_bytes == TARGET_SHARD_BYTES
     assert opts.write_var is False
     assert opts.voltage_policy == "convert"
+
+
+def test_writeopts_max_workers_defaults_to_the_available_cpus():
+    opts = WriteOpts()
+    assert opts.max_workers is None
+    affinity = getattr(os, "sched_getaffinity", None)
+    expected = len(affinity(0)) if affinity else os.cpu_count()
+    assert opts.worker_count == (expected or 1)
+
+
+def test_writeopts_worker_count_follows_the_cpu_affinity(monkeypatch):
+    monkeypatch.setattr(
+        os, "sched_getaffinity", lambda pid: {0, 1}, raising=False
+    )
+    assert WriteOpts().worker_count == 2
+
+
+def test_writeopts_worker_count_falls_back_to_the_cpu_count(monkeypatch):
+    monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+    monkeypatch.setattr(os, "cpu_count", lambda: 6)
+    assert WriteOpts().worker_count == 6
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert WriteOpts().worker_count == 1
+
+
+def test_writeopts_max_workers_sets_the_worker_count():
+    assert WriteOpts(max_workers=3).worker_count == 3
+
+
+@pytest.mark.parametrize("max_workers", [0, -2])
+def test_writeopts_rejects_max_workers_below_1(max_workers):
+    with pytest.raises(ValueError, match="max_workers must be 1 or more"):
+        WriteOpts(max_workers=max_workers)
 
 
 def test_writeopts_overrides():

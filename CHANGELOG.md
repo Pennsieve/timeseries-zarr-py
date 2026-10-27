@@ -22,5 +22,10 @@ zarr 3.2.1 or later.
 `ContinuousChannel.read` takes `members`, the level members to read. A read with
 `members=()` holds `min` and `max` alone.
 
+`WriteOpts.max_workers` sets the threads that fold and encode the channels of a window. It
+defaults to the CPUs available to the process. The writer reads the next window while the threads write the
+previous one, so a source must not overwrite the arrays of a window it has yielded. A
+bundle is byte-identical at any thread count.
+
 `Bundle.stack` and `stack_channels` read one array per channel and take
 `max_workers`, the number of threads that read the channels.
