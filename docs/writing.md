@@ -13,9 +13,14 @@
 | `target_shard_bytes` | target outer shard size in bytes | 16 MiB |
 | `write_var` | include per-bin variance | `False` |
 | `voltage_policy` | `"convert"` or `"require_uv"` | `"convert"` |
+| `max_workers` | threads that fold and encode the channels of a window | available CPUs |
 
 `max_levels=0` writes the raw samples and the event arrays with no levels or count
 levels.
+
+`max_workers` is 1 or more. `None` uses the CPUs that the process may run on: the CPU
+affinity where the platform reports it, and `os.cpu_count()` elsewhere. The bytes written
+do not depend on it.
 
 `write_var=True` adds the `var` member to every level and costs no extra memory. The
 writer folds every level from float64 statistics whatever the setting, so the variance
@@ -48,8 +53,10 @@ A `MultiChannelSource` has two methods.
 `start_us()`, and `num_samples()`. A channel needs no `read_samples`. It may define
 `provenance()`.
 
-`iter_windows()` yields one window at a time, and the writer calls it once per write. A
-window is a sequence with one rank-1 block per channel, in channel order. The writer casts
+`iter_windows()` yields one window at a time, and the writer calls it once per write. The
+writer reads the next window while it writes the previous one, so a source must not
+overwrite the arrays of a window it has yielded.
+A window is a sequence with one rank-1 block per channel, in channel order. The writer casts
 each block to float32, so a strided column view or an int16 block works. The blocks
 of one window may differ in length, and a block may be empty. A channel whose
 samples end before the others gives an empty block in each later window. For each

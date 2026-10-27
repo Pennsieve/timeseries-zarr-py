@@ -12,6 +12,8 @@ writes every channel of a multi-channel source in one sweep over its windows.
 """
 
 from collections.abc import Sequence
+from concurrent.futures import Executor, Future, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 from typing import cast
 
 import numpy as np
@@ -269,12 +271,16 @@ def create_level(
 class _LevelWriters:
     """The member writers of one level."""
 
-    def __init__(self, layouts: LevelMembers[ShardLayout]) -> None:
+    def __init__(
+        self, layouts: LevelMembers[ShardLayout], executor: Executor | None
+    ) -> None:
         """Start a writer for each member that layouts holds."""
-        self._minmax = ArrayWriter(layouts.minmax)
-        self._mean = ArrayWriter(layouts.mean)
-        self._var = None if layouts.var is None else ArrayWriter(layouts.var)
-        self._count = ArrayWriter(layouts.count)
+        self._minmax = ArrayWriter(layouts.minmax, executor)
+        self._mean = ArrayWriter(layouts.mean, executor)
+        self._var = (
+            None if layouts.var is None else ArrayWriter(layouts.var, executor)
+        )
+        self._count = ArrayWriter(layouts.count, executor)
 
     def push(self, chunk: LevelChunk) -> None:
         """Write the rows of chunk to each member."""
@@ -300,7 +306,8 @@ class ChannelWriter:
     into every level, and appends each chunk the folder emits to its member
     array. The writer holds one partial chunk of each array and the pending
     rows of each level. Its memory does not grow with the length of the
-    channel. Every shard is written once, as it fills.
+    channel. Every shard is written once, as it fills. The bytes written do not
+    depend on the executor.
     """
 
     def __init__(
@@ -311,6 +318,7 @@ class ChannelWriter:
         levels: Sequence[LevelMembers[ShardLayout]],
         factor: float,
         inner_len: int,
+        executor: Executor | None = None,
     ) -> None:
         """Start a channel.
 
@@ -321,13 +329,16 @@ class ChannelWriter:
             levels: The layout of each level's members, in level order.
             factor: The multiplier applied to every sample.
             inner_len: The rows of one chunk of a level.
+            executor: Encodes the chunks of a large push in groups. A worker
+                of the executor may call push while another worker is idle.
+                Chunks encode in the calling thread when None.
         """
         self._key = key
         self._channel = channel
         self._factor = factor
         self._num_samples = channel.num_samples()
         self._received = 0
-        self._raw = ArrayWriter(raw)
+        self._raw = ArrayWriter(raw, executor)
         self._folder = (
             LevelFolder(
                 len(levels),
@@ -337,9 +348,11 @@ class ChannelWriter:
             if levels
             else None
         )
-        self._levels = [_LevelWriters(layouts) for layouts in levels]
+        self._levels = [_LevelWriters(layouts, executor) for layouts in levels]
 
-    def _label(self) -> str:
+    @property
+    def label(self) -> str:
+        """The channel key and id, as an error message names the channel."""
         return f"channel {self._key} ({self._channel.id!r})"
 
     def push(self, block: npt.ArrayLike) -> None:
@@ -358,13 +371,13 @@ class ChannelWriter:
         samples = np.asarray(block, dtype=np.float32)
         if samples.ndim != 1:
             raise ValueError(
-                f"{self._label()} gives a block of rank {samples.ndim}; "
+                f"{self.label} gives a block of rank {samples.ndim}; "
                 "each block must be a rank-1 array"
             )
         self._received += samples.shape[0]
         if self._received > self._num_samples:
             raise ValueError(
-                f"{self._label()} yields at least {self._received} samples "
+                f"{self.label} yields at least {self._received} samples "
                 f"and declares {self._num_samples}; its blocks must total "
                 f"{self._num_samples}"
             )
@@ -384,7 +397,7 @@ class ChannelWriter:
         """
         if self._received != self._num_samples:
             raise ValueError(
-                f"{self._label()} yields {self._received} samples and "
+                f"{self.label} yields {self._received} samples and "
                 f"declares {self._num_samples}; its blocks must total "
                 f"{self._num_samples}"
             )
@@ -447,6 +460,7 @@ def _channel_writer(
     plans: Sequence[LevelPlan],
     factor: float,
     opts: WriteOpts,
+    executor: Executor | None,
 ) -> ChannelWriter:
     """Return the writer of a channel whose nodes handles holds."""
     levels = []
@@ -467,7 +481,28 @@ def _channel_writer(
         levels,
         factor,
         opts.inner_len,
+        executor,
     )
+
+
+def _pool(workers: int) -> ThreadPoolExecutor | nullcontext[None]:
+    """Return a context that yields a pool of workers threads, or None for one."""
+    if workers == 1:
+        return nullcontext(None)
+    return ThreadPoolExecutor(workers, thread_name_prefix="timeseries-zarr")
+
+
+def _wait_for(jobs: Sequence[tuple[ChannelWriter, Future[None]]]) -> None:
+    """Wait for every job, then raise the error of the first that failed.
+
+    The error gains a note with the label of the job's channel.
+    """
+    wait([future for _, future in jobs])
+    for writer, future in jobs:
+        error = future.exception()
+        if error is not None:
+            error.add_note(f"while writing {writer.label}")
+            raise error
 
 
 def write_continuous_channel(
@@ -482,7 +517,8 @@ def write_continuous_channel(
 
     A voltage unit resolves under opts.voltage_policy before the group is
     created, and the raw samples are scaled to match. The source is read in
-    blocks of one raw shard. A channel too short for level 1 gets raw and
+    blocks of one raw shard, and the chunks of each block encode in groups on
+    opts.max_workers threads. A channel too short for level 1 gets raw and
     nothing else.
 
     Args:
@@ -502,13 +538,17 @@ def write_continuous_channel(
     nodes: dict[str, NodeMetadata] = {}
     plans = _add_channel_nodes(nodes, key, source, resolved, reference_us, opts)
     handles = create_nodes(parent, nodes)
-    writer = _channel_writer(handles, key, source, plans, resolved.factor, opts)
     block_samples = raw_sizing(
         source.num_samples(), opts.inner_len, opts.target_shard_bytes
     ).shard_shape[0]
-    for block in iter_raw_blocks(source, block_samples):
-        writer.push(block)
-    writer.finish()
+    workers = opts.worker_count
+    with _pool(workers) as pool:
+        writer = _channel_writer(
+            handles, key, source, plans, resolved.factor, opts, pool
+        )
+        for block in iter_raw_blocks(source, block_samples):
+            writer.push(block)
+        writer.finish()
 
 
 def write_continuous_channels(
@@ -524,9 +564,13 @@ def write_continuous_channels(
     The channel groups, the raw arrays, and the level groups and members of
     every channel are created in one call, with the attributes and shapes that
     write_continuous_channel gives them. One pass over the windows of source
-    writes the raw array and every level of every channel. Memory holds one
-    partial chunk per array, the pending rows of each level, and the current
-    window. A source without channels writes nothing, and iter_windows is not
+    writes the raw array and every level of every channel. Each window
+    dispatches one job per channel to opts.max_workers threads, and the next
+    window is read while the jobs run. A source must not overwrite the arrays
+    of a window it has yielded. When there are fewer channels than threads,
+    each job also encodes its chunks in groups on the idle threads. Memory
+    holds one partial chunk per array, the pending rows of each level, and two
+    windows. A source without channels writes nothing, and iter_windows is not
     called.
 
     Args:
@@ -543,7 +587,10 @@ def write_continuous_channels(
             per channel, if a block is not rank 1, or if a channel's blocks
             do not total its num_samples. A unit or provenance error comes
             before any node is created. A window or block error leaves the
-            created nodes and the shards written so far in place.
+            created nodes and the shards written so far in place. Any error
+            from a channel's job gains a note with the channel label, and
+            the first channel in channel order wins when several fail in one
+            window.
     """
     channels = list(source.channels())
     if not channels:
@@ -558,20 +605,37 @@ def write_continuous_channels(
         )
         factors[key] = resolved.factor
     handles = create_nodes(parent, nodes)
-    writers = [
-        _channel_writer(
-            handles, key, channel, plans_by_key[key], factors[key], opts
-        )
-        for key, channel in enumerate(channels, start=first_key)
-    ]
-    for index, window in enumerate(source.iter_windows()):
-        if len(window) != len(writers):
-            raise ValueError(
-                f"window {index} holds {len(window)} blocks and the source "
-                f"has {len(writers)} channels; a window must hold one block "
-                "for each channel"
+    workers = opts.worker_count
+    pool = ThreadPoolExecutor(workers, thread_name_prefix="timeseries-zarr")
+    try:
+        # A job that waits on the pool for chunk groups needs an idle worker.
+        encoder = pool if len(channels) < workers else None
+        writers = [
+            _channel_writer(
+                handles,
+                key,
+                channel,
+                plans_by_key[key],
+                factors[key],
+                opts,
+                encoder,
             )
-        for writer, block in zip(writers, window, strict=True):
-            writer.push(block)
-    for writer in writers:
-        writer.finish()
+            for key, channel in enumerate(channels, start=first_key)
+        ]
+        jobs: list[tuple[ChannelWriter, Future[None]]] = []
+        for index, window in enumerate(source.iter_windows()):
+            _wait_for(jobs)
+            if len(window) != len(writers):
+                raise ValueError(
+                    f"window {index} holds {len(window)} blocks and the "
+                    f"source has {len(writers)} channels; a window must hold "
+                    "one block for each channel"
+                )
+            jobs = [
+                (writer, pool.submit(writer.push, block))
+                for writer, block in zip(writers, window, strict=True)
+            ]
+        _wait_for(jobs)
+        _wait_for([(writer, pool.submit(writer.finish)) for writer in writers])
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)

@@ -110,7 +110,9 @@ class MultiChannelSource(Protocol):
 
     A source over a format that stores every channel in one stream implements
     this protocol. channels returns the channels in channel order. iter_windows yields one
-    window at a time, and the writer calls it once per write. A window is a
+    window at a time, and the writer calls it once per write. The writer reads
+    the next window while it writes the previous one, so the source must not
+    overwrite the arrays of a window it has yielded. A window is a
     sequence with one rank-1 block per channel, in channel order. The writer
     casts each block to float32, so a strided column view or an int16 block
     works. The blocks of one window may differ in length, and a block

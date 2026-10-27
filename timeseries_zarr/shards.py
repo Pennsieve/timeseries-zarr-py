@@ -224,8 +224,9 @@ class ArrayWriter:
         Args:
             layout: The layout of the array.
             executor: Encodes the chunks of one push in groups of at least
-                ENCODE_GROUP_BYTES. It must not be the pool that runs the
-                caller of push. Chunks encode in the calling thread when None.
+                ENCODE_GROUP_BYTES. The caller of push may run on a worker of
+                the executor while another worker is idle. Chunks encode in
+                the calling thread when None.
         """
         self._layout = layout
         self._encoder = ChunkEncoder(layout)

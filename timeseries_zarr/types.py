@@ -1,5 +1,6 @@
 """Shared value types for the writer."""
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -9,6 +10,19 @@ from timeseries_zarr.constants import (
     MAX_LEVELS,
     TARGET_SHARD_BYTES,
 )
+
+
+def _available_cpus() -> int:
+    """Return the CPUs that this process may run on, at least 1.
+
+    The CPU affinity bounds the count where the platform reports it. A
+    container limited to a few CPUs on a large host reports those CPUs.
+    """
+    affinity = getattr(os, "sched_getaffinity", None)
+    if affinity is not None:
+        return len(affinity(0)) or 1
+    return os.cpu_count() or 1
+
 
 type ChannelKind = Literal["continuous", "event"]
 
@@ -145,6 +159,9 @@ class WriteOpts:
             max_levels of 1 or more.
         voltage_policy: How a continuous channel with a volts-family unit
             reaches microvolts.
+        max_workers: The threads that fold and encode the channels of a
+            window, at least 1. None uses the CPUs available to the process.
+            The bytes written do not depend on it.
 
     Raises:
         ValueError: If a setting lies outside its range, as stated above.
@@ -157,9 +174,19 @@ class WriteOpts:
     target_shard_bytes: int = TARGET_SHARD_BYTES
     write_var: bool = False
     voltage_policy: VoltagePolicy = "convert"
+    max_workers: int | None = None
+
+    @property
+    def worker_count(self) -> int:
+        """The threads to use: max_workers, or the available CPUs when None."""
+        return self.max_workers or _available_cpus()
 
     def __post_init__(self) -> None:
         """Raise ValueError on a setting outside its range."""
+        if self.max_workers is not None and self.max_workers < 1:
+            raise ValueError(
+                f"max_workers must be 1 or more, got {self.max_workers}"
+            )
         if not 0 <= self.max_levels <= MAX_LEVELS:
             raise ValueError(
                 f"max_levels must be 0 through {MAX_LEVELS}, "
