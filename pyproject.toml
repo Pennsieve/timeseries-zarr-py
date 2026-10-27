@@ -34,6 +34,8 @@ classifiers = [
 dependencies = [
     "zarr>=3.2.1,<4",
     "numpy>=2",
+    "numcodecs>=0.16",
+    "google-crc32c>=1.5",
 ]
 
 [project.urls]
@@ -155,5 +157,14 @@ ignore_errors = true
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["pandas", "pandas.*", "xarray", "xarray.*", "fsspec", "fsspec.*"]
+module = [
+    "pandas",
+    "pandas.*",
+    "xarray",
+    "xarray.*",
+    "fsspec",
+    "fsspec.*",
+    "numcodecs",
+    "numcodecs.*",
+]
 ignore_missing_imports = true

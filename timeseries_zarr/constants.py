@@ -145,6 +145,9 @@ INNER_CHUNK_SAMPLES: Final = 2**13
 TARGET_SHARD_BYTES: Final = 16 * 2**20
 """Target outer shard size in bytes (~16 MiB) for sharded pyramid arrays."""
 
+ENCODE_GROUP_BYTES: Final = 2**20
+"""Smallest run of chunk bytes (1 MiB) that one thread-pool task encodes."""
+
 EVENTS_SEARCH_LIMIT_BYTES: Final = 2**20
 """Largest events array in bytes (1 MiB) that a window search reads whole."""
 

@@ -66,6 +66,13 @@ source. Each channel has a `Regrouper`, so every write to `raw` covers a whole s
 whatever the length of the blocks. After the pass, the writer folds the levels of each
 channel from its stored `raw` array.
 
+`shards.py` writes the shards of one array as its rows arrive. A `ChunkEncoder` turns the
+rows of an inner chunk into little-endian bytes compressed with Zstd. A `ShardWriter`
+appends encoded chunks to a `ShardSink`, then writes the shard index and its CRC-32C. An
+`ArrayWriter` cuts blocks of any length into chunks and holds at most one partial chunk.
+The module imports `numcodecs` and `google_crc32c` and never zarr, and its shards match
+the bytes that zarr writes for the same array.
+
 `write_event.py` writes one event channel: the `events` array, each optional column the
 source names, and the count levels of a dense channel. Event times are stored from the
 reference time.
