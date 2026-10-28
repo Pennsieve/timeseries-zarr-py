@@ -70,7 +70,7 @@ channel at a time, and lets a reader fetch only the channels on screen.
 ### Continuous channels
 
 A continuous channel holds a regularly sampled signal of `N` samples and a ladder of
-levels, each level 4x coarser than the one before it.
+levels, each level coarser than the one before it by a whole number of samples per bin.
 
 ```
 0                            # Channel group. Attributes: kind = "continuous", name,
@@ -88,8 +88,8 @@ levels, each level 4x coarser than the one before it.
 |   |-- mean                 # Array, shape (bins,), float32. Optional.
 |   |-- var                  # Array, shape (bins,), float32. Optional.
 |   `-- count                # Array, shape (bins,), uint32. Optional.
-|-- 2                        # Level 2 group, 16 samples per bin.
-`-- K                        # Level K group, 4^K samples per bin.
+|-- 2                        # Level 2 group. Attribute: period_us.
+`-- K                        # Level K group. Attribute: period_us.
 ```
 
 | array | requirement | shape | dtype | description |
@@ -100,13 +100,24 @@ levels, each level 4x coarser than the one before it.
 | `<k>/var` | MAY | `(bins,)` | float32 | Population variance of the samples in bin `i`. |
 | `<k>/count` | MAY | `(bins,)` | uint32 | Number of finite samples in bin `i`. |
 
-Level `k`, for `k = 1, 2, ...`, is a child group of the channel named `k`. Bin `i` of
-level `k` covers the samples with indices in `[4^k * i, 4^k * (i + 1))` and starts at
-time `offset_us + i * period_us`. A level has `ceil(N / 4^k)` bins, and the last bin
-may cover fewer than `4^k` samples. Levels MUST be numbered `1` through `K` with no
-gaps. A producer SHOULD add levels until the next level would hold fewer bins than a
-threshold of its choice; a threshold of 1024 bins is RECOMMENDED. A channel with no
-samples holds a zero-length `raw` and no levels.
+Level `k`, for `k = 1, 2, ...`, is a child group of the channel named `k`. The name is
+an ordinal. The `period_us` attribute defines the level (see
+[Level metadata](#level-metadata)). The bin width of level `k` is
+`s_k = period_us * rate_hz / 1e6` samples. It MUST be an integer of at least 2 and less
+than `2^32`, so that `count` fits in a uint32. Bin `i` of level `k` covers the samples
+with indices in `[s_k * i, s_k * (i + 1))` and starts at time `offset_us + i * period_us`.
+A level has `ceil(N / s_k)` bins, and the last bin may cover fewer than `s_k` samples.
+
+`s_(k+1)` MUST be an integer multiple of `s_k` and at least `2 * s_k`. The bins of
+level `k + 1` then nest exactly over the bins of level `k`, and a reader derives the
+factor between two levels from their `period_us` values, never from the level names. A
+factor of 4 between every pair of levels is RECOMMENDED, which gives
+`s_k = 4^k`. The factor MAY differ from level to level.
+
+Levels MUST be numbered `1` through `K` with no gaps. A producer SHOULD add levels
+until the next level would hold fewer bins than a threshold of its choice; a threshold
+of 1024 bins is RECOMMENDED. A channel with no samples holds a zero-length `raw` and no
+levels.
 
 Each statistic is defined over the raw samples of its bin. A producer MAY compute
 level `k + 1` from level `k` instead: the minimum of minimums, the maximum of
@@ -133,8 +144,9 @@ fraction of each bin that was recorded. A coverage view of a long timeline costs
 request. Unwritten chunks read as zero, which is the correct coverage for a span that
 was never recorded.
 
-`raw` plus `minmax` stores `5N / 3` values. Each of `mean`, `var`, and `count` adds
-`N / 3`.
+With a constant factor `f` between levels, `raw` plus `minmax` stores
+`N * (f + 1) / (f - 1)` values, and each of `mean`, `var`, and `count` adds
+`N / (f - 1)`. At the recommended factor of 4 that is `5N / 3` and `N / 3`.
 
 ### Event channels
 
@@ -198,10 +210,12 @@ A legend or a unit summary reads `waveform_mean`, one small array, in place of
 every snippet in the channel.
 
 A dense event channel MAY hold count levels, numbered `1` through `J` with no gaps.
-Level 1 has a producer-chosen `period_us`, and `period_us` quadruples at each level
-after it. Level 1 SHOULD lie on the ladder `1000 * 4^j` microseconds (1 ms, 4 ms,
-16 ms, ..., 1.024 s, 4.096 s, ...). Event channels in any bundle then share bin
-grids. Bin `i` covers the times
+Level 1 has a producer-chosen `period_us`, and `period_us` of level `k + 1` MUST be an
+integer multiple of that of level `k`, at least 2 times it. The bins of level `k + 1`
+then nest exactly over the bins of level `k`. A factor of 4 between every pair of
+levels is RECOMMENDED. When the factor is 4, level 1 SHOULD lie on the ladder
+`1000 * 4^j` microseconds (1 ms, 4 ms, 16 ms, ..., 1.024 s, 4.096 s, ...). Event
+channels in any bundle then share bin grids. Bin `i` covers the times
 `[offset_us + i * period_us, offset_us + (i + 1) * period_us)`, where `offset_us` is
 the time of the level's bin 0 (see [Level metadata](#level-metadata)), and a level's
 bins cover every event of the channel. An event with a duration is counted in the bin of
@@ -333,9 +347,11 @@ holds the bin width. A count level also holds the time of its bin 0.
 | `period_us` | MUST | number | Width of one bin in microseconds. |
 | `offset_us` | MUST for count levels, MUST NOT for continuous levels | integer | Time of bin 0 in microseconds from the reference time. May be negative. |
 
-For level `k` of a continuous channel, `period_us` MUST equal `4^k * 1e6 / rate_hz`.
-For count levels, `period_us` of level `k + 1` MUST equal four times that of level `k`,
-and `offset_us` MUST be an integer multiple of `period_us` and at most the time of the
+For level `k` of a continuous channel, `period_us` MUST equal `s_k * 1e6 / rate_hz`,
+where `s_k` is the integer bin width in samples defined in
+[Continuous channels](#continuous-channels). For count levels, `period_us` of level
+`k + 1` MUST be an integer multiple of that of level `k`, at least 2 times it, and
+`offset_us` MUST be an integer multiple of `period_us` and at most the time of the
 channel's first event.
 
 ```json
@@ -488,13 +504,15 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - Level groups are named `1` through `K`, or `1` through `J` for count levels, with
   no gaps, and each carries `period_us`. A count level also carries `offset_us`, and a
   continuous level does not.
-  Continuous levels satisfy `period_us = 4^k * 1e6 / rate_hz`. Count levels satisfy
-  `period_us(k + 1) = 4 * period_us(k)`.
+  Continuous levels satisfy `period_us = s_k * 1e6 / rate_hz`, where `s_k` is an
+  integer of at least 2 and less than `2^32`, `s_(k+1)` is an integer multiple of
+  `s_k`, and `s_(k+1) >= 2 * s_k`. Count levels satisfy `period_us(k + 1)` an integer
+  multiple of `period_us(k)`, at least 2 times it.
 - Every channel holds the arrays its tables require: `raw` for a continuous channel,
   `events` for an event channel, `minmax` in every continuous level, and `count` in
   every count level.
 - Every array has the shape and dtype of its table, and all members of one level
-  have the same number of bins, `ceil(N / 4^k)` at level `k` of a continuous channel.
+  have the same number of bins, `ceil(N / s_k)` at level `k` of a continuous channel.
 - `raw` and the float level members declare NaN fill. Integer arrays declare 0.
 - `events` is non-decreasing. Every per-event column has length `n`. `durations`
   values lie between 0 and `max_duration_us`. `labels` values are below `L`.
