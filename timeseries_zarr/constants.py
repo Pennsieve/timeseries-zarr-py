@@ -69,18 +69,14 @@ EVENT_DIMENSION: Final = "event"
 LABEL_DIMENSION: Final = "label"
 """Dimension name of the label axis of a per-label array."""
 
-DECIMATION_FACTOR: Final = 4
-"""Samples folded into one bin per pyramid level (4x coarser each level)."""
+DEFAULT_DECIMATION_FACTOR: Final = 4
+"""Default ratio of the bin widths of consecutive levels."""
+
+MIN_DECIMATION_FACTOR: Final = 2
+"""Smallest ratio of the bin widths of consecutive levels."""
 
 LEVEL_PERIOD_TOLERANCE: Final = 1e-9
 """Relative tolerance of a level's tsz.period_us against the spec value."""
-
-MAX_LEVELS: Final = 15
-"""Most folded levels a channel can hold; raw is not a level.
-
-A level-k bin spans 4^k samples and its count is stored as uint32, which a
-level-16 bin would exceed.
-"""
 
 ENVELOPE_PAIR_SIZE: Final = 2
 """Length of the trailing (min, max) axis on every coarser pyramid level."""
@@ -119,7 +115,10 @@ CANVAS_PIXELS: Final = 2000
 """Pixels across a reader's canvas, which sets count level 1."""
 
 COUNT_LADDER_BASE_US: Final = 1000
-"""Finest count level period in microseconds; level 1 lies on base * 4^j."""
+"""Finest count level period in microseconds.
+
+Level 1 lies on base * 4^j when the decimation factor is 4.
+"""
 
 MICROSECONDS_PER_SECOND: Final = 1_000_000.0
 """Microseconds in one second, for converting a sample rate to a period."""
@@ -154,3 +153,34 @@ UNIT_TO_UV: Final = {
     "uv": 1.0,
 }
 """Conversion factors from a volts-family unit name to microvolts."""
+
+
+def max_levels_for(decimation_factor: int) -> int:
+    """Return the most levels a channel can hold at a decimation factor.
+
+    Raw is not a level. The bin width of level k is decimation_factor to the
+    power k, and a bin count is stored as uint32, so the width of the last
+    level is at most 2**32 - 1.
+
+    Args:
+        decimation_factor: The ratio of the bin widths of consecutive levels,
+            at least MIN_DECIMATION_FACTOR.
+
+    Returns:
+        The largest level number whose bin width fits.
+
+    Raises:
+        ValueError: decimation_factor is below MIN_DECIMATION_FACTOR.
+    """
+    if decimation_factor < MIN_DECIMATION_FACTOR:
+        raise ValueError(
+            f"decimation_factor must be {MIN_DECIMATION_FACTOR} or more, "
+            f"got {decimation_factor}"
+        )
+    limit = 2**32 - 1
+    levels = 0
+    width = decimation_factor
+    while width <= limit:
+        levels += 1
+        width *= decimation_factor
+    return levels

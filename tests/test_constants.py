@@ -6,7 +6,7 @@ from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
     COUNT_LADDER_BASE_US,
-    DECIMATION_FACTOR,
+    DEFAULT_DECIMATION_FACTOR,
     DURATIONS_KEY,
     EVENT_DIMENSION,
     EVENT_LEVEL_THRESHOLD,
@@ -20,8 +20,8 @@ from timeseries_zarr.constants import (
     LEVEL_PERIOD_TOLERANCE,
     MAJOR_VERSION,
     MAX_LABELS,
-    MAX_LEVELS,
     MEAN_KEY,
+    MIN_DECIMATION_FACTOR,
     MINMAX_KEY,
     RASTER_BUDGET,
     RAW_KEY,
@@ -85,10 +85,9 @@ def test_level_period_tolerance_is_one_part_in_a_billion():
     assert LEVEL_PERIOD_TOLERANCE == 1e-9
 
 
-def test_max_levels_is_the_last_level_whose_bin_count_fits_uint32():
-    limit = np.iinfo(np.uint32).max
-    assert limit >= DECIMATION_FACTOR**MAX_LEVELS
-    assert limit < DECIMATION_FACTOR ** (MAX_LEVELS + 1)
+def test_default_decimation_factor_is_4_and_the_minimum_is_2():
+    assert DEFAULT_DECIMATION_FACTOR == 4
+    assert MIN_DECIMATION_FACTOR == 2
 
 
 def test_max_labels_is_the_uint16_range():

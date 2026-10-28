@@ -1,22 +1,25 @@
 """Pyramid level planning: level counts, shapes, and time resolutions.
 
 Raw samples are not a level. Levels are numbered from 1, and level k folds
-4**k raw samples into each bin.
+decimation_factor**k raw samples into each bin.
 """
 
 from timeseries_zarr.constants import (
-    DECIMATION_FACTOR,
-    MAX_LEVELS,
+    DEFAULT_DECIMATION_FACTOR,
     MICROSECONDS_PER_SECOND,
+    max_levels_for,
 )
 from timeseries_zarr.types import LevelPlan
 
+MIN_SAMPLES_PER_BIN = 2
 
-def _require_level(level: int) -> None:
-    """Raise ValueError if level is below 1."""
-    if level < 1:
+
+def _require_samples_per_bin(samples_per_bin: int) -> None:
+    """Raise ValueError if samples_per_bin is below 2."""
+    if samples_per_bin < MIN_SAMPLES_PER_BIN:
         raise ValueError(
-            f"levels are numbered from 1 and raw is not a level, got {level}"
+            f"samples_per_bin must be {MIN_SAMPLES_PER_BIN} or more, "
+            f"got {samples_per_bin}"
         )
 
 
@@ -27,7 +30,11 @@ def _require_rate(rate_hz: float) -> None:
 
 
 def level_count(
-    num_samples: int, max_levels: int = MAX_LEVELS, min_bins: int = 1024
+    num_samples: int,
+    max_levels: int | None = None,
+    min_bins: int = 1024,
+    *,
+    decimation_factor: int = DEFAULT_DECIMATION_FACTOR,
 ) -> int:
     """Return the number of levels for a channel of num_samples samples.
 
@@ -39,38 +46,45 @@ def level_count(
 
     Args:
         num_samples: Raw samples in the channel.
-        max_levels: Most levels to return.
+        max_levels: Most levels to return. None means the most that
+            max_levels_for allows at decimation_factor.
         min_bins: Fewest complete bins a level must hold.
+        decimation_factor: The ratio of the bin widths of consecutive levels.
 
     Returns:
         The number of levels.
+
+    Raises:
+        ValueError: decimation_factor is below MIN_DECIMATION_FACTOR.
     """
+    cap = max_levels_for(decimation_factor)
+    if max_levels is None:
+        max_levels = cap
     count = 0
     for level in range(1, max_levels + 1):
-        if num_samples // DECIMATION_FACTOR**level < min_bins:
+        if num_samples // decimation_factor**level < min_bins:
             break
         count += 1
     return count
 
 
-def level_bins(num_samples: int, level: int) -> int:
-    """Return the number of bins at a level for num_samples raw samples.
+def level_bins(num_samples: int, samples_per_bin: int) -> int:
+    """Return the number of bins of a level for num_samples raw samples.
 
-    Level k has one bin per disjoint block of 4**k raw samples, and a partial
-    final block becomes one bin.
+    A level has one bin per disjoint block of samples_per_bin raw samples, and
+    a partial final block becomes one bin.
 
     Args:
         num_samples: Raw samples in the channel.
-        level: Level number, from 1.
+        samples_per_bin: Raw samples in one bin of the level.
 
     Returns:
         The number of bins.
 
     Raises:
-        ValueError: level is below 1.
+        ValueError: samples_per_bin is below 2.
     """
-    _require_level(level)
-    samples_per_bin: int = DECIMATION_FACTOR**level
+    _require_samples_per_bin(samples_per_bin)
     return -(-num_samples // samples_per_bin)
 
 
@@ -87,22 +101,18 @@ def sample_period_us(rate_hz: float) -> float:
     return MICROSECONDS_PER_SECOND / rate_hz
 
 
-def level_period_us(rate_hz: float, level: int) -> float:
-    """Return the microseconds that one bin spans at the given level.
-
-    Each level spans 4x more time than the one below, and level 1 spans 4 raw
-    samples.
+def level_period_us(rate_hz: float, samples_per_bin: int) -> float:
+    """Return the microseconds that one bin of a level spans.
 
     Args:
         rate_hz: Sample rate in hertz.
-        level: Level number, from 1.
+        samples_per_bin: Raw samples in one bin of the level.
 
     Raises:
-        ValueError: rate_hz is not positive or level is below 1.
+        ValueError: rate_hz is not positive or samples_per_bin is below 2.
     """
     _require_rate(rate_hz)
-    _require_level(level)
-    samples_per_bin: int = DECIMATION_FACTOR**level
+    _require_samples_per_bin(samples_per_bin)
     return samples_per_bin * MICROSECONDS_PER_SECOND / rate_hz
 
 
@@ -114,30 +124,39 @@ def raw_shape(num_samples: int) -> tuple[int, ...]:
 def plan_levels(
     num_samples: int,
     rate_hz: float,
-    max_levels: int = MAX_LEVELS,
+    max_levels: int | None = None,
     min_bins: int = 1024,
+    *,
+    decimation_factor: int = DEFAULT_DECIMATION_FACTOR,
 ) -> list[LevelPlan]:
     """Return the pyramid plan for a channel: one LevelPlan per level.
 
     Args:
         num_samples: Raw samples in the channel.
         rate_hz: Sample rate in hertz.
-        max_levels: Most levels to plan.
+        max_levels: Most levels to plan. None means the most that
+            max_levels_for allows at decimation_factor.
         min_bins: Fewest complete bins a level must hold.
+        decimation_factor: The ratio of the bin widths of consecutive levels.
+            Level k folds decimation_factor**k raw samples into each bin.
 
     Returns:
         The plans numbered from 1. An empty list means the channel carries raw
         samples and no levels.
 
     Raises:
-        ValueError: rate_hz is not positive, even when no level fits.
+        ValueError: rate_hz is not positive, even when no level fits, or
+            decimation_factor is below MIN_DECIMATION_FACTOR.
     """
     _require_rate(rate_hz)
+    count = level_count(
+        num_samples, max_levels, min_bins, decimation_factor=decimation_factor
+    )
     return [
         LevelPlan(
             level=k,
-            bins=level_bins(num_samples, k),
-            period_us=level_period_us(rate_hz, k),
+            bins=level_bins(num_samples, decimation_factor**k),
+            period_us=level_period_us(rate_hz, decimation_factor**k),
         )
-        for k in range(1, level_count(num_samples, max_levels, min_bins) + 1)
+        for k in range(1, count + 1)
     ]

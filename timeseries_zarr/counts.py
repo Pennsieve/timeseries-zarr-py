@@ -9,10 +9,10 @@ import numpy.typing as npt
 from timeseries_zarr.constants import (
     CANVAS_PIXELS,
     COUNT_LADDER_BASE_US,
-    DECIMATION_FACTOR,
+    DEFAULT_DECIMATION_FACTOR,
     EVENT_LEVEL_THRESHOLD,
-    MAX_LEVELS,
     RASTER_BUDGET,
+    max_levels_for,
 )
 from timeseries_zarr.types import LevelPlan
 
@@ -51,8 +51,8 @@ def level1_period_us(n_events: int, span_us: int) -> int:
         raise ValueError(f"span_us must be at least 0, got {span_us}")
     width_us = RASTER_BUDGET * span_us // (n_events * CANVAS_PIXELS)
     period = COUNT_LADDER_BASE_US
-    while period * DECIMATION_FACTOR <= width_us:
-        period *= DECIMATION_FACTOR
+    while period * DEFAULT_DECIMATION_FACTOR <= width_us:
+        period *= DEFAULT_DECIMATION_FACTOR
     return period
 
 
@@ -106,7 +106,7 @@ def plan_count_levels(
     n_events: int,
     first_event_us: int,
     last_event_us: int,
-    max_levels: int = MAX_LEVELS,
+    max_levels: int = max_levels_for(DEFAULT_DECIMATION_FACTOR),
     min_bins: int = 1024,
 ) -> list[LevelPlan]:
     """Return the count levels of an event channel, one LevelPlan per level.
@@ -159,7 +159,7 @@ def plan_count_levels(
                 offset_us=bin_offset_us(first_event_us, period),
             )
         )
-        period *= DECIMATION_FACTOR
+        period *= DEFAULT_DECIMATION_FACTOR
     return plans
 
 
@@ -310,12 +310,14 @@ def fold_count_block(
         raise ValueError(
             f"counts have shape (rows, columns), got {counts.shape}"
         )
-    n_full, tail_len = divmod(counts.shape[0], DECIMATION_FACTOR)
-    split = n_full * DECIMATION_FACTOR
+    n_full, tail_len = divmod(counts.shape[0], DEFAULT_DECIMATION_FACTOR)
+    split = n_full * DEFAULT_DECIMATION_FACTOR
     columns = counts.shape[1]
     out = np.empty((n_full + (1 if tail_len else 0), columns), dtype=np.uint32)
     if n_full:
-        grouped = counts[:split].reshape(n_full, DECIMATION_FACTOR, columns)
+        grouped = counts[:split].reshape(
+            n_full, DEFAULT_DECIMATION_FACTOR, columns
+        )
         out[:n_full] = grouped.sum(axis=1, dtype=np.uint32)
     if tail_len:
         out[n_full] = counts[split:].sum(axis=0, dtype=np.uint32)

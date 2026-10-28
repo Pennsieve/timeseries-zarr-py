@@ -23,7 +23,7 @@ from timeseries_zarr.columns import decode_channels_rows, decode_event_text
 from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
-    DECIMATION_FACTOR,
+    DEFAULT_DECIMATION_FACTOR,
     DURATIONS_KEY,
     EVENT_DIMENSION,
     EVENTS_KEY,
@@ -942,7 +942,7 @@ def _parse_count_levels(
             or a level lacks period_us or count. Also raised when offset_us
             is not a multiple of period_us, count is not a rank-2 integer
             array, the levels disagree on the number of labels, or a
-            period_us is not DECIMATION_FACTOR times the one before it.
+            period_us is not DEFAULT_DECIMATION_FACTOR times the one before it.
     """
     check_level_arrays(where, "count level", COUNT_KEY, arrays)
     numbers = check_level_numbers(where, "count levels", groups)
@@ -974,14 +974,14 @@ def _check_period(where: str, period_us: float, previous: CountLevel) -> None:
     """Check that period_us follows the count level previous.
 
     Raises:
-        ValueError: period_us is not DECIMATION_FACTOR times the period_us of
+        ValueError: period_us is not DEFAULT_DECIMATION_FACTOR times the period_us of
             previous.
     """
-    expected = DECIMATION_FACTOR * previous.period_us
+    expected = DEFAULT_DECIMATION_FACTOR * previous.period_us
     if not math.isclose(period_us, expected, rel_tol=LEVEL_PERIOD_TOLERANCE):
         raise ValueError(
             f"{where}: {TSZ_KEY}.period_us must be {expected!r}, "
-            f"{DECIMATION_FACTOR} times that of count level "
+            f"{DEFAULT_DECIMATION_FACTOR} times that of count level "
             f"{previous.number}, got {period_us!r}"
         )
 
@@ -1036,7 +1036,7 @@ def parse_event_channel(
             wrong rank, dtype kind, or number of rows. Also raised when count
             level numbers have a gap, count levels disagree on the number of
             labels, a count level is stored as an array, or a period_us is
-            not DECIMATION_FACTOR times the one before it. The message names
+            not DEFAULT_DECIMATION_FACTOR times the one before it. The message names
             the channel, and the array or count level at fault.
     """
     where = f"channel {key}"

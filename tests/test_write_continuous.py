@@ -336,14 +336,14 @@ def test_write_continuous_channel_writes_every_planned_level(
         parent, 0, continuous_source(samples), reference_us=0, opts=opts
     )
     group = open_group(tmp_path / "bundle")["0"]
-    plans = plan_levels(1000, 32000.0, opts.max_levels, opts.min_bins)
+    plans = plan_levels(1000, 32000.0, opts.level_cap, opts.min_bins)
     assert len(plans) >= 2
     assert sorted(group.group_keys()) == sorted(str(p.level) for p in plans)
     for plan in plans:
         want = _direct(samples, 4**plan.level)
         level = group[str(plan.level)]
         assert dict(level.attrs) == {
-            "tsz": {"period_us": level_period_us(32000.0, plan.level)}
+            "tsz": {"period_us": level_period_us(32000.0, 4**plan.level)}
         }
         assert np.array_equal(
             level[MINMAX_KEY][:], want[:, :2].astype(np.float32), equal_nan=True
@@ -524,7 +524,7 @@ def test_write_continuous_channel_holds_raw_and_level_groups_from_one(
 ):
     samples = _series(1000)
     group = _write(tmp_path, continuous_source(samples), opts)
-    levels = plan_levels(1000, 32000.0, opts.max_levels, opts.min_bins)
+    levels = plan_levels(1000, 32000.0, opts.level_cap, opts.min_bins)
     assert list(group.array_keys()) == [RAW_KEY]
     assert sorted(group.group_keys()) == sorted(str(p.level) for p in levels)
     assert "0" not in list(group.group_keys()) + list(group.array_keys())
@@ -542,10 +542,10 @@ def test_write_continuous_channel_level_groups_carry_period_and_bins(
     tmp_path, continuous_source, opts
 ):
     group = _write(tmp_path, continuous_source(_series(1000)), opts)
-    for plan in plan_levels(1000, 32000.0, opts.max_levels, opts.min_bins):
+    for plan in plan_levels(1000, 32000.0, opts.level_cap, opts.min_bins):
         level = group[str(plan.level)]
         assert dict(level.attrs) == {
-            "tsz": {"period_us": level_period_us(32000.0, plan.level)}
+            "tsz": {"period_us": level_period_us(32000.0, 4**plan.level)}
         }
         assert level[MINMAX_KEY].shape == (plan.bins, 2)
         assert level[MEAN_KEY].shape == (plan.bins,)
@@ -557,9 +557,7 @@ def test_write_continuous_channel_members_equal_the_direct_definition_over_six_l
 ):
     samples = _series(8199)
     group = _write(tmp_path, continuous_source(samples), wide_opts)
-    levels = plan_levels(
-        8199, 32000.0, wide_opts.max_levels, wide_opts.min_bins
-    )
+    levels = plan_levels(8199, 32000.0, wide_opts.level_cap, wide_opts.min_bins)
     assert len(levels) == 6
     for plan in levels:
         want = _direct(samples, 4**plan.level)
@@ -816,7 +814,7 @@ def _assert_levels_equal_the_definition(
     group: Any, samples: np.ndarray, rate_hz: float, opts: WriteOpts
 ) -> None:
     plans = plan_levels(
-        samples.shape[0], rate_hz, opts.max_levels, opts.min_bins
+        samples.shape[0], rate_hz, opts.level_cap, opts.min_bins
     )
     assert plans
     assert sorted(group.group_keys()) == sorted(str(p.level) for p in plans)
@@ -824,7 +822,7 @@ def _assert_levels_equal_the_definition(
         want = _direct(samples, 4**plan.level)
         level = group[str(plan.level)]
         assert dict(level.attrs) == {
-            "tsz": {"period_us": level_period_us(rate_hz, plan.level)}
+            "tsz": {"period_us": level_period_us(rate_hz, 4**plan.level)}
         }
         assert np.array_equal(
             level[MINMAX_KEY][:], want[:, :2].astype(np.float32), equal_nan=True
@@ -981,7 +979,7 @@ def test_write_continuous_channels_accepts_channels_of_different_lengths_and_rat
     for index, (each, rate) in enumerate(zip(samples, rates)):
         group = root[str(index)]
         plans = plan_levels(
-            each.shape[0], rate, _OPTS.max_levels, _OPTS.min_bins
+            each.shape[0], rate, _OPTS.level_cap, _OPTS.min_bins
         )
         assert group.attrs["tsz"]["rate_hz"] == rate
         assert np.array_equal(group[RAW_KEY][:], each, equal_nan=True)
@@ -1267,7 +1265,7 @@ def test_write_continuous_channels_creates_every_node_in_one_call(
         continuous_source(each, id=f"c{i}") for i, each in enumerate(samples)
     ]
     _write_many(tmp_path, multi_channel_source(channels), _OPTS, first_key=5)
-    levels = len(plan_levels(1000, 32000.0, _OPTS.max_levels, _OPTS.min_bins))
+    levels = len(plan_levels(1000, 32000.0, _OPTS.level_cap, _OPTS.min_bins))
     assert levels >= 2
     members = [COUNT_KEY, MEAN_KEY, MINMAX_KEY]
     assert calls == [
@@ -1335,7 +1333,7 @@ def test_a_written_bundle_equals_the_definition_over_six_levels(
     root = open_group(tmp_path / "bundle")
     for index, each in enumerate(samples):
         group = root[str(index)]
-        plans = plan_levels(each.shape[0], 32000.0, opts.max_levels, 2)
+        plans = plan_levels(each.shape[0], 32000.0, opts.level_cap, 2)
         assert len(plans) == 6
         assert np.array_equal(group[RAW_KEY][:], each, equal_nan=True)
         for plan in plans:

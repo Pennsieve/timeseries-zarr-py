@@ -6,9 +6,11 @@ from datetime import datetime
 from typing import Literal
 
 from timeseries_zarr.constants import (
+    DEFAULT_DECIMATION_FACTOR,
     INNER_CHUNK_SAMPLES,
-    MAX_LEVELS,
+    MIN_DECIMATION_FACTOR,
     TARGET_SHARD_BYTES,
+    max_levels_for,
 )
 
 
@@ -46,8 +48,8 @@ class LevelPlan:
     Attributes:
         level: The level number, counted from 1.
         bins: The number of entries along the level's time axis.
-        period_us: The microseconds that one entry spans. It widens 4x with
-            each coarser level.
+        period_us: The microseconds that one entry spans. It is a whole
+            multiple of the period of the level below, at least 2 times it.
         offset_us: The time of entry 0 from the reference time. It is 0 for a
             level of a continuous channel, whose entries count from the
             channel's own offset, and a multiple of period_us for a count
@@ -149,8 +151,13 @@ class WriteOpts:
 
     Attributes:
         zstd_level: The Zstandard compression level.
-        max_levels: The most levels to write, 0 through MAX_LEVELS. A value of
-            0 writes the raw samples and event arrays with no levels.
+        decimation_factor: The ratio of the bin widths of consecutive levels,
+            at least MIN_DECIMATION_FACTOR. Every level the writer produces
+            uses the same ratio.
+        max_levels: The most levels to write, 0 through the level_cap for
+            decimation_factor. A value of 0 writes the raw samples and event
+            arrays with no levels. None writes as many levels as level_cap
+            allows.
         min_bins: The fewest bins a level may hold, at least 1.
         inner_len: The inner chunk length in rows, at least 1.
         target_shard_bytes: The target size of an outer shard in bytes, at
@@ -168,7 +175,8 @@ class WriteOpts:
     """
 
     zstd_level: int = 5
-    max_levels: int = MAX_LEVELS
+    decimation_factor: int = DEFAULT_DECIMATION_FACTOR
+    max_levels: int | None = None
     min_bins: int = 1024
     inner_len: int = INNER_CHUNK_SAMPLES
     target_shard_bytes: int = TARGET_SHARD_BYTES
@@ -181,16 +189,29 @@ class WriteOpts:
         """The threads to use: max_workers, or the available CPUs when None."""
         return self.max_workers or _available_cpus()
 
+    @property
+    def level_cap(self) -> int:
+        """The most levels to write: max_levels, or the most that fits."""
+        if self.max_levels is None:
+            return max_levels_for(self.decimation_factor)
+        return self.max_levels
+
     def __post_init__(self) -> None:
         """Raise ValueError on a setting outside its range."""
         if self.max_workers is not None and self.max_workers < 1:
             raise ValueError(
                 f"max_workers must be 1 or more, got {self.max_workers}"
             )
-        if not 0 <= self.max_levels <= MAX_LEVELS:
+        if self.decimation_factor < MIN_DECIMATION_FACTOR:
             raise ValueError(
-                f"max_levels must be 0 through {MAX_LEVELS}, "
-                f"got {self.max_levels}"
+                f"decimation_factor must be {MIN_DECIMATION_FACTOR} or more, "
+                f"got {self.decimation_factor}"
+            )
+        cap = max_levels_for(self.decimation_factor)
+        if self.max_levels is not None and not 0 <= self.max_levels <= cap:
+            raise ValueError(
+                f"max_levels must be 0 through {cap} at decimation_factor "
+                f"{self.decimation_factor}, got {self.max_levels}"
             )
         for name, value in (
             ("min_bins", self.min_bins),
@@ -199,7 +220,7 @@ class WriteOpts:
         ):
             if value < 1:
                 raise ValueError(f"{name} must be 1 or more, got {value}")
-        if self.write_var and self.max_levels == 0:
+        if self.write_var and self.level_cap == 0:
             raise ValueError(
                 "write_var adds var to every level and max_levels 0 writes no "
                 "level; set max_levels to 1 or more, or write_var to False"

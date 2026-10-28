@@ -4,7 +4,7 @@ import pytest
 from timeseries_zarr.constants import (
     COUNT_LADDER_BASE_US,
     EVENT_LEVEL_THRESHOLD,
-    MAX_LEVELS,
+    max_levels_for,
 )
 from timeseries_zarr.counts import (
     bin_offset_us,
@@ -234,7 +234,7 @@ def test_plan_count_levels_honors_min_bins():
 
 
 @pytest.mark.parametrize(
-    ("max_levels", "expected"), [(0, 0), (1, 1), (2, 2), (MAX_LEVELS, 5)]
+    ("max_levels", "expected"), [(0, 0), (1, 1), (2, 2), (max_levels_for(4), 5)]
 )
 def test_plan_count_levels_honors_max_levels(max_levels, expected):
     plans = plan_count_levels(10**6, 0, _DAY_US, max_levels=max_levels)
@@ -258,7 +258,9 @@ def test_plan_count_levels_follows_the_ladder_rules(
         assert plans[0].bins == count_bins(
             0, last_us, level1_period_us(n_events, last_us)
         )
-        assert -(-plans[-1].bins // 4) < min_bins or len(plans) == MAX_LEVELS
+        assert -(-plans[-1].bins // 4) < min_bins or len(
+            plans
+        ) == max_levels_for(4)
 
 
 def test_plan_count_levels_accepts_the_largest_uint32_event_count():

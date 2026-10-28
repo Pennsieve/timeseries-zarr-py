@@ -6,7 +6,7 @@ import pytest
 import zarr
 from zarr.storage import MemoryStore
 
-from timeseries_zarr.constants import DECIMATION_FACTOR
+from timeseries_zarr.constants import DEFAULT_DECIMATION_FACTOR
 from timeseries_zarr.planning import level_bins
 from timeseries_zarr.windows import (
     array_error,
@@ -72,8 +72,8 @@ def test_bin_period_is_exact_at_30_khz():
 
 
 def test_bin_period_scales_with_samples_per_bin():
-    assert bin_period(256.0, DECIMATION_FACTOR) == 15625
-    assert bin_period(512.0, DECIMATION_FACTOR**5) == 2_000_000
+    assert bin_period(256.0, DEFAULT_DECIMATION_FACTOR) == 15625
+    assert bin_period(512.0, DEFAULT_DECIMATION_FACTOR**5) == 2_000_000
 
 
 @pytest.mark.parametrize("rate_hz", [0.0, -512.0, math.nan, math.inf])
@@ -259,14 +259,14 @@ def test_index_range_accepts_numpy_integer_bounds():
 
 
 def test_index_range_excludes_a_bin_that_starts_at_end_us():
-    period = bin_period(512.0, DECIMATION_FACTOR**3)
+    period = bin_period(512.0, DEFAULT_DECIMATION_FACTOR**3)
     assert period == 125_000
     assert index_range(0, 125_000, 0, period, 10) == (0, 1)
     assert index_range(0, 125_001, 0, period, 10) == (0, 2)
 
 
 def test_index_range_excludes_a_bin_that_ends_at_start_us():
-    period = bin_period(512.0, DECIMATION_FACTOR**3)
+    period = bin_period(512.0, DEFAULT_DECIMATION_FACTOR**3)
     assert index_range(125_000, 250_000, 0, period, 10) == (1, 2)
     assert index_range(124_999, 250_000, 0, period, 10) == (0, 2)
 
@@ -304,8 +304,8 @@ def test_index_range_reads_the_last_128_samples_of_an_offset_channel():
 
 
 def test_index_range_reads_level_one_bins_of_an_offset_channel():
-    period = bin_period(256.0, DECIMATION_FACTOR)
-    length = level_bins(153_600, 1)
+    period = bin_period(256.0, DEFAULT_DECIMATION_FACTOR)
+    length = level_bins(153_600, DEFAULT_DECIMATION_FACTOR)
     assert index_range(0, 1_000_000, 500_000, period, length) == (0, 32)
     assert index_range(0, 500_000, 500_000, period, length) == (0, 0)
 
@@ -318,7 +318,7 @@ def test_index_range_reads_level_one_bins_of_an_offset_channel():
 def test_index_range_matches_a_brute_force_overlap_reference(
     rate_hz, offset_us, level
 ):
-    period = bin_period(rate_hz, DECIMATION_FACTOR**level)
+    period = bin_period(rate_hz, DEFAULT_DECIMATION_FACTOR**level)
     # Float division misplaces 30 kHz boundaries from entry 15 on.
     length = 32
     times = _boundary_times(offset_us, period, length)
@@ -437,8 +437,8 @@ def test_select_level_picks_levels_4_2_and_0_for_three_windows_of_a_1024_hz_chan
             start_us,
             end_us,
             0,
-            bin_period(rate_hz, DECIMATION_FACTOR**k),
-            level_bins(num_samples, k),
+            bin_period(rate_hz, DEFAULT_DECIMATION_FACTOR**k),
+            level_bins(num_samples, DEFAULT_DECIMATION_FACTOR**k),
         )
         for k in range(1, 6)
     }
@@ -448,20 +448,26 @@ def test_select_level_picks_levels_4_2_and_0_for_three_windows_of_a_1024_hz_chan
         start_us,
         end_us,
         0,
-        bin_period(rate_hz, DECIMATION_FACTOR**level),
-        level_bins(num_samples, level) if level else num_samples,
+        bin_period(rate_hz, DEFAULT_DECIMATION_FACTOR**level),
+        level_bins(num_samples, DEFAULT_DECIMATION_FACTOR**level)
+        if level
+        else num_samples,
     )
     assert (begin, stop - begin) == (first, count)
 
 
 def test_select_level_falls_back_to_raw_when_level_one_is_one_bin_short():
     period_by_level = {
-        k: bin_period(256.0, DECIMATION_FACTOR**k) for k in range(1, 6)
+        k: bin_period(256.0, DEFAULT_DECIMATION_FACTOR**k) for k in range(1, 6)
     }
     counts = {}
     for k, period in period_by_level.items():
         begin, stop = index_range(
-            0, 1_000_000, 500_000, period, level_bins(153_600, k)
+            0,
+            1_000_000,
+            500_000,
+            period,
+            level_bins(153_600, DEFAULT_DECIMATION_FACTOR**k),
         )
         counts[k] = stop - begin
     assert counts[1] == 32
@@ -549,7 +555,7 @@ def test_merge_spans_bridges_into_a_span_clamped_at_the_high_limit():
 
 
 def test_merge_spans_reports_the_spans_around_an_unpopulated_run():
-    period = bin_period(512.0, DECIMATION_FACTOR**5)
+    period = bin_period(512.0, DEFAULT_DECIMATION_FACTOR**5)
     spans = merge_spans(
         _level_five_populated(), 0, 0, period, 0, 600_000_000, 0
     )
@@ -557,7 +563,7 @@ def test_merge_spans_reports_the_spans_around_an_unpopulated_run():
 
 
 def test_merge_spans_bridges_a_4_s_gap_with_gap_us_of_4_s():
-    period = bin_period(512.0, DECIMATION_FACTOR**5)
+    period = bin_period(512.0, DEFAULT_DECIMATION_FACTOR**5)
     populated = _level_five_populated()
     assert merge_spans(populated, 0, 0, period, 0, 600_000_000, 4_000_000) == [
         (0, 600_000_000)
@@ -569,7 +575,7 @@ def test_merge_spans_bridges_a_4_s_gap_with_gap_us_of_4_s():
 
 
 def test_merge_spans_reports_level_one_spans_at_512_hz():
-    period = bin_period(512.0, DECIMATION_FACTOR)
+    period = bin_period(512.0, DEFAULT_DECIMATION_FACTOR)
     assert period == Fraction(15625, 2)
     populated = np.ones(76_800, dtype=bool)
     populated[15_360:15_936] = False

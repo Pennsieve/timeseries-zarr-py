@@ -21,7 +21,7 @@ from timeseries_zarr.columns import channels_rows, text_rows, text_width
 from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
-    DECIMATION_FACTOR,
+    DEFAULT_DECIMATION_FACTOR,
     DURATIONS_KEY,
     EVENT_DIMENSION,
     EVENTS_KEY,
@@ -396,7 +396,7 @@ def _level_statistics(samples, level):
     A NaN sample makes minmax, mean, var, and median of its bin NaN. count
     holds the number of finite samples in each bin.
     """
-    width = DECIMATION_FACTOR**level
+    width = DEFAULT_DECIMATION_FACTOR**level
     values = samples.astype(np.float64)
     minimum = _reduce_bins(values, width, np.min)
     maximum = _reduce_bins(values, width, np.max)
@@ -425,7 +425,9 @@ def _write_continuous(root, key, attrs, samples, levels):
         group = create_group_with_attrs(
             channel,
             str(level),
-            level_group_attrs(level_period_us(rate_hz, level)),
+            level_group_attrs(
+                level_period_us(rate_hz, DEFAULT_DECIMATION_FACTOR**level)
+            ),
         )
         for member in members:
             dimensions = (

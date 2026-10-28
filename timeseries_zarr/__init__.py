@@ -7,10 +7,11 @@ from timeseries_zarr.columns import (
     text_width,
 )
 from timeseries_zarr.constants import (
+    DEFAULT_DECIMATION_FACTOR,
     MAX_LABELS,
-    MAX_LEVELS,
     UNIT_TO_UV,
     WINDOW_BATCH_BYTES,
+    max_levels_for,
 )
 from timeseries_zarr.protocols import (
     ContinuousChannelMetadata,
@@ -50,8 +51,8 @@ except ImportError:
     __version__ = "0+unknown"
 
 __all__ = [
+    "DEFAULT_DECIMATION_FACTOR",
     "MAX_LABELS",
-    "MAX_LEVELS",
     "UNIT_TO_UV",
     "WINDOW_BATCH_BYTES",
     "BinMember",
@@ -82,6 +83,7 @@ __all__ = [
     "channel_writer_bytes",
     "decode_channels_rows",
     "decode_text_rows",
+    "max_levels_for",
     "open_bundle",
     "recording_meta",
     "text_width",

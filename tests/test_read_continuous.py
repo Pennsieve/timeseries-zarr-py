@@ -67,9 +67,9 @@ def _hand_nodes(num_samples=_HAND_SAMPLES, levels=2):
     """
     nodes = {RAW_KEY: np.arange(num_samples, dtype=np.float32)}
     for level in range(1, levels + 1):
-        bins = level_bins(num_samples, level)
+        bins = level_bins(num_samples, 4**level)
         nodes[str(level)] = level_group_attrs(
-            level_period_us(_HAND_RATE_HZ, level)
+            level_period_us(_HAND_RATE_HZ, 4**level)
         )
         nodes[f"{level}/{MINMAX_KEY}"] = np.zeros((bins, 2), np.float32)
     return nodes
@@ -126,7 +126,7 @@ def test_level_without_optional_members_holds_minmax_only(odd_bundle):
     level = _channel(odd_bundle, 0).levels[1]
     assert isinstance(level, Level)
     assert level.number == 1
-    assert level.period_us == level_period_us(ODD_RATE_HZ, 1)
+    assert level.period_us == level_period_us(ODD_RATE_HZ, 4)
     assert level.samples_per_bin == 4
     assert level.bins == 251
     assert level.minmax.shape == (251, 2)
@@ -290,7 +290,7 @@ def test_read_places_30_khz_samples_and_bins_on_the_exact_grid():
     )
     nodes = {
         RAW_KEY: np.zeros(300, np.float32),
-        "1": level_group_attrs(level_period_us(30_000.0, 1)),
+        "1": level_group_attrs(level_period_us(30_000.0, 4)),
         f"1/{MINMAX_KEY}": np.zeros((75, 2), np.float32),
     }
     channel = _hand_parse(nodes, attributes)
@@ -341,7 +341,7 @@ def test_level_read_returns_bins_from_the_minmax_columns(odd_bundle):
     first, stop = bins.first, bins.first + len(bins)
     assert isinstance(bins, Bins)
     assert (bins.level, bins.offset_us, first, stop) == (1, 0, 38, 128)
-    assert bins.period_us == level_period_us(ODD_RATE_HZ, 1)
+    assert bins.period_us == level_period_us(ODD_RATE_HZ, 4)
     minmax = np.asarray(direct[MINMAX_KEY][first:stop])
     np.testing.assert_array_equal(bins.min, minmax[:, 0])
     np.testing.assert_array_equal(bins.max, minmax[:, 1])
@@ -810,7 +810,7 @@ def test_parse_accepts_dtypes_of_the_right_kind_at_any_width():
 
 def test_parse_accepts_a_period_within_the_tolerance():
     nodes = _hand_nodes(levels=1)
-    stated = level_period_us(_HAND_RATE_HZ, 1) * (1 + 1e-12)
+    stated = level_period_us(_HAND_RATE_HZ, 4) * (1 + 1e-12)
     nodes["1"] = level_group_attrs(stated)
     assert _hand_parse(nodes).levels[1].period_us == stated
 
@@ -818,7 +818,7 @@ def test_parse_accepts_a_period_within_the_tolerance():
 def test_parse_rejects_a_period_outside_the_tolerance():
     nodes = _hand_nodes(levels=1)
     nodes["1"] = level_group_attrs(
-        level_period_us(_HAND_RATE_HZ, 1) * (1 + 1e-8)
+        level_period_us(_HAND_RATE_HZ, 4) * (1 + 1e-8)
     )
     with pytest.raises(
         ValueError, match=r"channel 0 level 1: tsz\.period_us must be"

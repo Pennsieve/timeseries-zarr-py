@@ -470,7 +470,7 @@ def _add_channel_nodes(
     """
     num_samples = channel.num_samples()
     plans = plan_levels(
-        num_samples, channel.rate_hz(), opts.max_levels, opts.min_bins
+        num_samples, channel.rate_hz(), opts.level_cap, opts.min_bins
     )
     nodes[str(key)] = _channel_group_metadata(
         channel, reference_us=reference_us, unit=resolved.unit

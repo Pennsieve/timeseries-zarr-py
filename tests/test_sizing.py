@@ -260,6 +260,20 @@ def test_channel_writer_bytes_grows_by_one_level_for_each_level(max_levels):
     )
 
 
+def test_channel_writer_bytes_counts_the_level_cap_of_the_factor():
+    per_level = channel_writer_bytes(
+        WriteOpts(max_levels=1)
+    ) - channel_writer_bytes(WriteOpts(max_levels=0))
+    none = channel_writer_bytes(WriteOpts(max_levels=0))
+    assert channel_writer_bytes(WriteOpts()) == none + 15 * per_level
+    assert channel_writer_bytes(WriteOpts(decimation_factor=2)) == (
+        none + 31 * per_level
+    )
+    assert channel_writer_bytes(WriteOpts(decimation_factor=10)) == (
+        none + 9 * per_level
+    )
+
+
 def test_channel_writer_bytes_scales_with_the_chunk_length():
     def estimate(inner_len):
         opts = WriteOpts(
