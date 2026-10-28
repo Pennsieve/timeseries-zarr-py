@@ -6,7 +6,7 @@ from typing import Any, Protocol
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.constants import DECIMATION_FACTOR
+from timeseries_zarr.constants import DEFAULT_DECIMATION_FACTOR
 from timeseries_zarr.protocols import ContinuousChannelSource
 
 
@@ -29,7 +29,7 @@ class BlockReadableArray(Protocol):
 def _rebuffer_and_fold[TIn: np.generic, TOut: np.generic](
     blocks: Iterable[npt.NDArray[TIn]],
     fold_fn: Callable[[npt.NDArray[TIn]], npt.NDArray[TOut]],
-    group: int = DECIMATION_FACTOR,
+    group: int = DEFAULT_DECIMATION_FACTOR,
 ) -> Iterator[npt.NDArray[TOut]]:
     """Fold a stream of blocks into the next coarser level.
 

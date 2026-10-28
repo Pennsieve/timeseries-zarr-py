@@ -18,7 +18,7 @@ import numpy.typing as npt
 from timeseries_zarr.attrs import parse_continuous_attrs, parse_level_attrs
 from timeseries_zarr.constants import (
     COUNT_KEY,
-    DECIMATION_FACTOR,
+    DEFAULT_DECIMATION_FACTOR,
     ENVELOPE_PAIR_SIZE,
     LEVEL_PERIOD_TOLERANCE,
     MEAN_KEY,
@@ -363,7 +363,7 @@ class ContinuousChannel:
             level=number,
             offset_us=self.offset_us,
             first=first,
-            period_us=level_period_us(self.rate_hz, number),
+            period_us=level_period_us(self.rate_hz, chosen.samples_per_bin),
             min=minmax[:, 0],
             max=minmax[:, 1],
             mean=_read_member(chosen.mean, MEAN_KEY, selected, first, stop),
@@ -602,7 +602,9 @@ def read_entries(
             f"channel {channel.key} level {number} has members "
             f"{tuple(held)!r}; name must be one of these, got {name!r}"
         )
-    period_us = level_period_us(channel.rate_hz, number)
+    period_us = level_period_us(
+        channel.rate_hz, channel.levels[number].samples_per_bin
+    )
     return first, period_us, read_rows(array, first, stop)
 
 
@@ -683,13 +685,14 @@ def _parse_level(
     """
     where = f"channel {key} level {number}"
     period_us = parse_level_attrs(group.attrs, where)
-    expected = level_period_us(rate_hz, number)
+    samples_per_bin = DEFAULT_DECIMATION_FACTOR**number
+    expected = level_period_us(rate_hz, samples_per_bin)
     if not math.isclose(period_us, expected, rel_tol=LEVEL_PERIOD_TOLERANCE):
         raise ValueError(
             f"{where}: {TSZ_KEY}.period_us must be {expected!r} to match "
             f"rate_hz {rate_hz!r}, got {period_us!r}"
         )
-    bins = level_bins(num_samples, number)
+    bins = level_bins(num_samples, samples_per_bin)
     envelope = (bins, ENVELOPE_PAIR_SIZE)
     column = (bins,)
     minmax = _parse_member(where, arrays, number, MINMAX_KEY, envelope)
@@ -703,7 +706,7 @@ def _parse_level(
     return Level(
         number=number,
         period_us=period_us,
-        samples_per_bin=DECIMATION_FACTOR**number,
+        samples_per_bin=samples_per_bin,
         minmax=minmax,
         mean=_parse_member(where, arrays, number, MEAN_KEY, column),
         var=_parse_member(where, arrays, number, VAR_KEY, column),

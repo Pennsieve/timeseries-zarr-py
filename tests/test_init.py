@@ -7,7 +7,7 @@ import timeseries_zarr
 
 PUBLIC_NAMES = {
     "MAX_LABELS",
-    "MAX_LEVELS",
+    "DEFAULT_DECIMATION_FACTOR",
     "UNIT_TO_UV",
     "WINDOW_BATCH_BYTES",
     "BinMember",
@@ -38,6 +38,7 @@ PUBLIC_NAMES = {
     "channel_writer_bytes",
     "decode_channels_rows",
     "decode_text_rows",
+    "max_levels_for",
     "open_bundle",
     "recording_meta",
     "text_width",

@@ -21,7 +21,7 @@ from timeseries_zarr.columns import channels_rows, channels_width, text_rows
 from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
-    DECIMATION_FACTOR,
+    DEFAULT_DECIMATION_FACTOR,
     DURATIONS_KEY,
     EVENT_DIMENSION,
     EVENTS_KEY,
@@ -553,7 +553,7 @@ def write_count_levels(
     first_event_us = int(source.read_events(0, 1)[0]) - reference_us
     last_event_us = int(source.read_events(total - 1, total)[0]) - reference_us
     plans = plan_count_levels(
-        total, first_event_us, last_event_us, opts.max_levels, opts.min_bins
+        total, first_event_us, last_event_us, opts.level_cap, opts.min_bins
     )
     if not plans:
         return
@@ -600,7 +600,7 @@ def write_count_levels(
             )
             blocks: Iterable[npt.NDArray[np.uint32]] = iter_array_blocks(
                 cast("BlockReadableArray", below),
-                DECIMATION_FACTOR * shard_rows,
+                DEFAULT_DECIMATION_FACTOR * shard_rows,
             )
             if shift:
                 blocks = chain(

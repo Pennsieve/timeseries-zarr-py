@@ -6,8 +6,8 @@ from typing import get_args
 import pytest
 
 from timeseries_zarr.constants import (
+    DEFAULT_DECIMATION_FACTOR,
     INNER_CHUNK_SAMPLES,
-    MAX_LEVELS,
     TARGET_SHARD_BYTES,
 )
 from timeseries_zarr.types import (
@@ -136,7 +136,9 @@ def test_eventcolumn_literal_values():
 def test_writeopts_defaults():
     opts = WriteOpts()
     assert opts.zstd_level == 5
-    assert opts.max_levels == MAX_LEVELS
+    assert opts.decimation_factor == DEFAULT_DECIMATION_FACTOR
+    assert opts.max_levels is None
+    assert opts.level_cap == 15
     assert opts.min_bins == 1024
     assert opts.inner_len == INNER_CHUNK_SAMPLES
     assert opts.target_shard_bytes == TARGET_SHARD_BYTES
@@ -200,15 +202,50 @@ def test_writeopts_frozen_rejects_mutation():
         opts.zstd_level = 1
 
 
-@pytest.mark.parametrize("max_levels", [0, 1, MAX_LEVELS])
-def test_writeopts_accepts_max_levels_from_0_through_max_levels(max_levels):
-    assert WriteOpts(max_levels=max_levels).max_levels == max_levels
+@pytest.mark.parametrize("max_levels", [0, 1, 15])
+def test_writeopts_accepts_max_levels_from_0_through_the_cap(max_levels):
+    opts = WriteOpts(max_levels=max_levels)
+    assert opts.max_levels == max_levels
+    assert opts.level_cap == max_levels
 
 
-@pytest.mark.parametrize("max_levels", [-1, MAX_LEVELS + 1])
+@pytest.mark.parametrize("max_levels", [-1, 16])
 def test_writeopts_rejects_max_levels_outside_its_range(max_levels):
-    with pytest.raises(ValueError, match=f"0 through {MAX_LEVELS}"):
+    with pytest.raises(ValueError, match="0 through 15 at decimation_factor 4"):
         WriteOpts(max_levels=max_levels)
+
+
+@pytest.mark.parametrize("decimation_factor", [2, 10])
+def test_writeopts_accepts_a_decimation_factor_of_2_or_more(decimation_factor):
+    opts = WriteOpts(decimation_factor=decimation_factor)
+    assert opts.decimation_factor == decimation_factor
+
+
+@pytest.mark.parametrize("decimation_factor", [1, 0, -4])
+def test_writeopts_rejects_a_decimation_factor_below_2(decimation_factor):
+    with pytest.raises(ValueError, match="decimation_factor must be 2 or more"):
+        WriteOpts(decimation_factor=decimation_factor)
+
+
+@pytest.mark.parametrize(
+    ("decimation_factor", "cap"), [(2, 31), (3, 20), (4, 15), (10, 9)]
+)
+def test_writeopts_level_cap_follows_the_decimation_factor(
+    decimation_factor, cap
+):
+    opts = WriteOpts(decimation_factor=decimation_factor)
+    assert opts.max_levels is None
+    assert opts.level_cap == cap
+
+
+@pytest.mark.parametrize(("decimation_factor", "cap"), [(2, 31), (10, 9)])
+def test_writeopts_checks_max_levels_against_the_cap_of_the_factor(
+    decimation_factor, cap
+):
+    opts = WriteOpts(decimation_factor=decimation_factor, max_levels=cap)
+    assert opts.level_cap == cap
+    with pytest.raises(ValueError, match=f"0 through {cap} at decimation"):
+        WriteOpts(decimation_factor=decimation_factor, max_levels=cap + 1)
 
 
 def test_writeopts_rejects_write_var_with_no_levels():

@@ -17,11 +17,14 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.constants import DECIMATION_FACTOR, ENVELOPE_PAIR_SIZE
+from timeseries_zarr.constants import (
+    DEFAULT_DECIMATION_FACTOR,
+    ENVELOPE_PAIR_SIZE,
+)
 
 
 def _block_split(
-    length: int, block: int = DECIMATION_FACTOR
+    length: int, block: int = DEFAULT_DECIMATION_FACTOR
 ) -> tuple[int, int]:
     """Return (n_full, tail_len) for splitting length items into blocks.
 
@@ -109,7 +112,7 @@ class Statistics:
             float32 of shape (rows, 2) with the minimum in column 0 and the
             maximum in column 1. mean and var are float32 of shape (rows,),
             and var is None when with_var is false. count is uint32 of shape
-            (rows,) and exact, because a level within MAX_LEVELS never counts
+            (rows,) and exact, because a level within max_levels_for never counts
             2**32 samples.
         """
         minmax = np.empty((self.rows, ENVELOPE_PAIR_SIZE), dtype=np.float32)
@@ -207,7 +210,7 @@ def fold_raw(raw: npt.NDArray[np.float32]) -> Statistics:
     """
     if raw.ndim != 1:
         raise ValueError(f"raw samples are rank 1, got shape {raw.shape}")
-    block = DECIMATION_FACTOR
+    block = DEFAULT_DECIMATION_FACTOR
     n_full, tail_len = _block_split(raw.shape[0], block)
     split = n_full * block
     parts = []
@@ -296,7 +299,7 @@ def fold_statistics(statistics: Statistics) -> Statistics:
     Returns:
         The statistics of the coarser level.
     """
-    block = DECIMATION_FACTOR
+    block = DEFAULT_DECIMATION_FACTOR
     n_full, tail_len = _block_split(statistics.rows, block)
     parts = []
     if n_full or not tail_len:
@@ -473,17 +476,20 @@ class LevelFolder:
         start = 0
         if level.carry_raw is not None:
             take = min(
-                DECIMATION_FACTOR - level.carry_raw.shape[0], block.shape[0]
+                DEFAULT_DECIMATION_FACTOR - level.carry_raw.shape[0],
+                block.shape[0],
             )
             joined = np.concatenate([level.carry_raw, block[:take]])
             start = take
-            if joined.shape[0] < DECIMATION_FACTOR:
+            if joined.shape[0] < DEFAULT_DECIMATION_FACTOR:
                 level.carry_raw = joined
                 return
             level.carry_raw = None
             self._append(0, fold_raw(joined))
         whole = (
-            (block.shape[0] - start) // DECIMATION_FACTOR * DECIMATION_FACTOR
+            (block.shape[0] - start)
+            // DEFAULT_DECIMATION_FACTOR
+            * DEFAULT_DECIMATION_FACTOR
         )
         if whole:
             self._append(0, fold_raw(block[start : start + whole]))
@@ -496,15 +502,19 @@ class LevelFolder:
         start = 0
         carry = level.carry_statistics
         if carry is not None:
-            take = min(DECIMATION_FACTOR - carry.rows, rows.rows)
+            take = min(DEFAULT_DECIMATION_FACTOR - carry.rows, rows.rows)
             joined = _join([carry, _slice(rows, 0, take)])
             start = take
-            if joined.rows < DECIMATION_FACTOR:
+            if joined.rows < DEFAULT_DECIMATION_FACTOR:
                 level.carry_statistics = _copy(joined)
                 return
             level.carry_statistics = None
             self._append(index + 1, fold_statistics(joined))
-        whole = (rows.rows - start) // DECIMATION_FACTOR * DECIMATION_FACTOR
+        whole = (
+            (rows.rows - start)
+            // DEFAULT_DECIMATION_FACTOR
+            * DEFAULT_DECIMATION_FACTOR
+        )
         if whole:
             self._append(
                 index + 1, fold_statistics(_slice(rows, start, start + whole))
