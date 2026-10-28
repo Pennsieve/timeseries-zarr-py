@@ -1,3 +1,4 @@
+import dataclasses
 import json
 
 import numpy as np
@@ -744,6 +745,32 @@ def test_write_count_levels_equal_the_direct_count_at_every_level(
     for plan in plans:
         want = _direct_counts(times, labels, 3, plan)
         assert np.array_equal(group[str(plan.level)][COUNT_KEY][:], want)
+
+
+@pytest.mark.parametrize("factor", [2, 3, 10])
+def test_write_count_levels_at_another_factor_equal_the_direct_count_at_every_level(
+    tmp_path, event_source, factor
+):
+    times, labels, source = _dense(event_source)
+    opts = dataclasses.replace(_COUNT_OPTS, decimation_factor=factor)
+    group = _write_counts(tmp_path, source, opts=opts)
+    plans = plan_count_levels(
+        len(times),
+        int(times[0]),
+        int(times[-1]),
+        opts.level_cap,
+        opts.min_bins,
+        decimation_factor=factor,
+    )
+    assert len(plans) >= 2
+    assert sorted(group.group_keys(), key=int) == [str(p.level) for p in plans]
+    for below, above in zip(plans, plans[1:], strict=False):
+        assert above.period_us == factor * below.period_us
+    for plan in plans:
+        level = group[str(plan.level)]
+        assert level.attrs["tsz"]["period_us"] == plan.period_us
+        want = _direct_counts(times, labels, 3, plan)
+        assert np.array_equal(level[COUNT_KEY][:], want)
 
 
 def test_write_count_levels_groups_carry_the_period_and_one_count_array(

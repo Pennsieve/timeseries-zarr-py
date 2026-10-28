@@ -28,7 +28,7 @@ def bin_period(rate_hz: float, samples_per_bin: int) -> Fraction:
     Args:
         rate_hz: The sample rate in hertz.
         samples_per_bin: The samples in one entry. It is 1 for raw samples
-            and 4^k for level k.
+            and the samples per bin of a level.
 
     Raises:
         ValueError: If rate_hz is not positive and finite or samples_per_bin

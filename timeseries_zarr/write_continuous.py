@@ -331,6 +331,7 @@ class ChannelWriter:
         levels: Sequence[LevelMembers[ShardLayout]],
         factor: float,
         inner_len: int,
+        decimation_factor: int,
         executor: Executor | None = None,
     ) -> None:
         """Start a channel.
@@ -342,6 +343,8 @@ class ChannelWriter:
             levels: The layout of each level's members, in level order.
             factor: The multiplier applied to every sample.
             inner_len: The rows of one chunk of a level.
+            decimation_factor: The ratio of the bin widths of consecutive
+                levels.
             executor: Encodes the chunks of a large push in groups. A worker
                 of the executor may call push while another worker is idle.
                 Chunks encode in the calling thread when None.
@@ -358,6 +361,7 @@ class ChannelWriter:
                 len(levels),
                 inner_len,
                 bool(levels) and levels[0].var is not None,
+                decimation_factor,
             )
             if levels
             else None
@@ -470,7 +474,11 @@ def _add_channel_nodes(
     """
     num_samples = channel.num_samples()
     plans = plan_levels(
-        num_samples, channel.rate_hz(), opts.level_cap, opts.min_bins
+        num_samples,
+        channel.rate_hz(),
+        opts.level_cap,
+        opts.min_bins,
+        decimation_factor=opts.decimation_factor,
     )
     nodes[str(key)] = _channel_group_metadata(
         channel, reference_us=reference_us, unit=resolved.unit
@@ -523,6 +531,7 @@ def _channel_writer(
         levels,
         factor,
         opts.inner_len,
+        opts.decimation_factor,
         executor,
     )
 

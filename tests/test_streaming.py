@@ -20,12 +20,12 @@ STATISTIC_COLUMNS = 5
 
 def fold_raw_block(raw):
     """Fold raw samples to a (rows, STATISTIC_COLUMNS) block."""
-    return _stack(fold_raw(raw))
+    return _stack(fold_raw(raw, 4))
 
 
 def fold_statistics_block(block):
     """Fold a (rows, STATISTIC_COLUMNS) block one level coarser."""
-    return _stack(fold_statistics(Statistics(*(c.copy() for c in block.T))))
+    return _stack(fold_statistics(Statistics(*(c.copy() for c in block.T)), 4))
 
 
 def _stack(statistics):
@@ -61,7 +61,7 @@ def _random_sizes(rng, total):
 
 
 def _folded(blocks, fold_fn):
-    out = list(_rebuffer_and_fold(blocks, fold_fn))
+    out = list(_rebuffer_and_fold(blocks, fold_fn, group=4))
     return (
         np.concatenate(out, axis=0)
         if out
@@ -138,7 +138,7 @@ def test_rebuffer_and_fold_final_carry_is_group_minus_one():
 
 
 def test_rebuffer_and_fold_empty_stream_yields_nothing():
-    assert list(_rebuffer_and_fold([], fold_raw_block)) == []
+    assert list(_rebuffer_and_fold([], fold_raw_block, group=4)) == []
 
 
 def test_rebuffer_and_fold_single_short_block():
@@ -242,9 +242,9 @@ def _cut(length, size):
 def test_two_streamed_folds_equal_the_whole_fold_bit_for_bit(size):
     raw = _gappy(997)
     level1 = _rebuffer_and_fold(
-        _split(raw, _cut(len(raw), size)), fold_raw_block
+        _split(raw, _cut(len(raw), size)), fold_raw_block, group=4
     )
-    level2 = list(_rebuffer_and_fold(level1, fold_statistics_block))
+    level2 = list(_rebuffer_and_fold(level1, fold_statistics_block, group=4))
     want = fold_statistics_block(fold_raw_block(raw))
     assert np.array_equal(np.concatenate(level2, axis=0), want, equal_nan=True)
 

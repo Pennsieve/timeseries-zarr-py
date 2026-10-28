@@ -1303,6 +1303,26 @@ def test_write_bundle_with_a_channel_too_short_for_a_level_still_conforms(
     assert sorted(p for p in nodes if p.startswith("0/")) == ["0/raw"]
 
 
+@pytest.mark.parametrize("factor", [2, 10])
+def test_write_bundle_writes_the_levels_of_the_decimation_factor(
+    tmp_path, continuous_source, factor
+):
+    samples = _signal(6000, 5)
+    cont = continuous_source(samples, id="c0", name="c0", rate_hz=512.0)
+    output = tmp_path / "bundle"
+    opts = dataclasses.replace(_SPEC_OPTS, decimation_factor=factor, min_bins=4)
+    write_bundle([cont], [], output_path=output, opts=opts)
+    group = open_group(output)["0"]
+    levels = sorted(group.group_keys(), key=int)
+    assert len(levels) >= 2
+    for name in levels:
+        width = factor ** int(name)
+        level = group[name]
+        assert level.attrs["tsz"]["period_us"] == width * 1e6 / 512.0
+        assert level["count"].shape == (-(-6000 // width),)
+        assert int(level["count"][:].sum()) == 6000 - 40
+
+
 def test_write_bundle_with_max_levels_0_writes_no_level_and_conforms(
     tmp_path, continuous_source, event_source
 ):

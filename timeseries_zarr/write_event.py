@@ -6,6 +6,7 @@ writes nothing.
 """
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
+from functools import partial
 from itertools import chain
 from typing import Final, cast
 
@@ -21,7 +22,6 @@ from timeseries_zarr.columns import channels_rows, channels_width, text_rows
 from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
-    DEFAULT_DECIMATION_FACTOR,
     DURATIONS_KEY,
     EVENT_DIMENSION,
     EVENTS_KEY,
@@ -531,8 +531,8 @@ def write_count_levels(
     offset_us, with one uint32 array "count" shaped (bins, L). L is the label
     count, or 1 without labels, and the bin axis is named "time". Level 1 is
     counted from the source's event times and labels, streamed in blocks of
-    events; every level above it sums 4 rows of the stored level below, one
-    shard at a time, after the rows that precede its bin 0 are padded with
+    events; every level above it sums decimation_factor rows of the stored level
+    below, one shard at a time, after the rows that precede its bin 0 are padded with
     zeros so the two grids align. Channels with too few events, or whose
     level 1 would hold fewer than opts.min_bins bins, get no levels and
     nothing is created. Every write covers a whole shard.
@@ -552,8 +552,14 @@ def write_count_levels(
         return
     first_event_us = int(source.read_events(0, 1)[0]) - reference_us
     last_event_us = int(source.read_events(total - 1, total)[0]) - reference_us
+    factor = opts.decimation_factor
     plans = plan_count_levels(
-        total, first_event_us, last_event_us, opts.level_cap, opts.min_bins
+        total,
+        first_event_us,
+        last_event_us,
+        opts.level_cap,
+        opts.min_bins,
+        decimation_factor=factor,
     )
     if not plans:
         return
@@ -600,14 +606,19 @@ def write_count_levels(
             )
             blocks: Iterable[npt.NDArray[np.uint32]] = iter_array_blocks(
                 cast("BlockReadableArray", below),
-                DEFAULT_DECIMATION_FACTOR * shard_rows,
+                factor * shard_rows,
             )
             if shift:
                 blocks = chain(
                     [np.zeros((shift, columns), dtype=np.uint32)], blocks
                 )
             counts = regroup(
-                _rebuffer_and_fold(blocks, fold_count_block), shard_rows
+                _rebuffer_and_fold(
+                    blocks,
+                    partial(fold_count_block, block=factor),
+                    group=factor,
+                ),
+                shard_rows,
             )
         _write_count_blocks(array, counts)
         previous = (array, plan)
