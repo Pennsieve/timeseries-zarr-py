@@ -11,6 +11,7 @@ from timeseries_zarr.constants import (
     COUNT_LADDER_BASE_US,
     DEFAULT_DECIMATION_FACTOR,
     EVENT_LEVEL_THRESHOLD,
+    MIN_DECIMATION_FACTOR,
     RASTER_BUDGET,
     max_levels_for,
 )
@@ -25,14 +26,27 @@ type EventBlock = tuple[npt.NDArray[np.int64], npt.NDArray[np.uint16] | None]
 The labels are None for a channel that has none."""
 
 
-def level1_period_us(n_events: int, span_us: int) -> int:
+def _check_factor(decimation_factor: int) -> None:
+    """Raise ValueError unless decimation_factor is at least the minimum."""
+    if decimation_factor < MIN_DECIMATION_FACTOR:
+        raise ValueError(
+            f"decimation_factor must be at least {MIN_DECIMATION_FACTOR}, "
+            f"got {decimation_factor}"
+        )
+
+
+def level1_period_us(
+    n_events: int,
+    span_us: int,
+    decimation_factor: int = DEFAULT_DECIMATION_FACTOR,
+) -> int:
     """Return the period in microseconds of an event channel's count level 1.
 
     The finest count level a reader needs is one canvas pixel wide at the
     widest window it still serves from the events themselves: a window holding
     RASTER_BUDGET events at the channel's mean rate, drawn across
     CANVAS_PIXELS pixels. The period is that width rounded down to the ladder
-    COUNT_LADDER_BASE_US times a power of 4, so every event channel in a
+    COUNT_LADDER_BASE_US times a power of decimation_factor, so every event channel in a
     bundle shares one set of bin grids. It is never finer than
     COUNT_LADDER_BASE_US, and a width exactly on a rung of the ladder keeps
     that rung. The arithmetic is exact in integers. Events all at one time
@@ -41,18 +55,22 @@ def level1_period_us(n_events: int, span_us: int) -> int:
     Args:
         n_events: The number of events in the channel.
         span_us: The time from the first event to the last.
+        decimation_factor: The ratio of the periods of consecutive levels, at
+            least MIN_DECIMATION_FACTOR.
 
     Raises:
-        ValueError: If n_events is below 1 or span_us is negative.
+        ValueError: If n_events is below 1, span_us is negative, or
+            decimation_factor is below MIN_DECIMATION_FACTOR.
     """
+    _check_factor(decimation_factor)
     if n_events < 1:
         raise ValueError(f"n_events must be at least 1, got {n_events}")
     if span_us < 0:
         raise ValueError(f"span_us must be at least 0, got {span_us}")
     width_us = RASTER_BUDGET * span_us // (n_events * CANVAS_PIXELS)
     period = COUNT_LADDER_BASE_US
-    while period * DEFAULT_DECIMATION_FACTOR <= width_us:
-        period *= DEFAULT_DECIMATION_FACTOR
+    while period * decimation_factor <= width_us:
+        period *= decimation_factor
     return period
 
 
@@ -106,14 +124,17 @@ def plan_count_levels(
     n_events: int,
     first_event_us: int,
     last_event_us: int,
-    max_levels: int = max_levels_for(DEFAULT_DECIMATION_FACTOR),
+    max_levels: int | None = None,
     min_bins: int = 1024,
+    *,
+    decimation_factor: int = DEFAULT_DECIMATION_FACTOR,
 ) -> list[LevelPlan]:
     """Return the count levels of an event channel, one LevelPlan per level.
 
     A channel with at most EVENT_LEVEL_THRESHOLD events gets none, because a
     reader serves any window from the events themselves. Level 1 takes the
-    period from level1_period_us. Each level above it spans 4x the time, and
+    period from level1_period_us. Each level above it has a period
+    decimation_factor times that of the level below, and
     every level takes its offset_us from bin_offset_us and its bins from
     count_bins, so its bins cover every event from the first to the last. The
     ladder stops before a level that would hold fewer than min_bins bins or
@@ -124,14 +145,21 @@ def plan_count_levels(
         n_events: The number of events in the channel.
         first_event_us: The time of the first event.
         last_event_us: The time of the last event.
-        max_levels: The most levels to plan.
+        max_levels: The most levels to plan. None means the most that
+            max_levels_for allows at decimation_factor.
         min_bins: The fewest bins a level may hold.
+        decimation_factor: The ratio of the periods of consecutive levels, at
+            least MIN_DECIMATION_FACTOR.
 
     Raises:
         ValueError: If n_events is negative or above the uint32 range, which
             a count bin can hold when equal times put every event in one bin,
-            or if last_event_us precedes first_event_us.
+            if last_event_us precedes first_event_us, or if decimation_factor
+            is below MIN_DECIMATION_FACTOR.
     """
+    _check_factor(decimation_factor)
+    if max_levels is None:
+        max_levels = max_levels_for(decimation_factor)
     if n_events < 0:
         raise ValueError(f"n_events must be at least 0, got {n_events}")
     if n_events > np.iinfo(np.uint32).max:
@@ -145,7 +173,9 @@ def plan_count_levels(
         )
     if n_events <= EVENT_LEVEL_THRESHOLD:
         return []
-    period = level1_period_us(n_events, last_event_us - first_event_us)
+    period = level1_period_us(
+        n_events, last_event_us - first_event_us, decimation_factor
+    )
     plans: list[LevelPlan] = []
     for level in range(1, max_levels + 1):
         bins = count_bins(first_event_us, last_event_us, period)
@@ -159,7 +189,7 @@ def plan_count_levels(
                 offset_us=bin_offset_us(first_event_us, period),
             )
         )
-        period *= DEFAULT_DECIMATION_FACTOR
+        period *= decimation_factor
     return plans
 
 
@@ -290,34 +320,36 @@ def iter_count_blocks(
 
 
 def fold_count_block(
-    counts: npt.NDArray[np.uint32],
+    counts: npt.NDArray[np.uint32], block: int
 ) -> npt.NDArray[np.uint32]:
-    """Fold a block of counts into the next coarser level over blocks of 4 rows.
+    """Fold a block of counts into the next coarser level in groups of rows.
 
-    Each output row is the column-wise sum of up to 4 input rows, so a coarse
-    bin holds exactly the events of its span. A final partial group of 1 to 3
-    rows becomes one row. An empty input yields zero rows. The sums stay in
-    uint32, which holds them because plan_count_levels caps the event count at
-    the uint32 range.
+    Each output row is the column-wise sum of up to block input rows, so a
+    coarse bin holds exactly the events of its span. A final partial group of
+    fewer than block rows becomes one row. An empty input yields zero rows.
+    The sums stay in uint32, which holds them because plan_count_levels caps
+    the event count at the uint32 range.
 
     Args:
         counts: A block of counts shaped (rows, columns).
+        block: The number of rows that fold into one, at least 1.
 
     Raises:
-        ValueError: If counts is not shaped (rows, columns).
+        ValueError: If counts is not shaped (rows, columns) or block is not
+            positive.
     """
     if len(counts.shape) != COUNT_BLOCK_RANK:
         raise ValueError(
             f"counts have shape (rows, columns), got {counts.shape}"
         )
-    n_full, tail_len = divmod(counts.shape[0], DEFAULT_DECIMATION_FACTOR)
-    split = n_full * DEFAULT_DECIMATION_FACTOR
+    if block < 1:
+        raise ValueError(f"block must be at least 1, got {block}")
+    n_full, tail_len = divmod(counts.shape[0], block)
+    split = n_full * block
     columns = counts.shape[1]
     out = np.empty((n_full + (1 if tail_len else 0), columns), dtype=np.uint32)
     if n_full:
-        grouped = counts[:split].reshape(
-            n_full, DEFAULT_DECIMATION_FACTOR, columns
-        )
+        grouped = counts[:split].reshape(n_full, block, columns)
         out[:n_full] = grouped.sum(axis=1, dtype=np.uint32)
     if tail_len:
         out[n_full] = counts[split:].sum(axis=0, dtype=np.uint32)

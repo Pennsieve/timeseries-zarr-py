@@ -1,4 +1,4 @@
-"""Pyramid folding: reduce a level to the next coarser one in blocks of 4.
+"""Pyramid folding: reduce a level to the next coarser one in fixed blocks.
 
 A folded level travels as Statistics: the minimum, maximum, mean, population
 variance, and count of finite samples of each bin, as one float64 array each.
@@ -6,7 +6,7 @@ Every statistic uses the plain reduction, so a NaN propagates into the bin
 holding it; only the count stays finite.
 
 fold_raw and fold_statistics work on column views, which keeps every numpy
-call a full pass over the block instead of a loop of 4 elements per row.
+call a full pass over the block instead of a loop over the elements of a row.
 LevelFolder holds the state of one channel's pyramid.
 """
 
@@ -17,15 +17,10 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.constants import (
-    DEFAULT_DECIMATION_FACTOR,
-    ENVELOPE_PAIR_SIZE,
-)
+from timeseries_zarr.constants import ENVELOPE_PAIR_SIZE, MIN_DECIMATION_FACTOR
 
 
-def _block_split(
-    length: int, block: int = DEFAULT_DECIMATION_FACTOR
-) -> tuple[int, int]:
+def _block_split(length: int, block: int) -> tuple[int, int]:
     """Return (n_full, tail_len) for splitting length items into blocks.
 
     Args:
@@ -190,27 +185,27 @@ def _join(parts: list[Statistics]) -> Statistics:
     )
 
 
-def fold_raw(raw: npt.NDArray[np.float32]) -> Statistics:
-    """Fold raw samples into per-bin statistics over disjoint blocks of 4.
+def fold_raw(raw: npt.NDArray[np.float32], block: int) -> Statistics:
+    """Fold raw samples into per-bin statistics over disjoint blocks.
 
     A non-finite sample (NaN or infinity) counts as NaN, so a block holding
     one has NaN in its four statistics while the count still reports the
     finite samples. A block of only non-finite samples has count 0. A final
-    partial block of 1 to 3 samples becomes one row. An empty input yields
-    zero rows. The input is not modified.
+    partial block of fewer than block samples becomes one row. An empty input
+    yields zero rows. The input is not modified.
 
     Args:
         raw: Raw samples of one channel.
+        block: The number of samples that fold into one row, at least 1.
 
     Returns:
         The statistics with one row per block.
 
     Raises:
-        ValueError: raw is not rank 1.
+        ValueError: raw is not rank 1, or block is not positive.
     """
     if raw.ndim != 1:
         raise ValueError(f"raw samples are rank 1, got shape {raw.shape}")
-    block = DEFAULT_DECIMATION_FACTOR
     n_full, tail_len = _block_split(raw.shape[0], block)
     split = n_full * block
     parts = []
@@ -280,26 +275,29 @@ def _children(
     ]
 
 
-def fold_statistics(statistics: Statistics) -> Statistics:
-    """Fold statistics into the next coarser level in blocks of 4 rows.
+def fold_statistics(statistics: Statistics, block: int) -> Statistics:
+    """Fold statistics into the next coarser level in blocks of rows.
 
-    Each output row combines up to 4 child rows: the minimum of the minimums,
+    Each output row combines up to block child rows: the minimum of the minimums,
     the maximum of the maximums, the count-weighted mean of the means, the
     count-weighted mean of each child's variance plus the squared distance of
     its mean from the parent mean, and the sum of the counts. In exact
     arithmetic the result equals the statistics of the raw samples the
     children cover. A NaN in any child statistic makes the parent's four
     statistics NaN, and so do children whose counts sum to 0; the count is
-    the plain sum in every case. A final partial block of 1 to 3 rows becomes
-    one row. An empty input yields zero rows.
+    the plain sum in every case. A final partial block of fewer than block rows
+    becomes one row. An empty input yields zero rows.
 
     Args:
         statistics: Statistics of the finer level.
+        block: The number of rows that fold into one, at least 1.
 
     Returns:
         The statistics of the coarser level.
+
+    Raises:
+        ValueError: block is not positive.
     """
-    block = DEFAULT_DECIMATION_FACTOR
     n_full, tail_len = _block_split(statistics.rows, block)
     parts = []
     if n_full or not tail_len:
@@ -384,8 +382,9 @@ class LevelFolder:
     Level 1 folds the raw samples. Each later level folds the float64
     statistics of the level below, never its stored float32 members, so the
     variance keeps its full precision. A level holds at most inner_len pending
-    rows plus the 1 to 3 unfolded input rows of an unfinished block of 4, so
-    the state does not grow with the length of the channel.
+    rows plus the fewer than decimation_factor unfolded input rows of an
+    unfinished block, so the state does not grow with the length of the
+    channel.
 
     A level emits a chunk of exactly inner_len rows each time its pending rows
     fill. finish emits the last chunk of each level, which holds the
@@ -393,22 +392,37 @@ class LevelFolder:
     the fold of the whole channel.
     """
 
-    def __init__(self, levels: int, inner_len: int, with_var: bool) -> None:
+    def __init__(
+        self,
+        levels: int,
+        inner_len: int,
+        with_var: bool,
+        decimation_factor: int,
+    ) -> None:
         """Create a folder.
 
         Args:
             levels: The number of levels to fold, at least 1.
             inner_len: The rows of one emitted chunk, at least 1.
             with_var: Whether the emitted chunks carry the variance.
+            decimation_factor: The number of rows of a level that fold into
+                one row of the next, at least 2.
 
         Raises:
-            ValueError: levels or inner_len is less than 1.
+            ValueError: levels or inner_len is less than 1, or
+                decimation_factor is less than 2.
         """
         if levels < 1:
             raise ValueError(f"levels must be at least 1, got {levels}")
         if inner_len < 1:
             raise ValueError(f"inner_len must be at least 1, got {inner_len}")
+        if decimation_factor < MIN_DECIMATION_FACTOR:
+            raise ValueError(
+                "decimation_factor must be at least "
+                f"{MIN_DECIMATION_FACTOR}, got {decimation_factor}"
+            )
         self._inner_len = inner_len
+        self._decimation_factor = decimation_factor
         self._with_var = with_var
         self._levels = [_Level(inner_len) for _ in range(levels)]
         self._finished = False
@@ -453,11 +467,13 @@ class LevelFolder:
         self._finished = True
         for index, level in enumerate(self._levels):
             if index == 0 and level.carry_raw is not None:
-                tail = fold_raw(level.carry_raw)
+                tail = fold_raw(level.carry_raw, self._decimation_factor)
                 level.carry_raw = None
                 self._append(0, tail)
             elif index > 0 and level.carry_statistics is not None:
-                tail = fold_statistics(level.carry_statistics)
+                tail = fold_statistics(
+                    level.carry_statistics, self._decimation_factor
+                )
                 level.carry_statistics = None
                 self._append(index, tail)
             if level.filled:
@@ -472,52 +488,44 @@ class LevelFolder:
 
     def _feed_raw(self, block: npt.NDArray[np.float32]) -> None:
         """Fold block into level 1 behind the carried samples."""
+        factor = self._decimation_factor
         level = self._levels[0]
         start = 0
         if level.carry_raw is not None:
-            take = min(
-                DEFAULT_DECIMATION_FACTOR - level.carry_raw.shape[0],
-                block.shape[0],
-            )
+            take = min(factor - level.carry_raw.shape[0], block.shape[0])
             joined = np.concatenate([level.carry_raw, block[:take]])
             start = take
-            if joined.shape[0] < DEFAULT_DECIMATION_FACTOR:
+            if joined.shape[0] < factor:
                 level.carry_raw = joined
                 return
             level.carry_raw = None
-            self._append(0, fold_raw(joined))
-        whole = (
-            (block.shape[0] - start)
-            // DEFAULT_DECIMATION_FACTOR
-            * DEFAULT_DECIMATION_FACTOR
-        )
+            self._append(0, fold_raw(joined, factor))
+        whole = (block.shape[0] - start) // factor * factor
         if whole:
-            self._append(0, fold_raw(block[start : start + whole]))
+            self._append(0, fold_raw(block[start : start + whole], factor))
         if start + whole < block.shape[0]:
             level.carry_raw = block[start + whole :].copy()
 
     def _feed_statistics(self, index: int, rows: Statistics) -> None:
         """Fold the rows of level index to the level above it."""
+        factor = self._decimation_factor
         level = self._levels[index + 1]
         start = 0
         carry = level.carry_statistics
         if carry is not None:
-            take = min(DEFAULT_DECIMATION_FACTOR - carry.rows, rows.rows)
+            take = min(factor - carry.rows, rows.rows)
             joined = _join([carry, _slice(rows, 0, take)])
             start = take
-            if joined.rows < DEFAULT_DECIMATION_FACTOR:
+            if joined.rows < factor:
                 level.carry_statistics = _copy(joined)
                 return
             level.carry_statistics = None
-            self._append(index + 1, fold_statistics(joined))
-        whole = (
-            (rows.rows - start)
-            // DEFAULT_DECIMATION_FACTOR
-            * DEFAULT_DECIMATION_FACTOR
-        )
+            self._append(index + 1, fold_statistics(joined, factor))
+        whole = (rows.rows - start) // factor * factor
         if whole:
             self._append(
-                index + 1, fold_statistics(_slice(rows, start, start + whole))
+                index + 1,
+                fold_statistics(_slice(rows, start, start + whole), factor),
             )
         if start + whole < rows.rows:
             level.carry_statistics = _copy(

@@ -572,6 +572,64 @@ def test_write_continuous_channel_members_equal_the_direct_definition_over_six_l
             assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
 
 
+@pytest.mark.parametrize("factor", [2, 3, 10])
+def test_write_continuous_channel_members_equal_the_direct_definition_at_another_factor(
+    tmp_path, continuous_source, wide_opts, factor
+):
+    samples = _series(8199)
+    opts = dataclasses.replace(wide_opts, decimation_factor=factor)
+    group = _write(tmp_path, continuous_source(samples), opts)
+    plans = plan_levels(
+        8199,
+        32000.0,
+        opts.level_cap,
+        opts.min_bins,
+        decimation_factor=factor,
+    )
+    assert len(plans) >= 3
+    assert sorted(group.group_keys()) == sorted(str(p.level) for p in plans)
+    for plan in plans:
+        width = factor**plan.level
+        want = _direct(samples, width)
+        level = group[str(plan.level)]
+        assert dict(level.attrs) == {
+            "tsz": {"period_us": level_period_us(32000.0, width)}
+        }
+        assert level[MINMAX_KEY].shape == (plan.bins, 2)
+        assert np.array_equal(
+            level[MINMAX_KEY][:], want[:, :2].astype(np.float32), equal_nan=True
+        )
+        assert np.array_equal(level[COUNT_KEY][:], want[:, 4])
+        assert _close(level[MEAN_KEY][:], want[:, 2]), plan.level
+        if opts.write_var:
+            assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
+
+
+def test_write_continuous_channel_at_2x_gets_more_than_15_levels_by_default(
+    tmp_path, continuous_source
+):
+    samples = _series(2**16 + 5)
+    opts = WriteOpts(
+        min_bins=1,
+        decimation_factor=2,
+        write_var=True,
+        inner_len=1024,
+        target_shard_bytes=65_536,
+    )
+    group = _write(tmp_path, continuous_source(samples), opts)
+    assert sorted(group.group_keys(), key=int) == [str(k) for k in range(1, 17)]
+    top = group["16"]
+    want = _direct(samples, 2**16)
+    assert top[COUNT_KEY].shape == (2,)
+    assert np.array_equal(top[COUNT_KEY][:], want[:, 4])
+    assert np.array_equal(
+        top[MINMAX_KEY][:], want[:, :2].astype(np.float32), equal_nan=True
+    )
+    assert dict(top.attrs) == {
+        "tsz": {"period_us": level_period_us(32000.0, 2**16)}
+    }
+
+
 def test_write_continuous_channel_one_pass_variance_is_exact_beyond_a_large_offset(
     tmp_path, continuous_source
 ):

@@ -1,3 +1,5 @@
+from functools import partial
+
 import numpy as np
 import pytest
 
@@ -15,6 +17,10 @@ from timeseries_zarr.counts import (
     plan_count_levels,
 )
 from timeseries_zarr.streaming import _rebuffer_and_fold
+
+_DAY_US = 86_400 * 1_000_000
+
+_fold_by_4 = partial(fold_count_block, block=4)
 
 _SPAN_PER_WIDTH = 200
 """Microseconds of span per microsecond of width when n_events is 1000.
@@ -86,6 +92,29 @@ def test_level1_period_us_does_not_widen_as_events_are_added():
 def test_level1_period_us_does_not_narrow_as_the_span_grows():
     periods = [level1_period_us(10**5, last) for last in (10**6, 10**8, 10**10)]
     assert periods == sorted(periods)
+
+
+def test_level1_period_us_climbs_a_ladder_of_the_decimation_factor():
+    assert level1_period_us(10**6, _DAY_US, 10) == 100_000
+    assert level1_period_us(10**6, _DAY_US, 2) == 256_000
+    assert level1_period_us(10**6, _DAY_US, 3) == 243_000
+
+
+@pytest.mark.parametrize("factor", [2, 3, 10])
+def test_level1_period_us_lies_on_the_ladder_of_the_decimation_factor(factor):
+    for last_us in (10**6, 10**8, 10**10):
+        period = level1_period_us(10**5, last_us, factor)
+        rung = period // COUNT_LADDER_BASE_US
+        assert rung * COUNT_LADDER_BASE_US == period
+        while rung > 1:
+            assert rung % factor == 0
+            rung //= factor
+
+
+@pytest.mark.parametrize("factor", [1, 0, -4])
+def test_level1_period_us_rejects_a_decimation_factor_below_2(factor):
+    with pytest.raises(ValueError, match="decimation_factor"):
+        level1_period_us(10, 1000, factor)
 
 
 @pytest.mark.parametrize("n_events", [0, -1])
@@ -191,9 +220,6 @@ def test_count_bins_rejects_a_last_event_before_the_first():
         count_bins(5, 4, 1000)
 
 
-_DAY_US = 86_400 * 1_000_000
-
-
 def _summary(plans):
     return [(plan.level, plan.bins, plan.period_us) for plan in plans]
 
@@ -261,6 +287,43 @@ def test_plan_count_levels_follows_the_ladder_rules(
         assert -(-plans[-1].bins // 4) < min_bins or len(
             plans
         ) == max_levels_for(4)
+
+
+def test_plan_count_levels_at_2x_doubles_the_period_of_each_level():
+    plans = plan_count_levels(10**6, 0, _DAY_US, decimation_factor=2)
+    assert plans[0].period_us == 256_000.0
+    assert len(plans) == 9
+    for below, above in zip(plans, plans[1:], strict=False):
+        assert above.period_us == 2 * below.period_us
+        assert above.bins == -(-below.bins // 2)
+    for plan in plans:
+        assert plan.bins == count_bins(0, _DAY_US, int(plan.period_us))
+
+
+def test_plan_count_levels_at_10x_multiplies_the_period_of_each_level_by_10():
+    plans = plan_count_levels(10**6, 0, _DAY_US, decimation_factor=10)
+    assert _summary(plans) == [
+        (1, 864_001, 100_000.0),
+        (2, 86_401, 1_000_000.0),
+        (3, 8_641, 10_000_000.0),
+    ]
+
+
+def test_plan_count_levels_caps_the_levels_at_what_the_factor_allows():
+    plans = plan_count_levels(
+        10**6, 0, _DAY_US, min_bins=1, decimation_factor=10
+    )
+    assert len(plans) == 9
+    plans = plan_count_levels(
+        10**6, 0, _DAY_US, max_levels=3, min_bins=1, decimation_factor=10
+    )
+    assert len(plans) == 3
+
+
+@pytest.mark.parametrize("factor", [1, 0, -4])
+def test_plan_count_levels_rejects_a_decimation_factor_below_2(factor):
+    with pytest.raises(ValueError, match="decimation_factor"):
+        plan_count_levels(10**6, 0, _DAY_US, decimation_factor=factor)
 
 
 def test_plan_count_levels_accepts_the_largest_uint32_event_count():
@@ -532,7 +595,7 @@ def test_a_zero_row_prefix_folds_a_level_onto_an_earlier_grid(offset_below):
     assert shift == (offset_below + 4000) // 1000
     prefix = np.zeros((shift, 4), dtype=np.uint32)
     folded = np.concatenate(
-        list(_rebuffer_and_fold([prefix, below], fold_count_block))
+        list(_rebuffer_and_fold([prefix, below], _fold_by_4, group=4))
     )
     bins_above = count_bins(int(times[0]), int(times[-1]), 4000)
     assert np.array_equal(
@@ -549,7 +612,7 @@ def _level1(seed=0, bins=1000, n_labels=4):
 def test_fold_count_block_equals_the_direct_count_at_every_level(level):
     times, labels, counts = _level1()
     for _ in range(level - 1):
-        counts = fold_count_block(counts)
+        counts = fold_count_block(counts, 4)
     period_us = 1000 * 4 ** (level - 1)
     bins = -(-1000 // 4 ** (level - 1))
     assert counts.shape == (bins, 4)
@@ -561,32 +624,60 @@ def test_fold_count_block_equals_the_direct_count_at_every_level(level):
     [(0, 0), (1, 1), (3, 1), (4, 1), (5, 2), (8, 2), (9, 3), (17, 5)],
 )
 def test_fold_count_block_shape(rows, expected):
-    out = fold_count_block(np.ones((rows, 3), dtype=np.uint32))
+    out = fold_count_block(np.ones((rows, 3), dtype=np.uint32), 4)
     assert out.shape == (expected, 3)
     assert out.dtype == np.uint32
 
 
 def test_fold_count_block_sums_a_partial_tail_into_one_row():
     counts = np.arange(10, dtype=np.uint32).reshape(5, 2)
-    assert fold_count_block(counts).tolist() == [[12, 16], [8, 9]]
+    assert fold_count_block(counts, 4).tolist() == [[12, 16], [8, 9]]
+
+
+@pytest.mark.parametrize(
+    ("rows", "block", "expected"),
+    [(0, 2, 0), (1, 2, 1), (2, 2, 1), (5, 2, 3), (10, 10, 1), (11, 10, 2)],
+)
+def test_fold_count_block_shape_at_another_block_size(rows, block, expected):
+    out = fold_count_block(np.ones((rows, 3), dtype=np.uint32), block)
+    assert out.shape == (expected, 3)
+
+
+def test_fold_count_block_at_block_2_sums_pairs_and_a_single_tail_row():
+    counts = np.arange(10, dtype=np.uint32).reshape(5, 2)
+    assert fold_count_block(counts, 2).tolist() == [[2, 4], [10, 12], [8, 9]]
+
+
+def test_fold_count_block_at_block_10_keeps_the_total_of_every_column():
+    counts = np.random.default_rng(5).integers(0, 50, (37, 6)).astype(np.uint32)
+    out = fold_count_block(counts, 10)
+    assert np.array_equal(out.sum(axis=0), counts.sum(axis=0))
+    assert np.array_equal(out[0], counts[:10].sum(axis=0))
+    assert np.array_equal(out[-1], counts[30:].sum(axis=0))
+
+
+@pytest.mark.parametrize("block", [0, -1])
+def test_fold_count_block_rejects_a_block_below_1(block):
+    with pytest.raises(ValueError, match="block"):
+        fold_count_block(np.ones((4, 2), dtype=np.uint32), block)
 
 
 def test_fold_count_block_keeps_the_total_of_every_column():
     counts = np.random.default_rng(3).integers(0, 50, (37, 6)).astype(np.uint32)
     assert np.array_equal(
-        fold_count_block(counts).sum(axis=0), counts.sum(axis=0)
+        fold_count_block(counts, 4).sum(axis=0), counts.sum(axis=0)
     )
 
 
 def test_fold_count_block_is_exact_at_the_top_of_the_uint32_range():
     counts = np.array([[2**30], [2**30], [2**30], [2**30 - 1]], dtype=np.uint32)
-    assert fold_count_block(counts)[0, 0] == 2**32 - 1
+    assert fold_count_block(counts, 4)[0, 0] == 2**32 - 1
 
 
 def test_fold_count_block_leaves_the_input_unchanged():
     counts = np.arange(12, dtype=np.uint32).reshape(6, 2)
     before = counts.copy()
-    fold_count_block(counts)
+    fold_count_block(counts, 4)
     assert np.array_equal(counts, before)
 
 
@@ -594,13 +685,13 @@ def test_fold_count_block_leaves_the_input_unchanged():
 def test_streamed_count_folds_equal_the_whole_fold(size):
     _, _, counts = _level1(seed=4)
     pieces = [counts[i : i + size] for i in range(0, len(counts), size)]
-    level2 = _rebuffer_and_fold(pieces, fold_count_block)
-    level3 = list(_rebuffer_and_fold(level2, fold_count_block))
-    want = fold_count_block(fold_count_block(counts))
+    level2 = _rebuffer_and_fold(pieces, _fold_by_4, group=4)
+    level3 = list(_rebuffer_and_fold(level2, _fold_by_4, group=4))
+    want = fold_count_block(fold_count_block(counts, 4), 4)
     assert np.array_equal(np.concatenate(level3), want)
 
 
 @pytest.mark.parametrize("shape", [(8,), (2, 4, 3)])
 def test_fold_count_block_rejects_counts_that_are_not_rows_by_columns(shape):
     with pytest.raises(ValueError, match="rows, columns"):
-        fold_count_block(np.zeros(shape, dtype=np.uint32))
+        fold_count_block(np.zeros(shape, dtype=np.uint32), 4)
