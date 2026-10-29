@@ -7,6 +7,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 import numpy.typing as npt
 
+from timeseries_zarr.runs import Run
 from timeseries_zarr.types import EventColumn
 
 
@@ -91,8 +92,35 @@ class ContinuousChannelMetadata(Protocol):
         ...
 
     def num_samples(self) -> int:
-        """Return the total number of raw samples in the channel."""
+        """Return the number of samples the channel delivers.
+
+        A pause between runs adds no sample to the count.
+        """
         ...
+
+
+@runtime_checkable
+class RunsSource(Protocol):
+    """An optional addition to a continuous channel that states its runs."""
+
+    def runs(self) -> Sequence[Run]:
+        """Return the runs of the channel in time order.
+
+        A run is a span of samples one sample period apart. The first run
+        starts at start_us, and the run lengths total num_samples. A pause
+        between runs is not a sample, so the source does not deliver one.
+        """
+        ...
+
+
+def source_runs(source: ContinuousChannelMetadata) -> Sequence[Run]:
+    """Return the runs of source, or one run without a runs method.
+
+    The one run starts at start_us and holds num_samples samples.
+    """
+    if isinstance(source, RunsSource):
+        return list(source.runs())
+    return [Run(source.start_us(), source.num_samples())]
 
 
 @runtime_checkable
@@ -127,9 +155,12 @@ class MultiChannelSource(Protocol):
     of an array all have its row count. A channel whose samples end before the
     others gives an empty block in each later window, which only the sequence
     form can express. For each channel, the blocks concatenate to its
-    samples, and their lengths total num_samples.
+    recorded samples, and their lengths total num_samples. A pause between
+    runs is not pushed.
 
-    Each channel may define provenance as ProvenanceSource declares it.
+    Each channel may define provenance as ProvenanceSource declares it. Each
+    channel may define runs as RunsSource declares it. A channel without runs
+    is one run.
     """
 
     def channels(self) -> Sequence[ContinuousChannelMetadata]:
