@@ -1,3 +1,4 @@
+import re
 from fractions import Fraction
 
 import numpy as np
@@ -6,7 +7,9 @@ import pytest
 from timeseries_zarr.runs import (
     Placement,
     Run,
+    check_outside_runs,
     check_run_bound,
+    check_runs_table,
     check_source_runs,
     place_runs,
 )
@@ -249,3 +252,188 @@ def test_run_lengths_that_miss_num_samples_raise():
 def test_empty_source_runs_raise():
     with pytest.raises(ValueError, match="at least one run"):
         check_source_runs([], 0, 0)
+
+
+# Reader validation
+
+
+def _table(*rows):
+    return np.array(rows, dtype=np.int64)
+
+
+def _check(rows, num_samples=10, offset_us=0, rate_hz=RATE_HZ):
+    check_runs_table(
+        "channel 3", _table(*rows), offset_us, rate_hz, num_samples
+    )
+
+
+def _fails(rows, message, **options):
+    with pytest.raises(ValueError, match=message):
+        _check(rows, **options)
+
+
+def test_a_table_that_follows_the_spec_passes():
+    _check([(0, 4, 0), (7, 3, 6700)])
+    _check([(0, 4, 250), (7, 3, 6900)], offset_us=250)
+    _check([(0, 10, 0)])
+    _check([(0, 4, 0), (4, 6, 4999)])
+    _check([(0, 4, 0), (7, 3, 7999)])
+    _check([(0, 4, 0), (7, 3, 6001)])
+
+
+def test_row_0_must_start_at_sample_0():
+    _fails(
+        [(1, 9, 0)],
+        re.escape("channel 3: runs row 0 is [1, 9, 0]; it must be [0, n_0, 0]"),
+    )
+
+
+def test_row_0_must_hold_the_offset_of_the_channel():
+    _fails(
+        [(0, 10, 5)],
+        re.escape(
+            "channel 3: runs row 0 is [0, 10, 5]; it must be [0, n_0, 250]"
+        ),
+        offset_us=250,
+    )
+
+
+def test_a_run_of_no_samples_names_its_row():
+    _fails(
+        [(0, 4, 0), (7, 0, 6700)],
+        "channel 3: runs row 1 holds 0 samples; column 1 must be at least 1",
+    )
+
+
+def test_a_run_of_negative_samples_names_its_row():
+    _fails([(0, 4, 0), (7, -3, 6700)], "runs row 1 holds -3 samples")
+
+
+def test_first_samples_must_ascend():
+    _fails(
+        [(0, 3, 0), (8, 1, 8000), (5, 1, 9000)],
+        "channel 3: runs row 2 has first sample 5, which is not above 8 of "
+        "row 1; column 0 must ascend",
+    )
+
+
+def test_equal_first_samples_do_not_ascend():
+    _fails(
+        [(0, 3, 0), (3, 1, 3000), (3, 1, 4000)],
+        "runs row 2 has first sample 3, which is not above 3 of row 1",
+    )
+
+
+def test_times_must_ascend():
+    _fails(
+        [(0, 3, 0), (5, 2, 4000), (8, 2, 3000)],
+        "channel 3: runs row 2 has time 3000, which is not above 4000 of "
+        "row 1; column 2 must ascend",
+    )
+
+
+def test_equal_times_do_not_ascend():
+    _fails(
+        [(0, 3, 0), (5, 2, 5000), (8, 2, 5000)],
+        "runs row 2 has time 5000, which is not above 5000 of row 1",
+    )
+
+
+def test_runs_must_not_overlap():
+    _fails(
+        [(0, 5, 0), (3, 2, 3000)],
+        "channel 3: runs row 1 starts at sample 3, inside run 0, which ends "
+        "at sample 5; the first sample must be at least 5",
+        num_samples=5,
+    )
+
+
+def test_a_run_that_starts_where_the_previous_one_ends_does_not_overlap():
+    _check([(0, 5, 0), (5, 5, 5000)])
+
+
+def test_the_last_run_must_end_at_the_end_of_raw():
+    _fails(
+        [(0, 4, 0), (7, 3, 6700)],
+        "channel 3: the last run, row 1, ends at sample 10, but raw holds 11 "
+        "samples; the last run must end at the end of raw",
+        num_samples=11,
+    )
+    _fails(
+        [(0, 4, 0), (7, 3, 6700)],
+        "ends at sample 10, but raw holds 9",
+        num_samples=9,
+    )
+
+
+@pytest.mark.parametrize("time_us", [8000, 9000, 6000, 5000])
+def test_a_time_one_period_or_more_from_the_grid_is_rejected(time_us):
+    _fails(
+        [(0, 4, 0), (7, 3, time_us)],
+        f"channel 3: runs row 1 has time {time_us} us, .* the difference "
+        f"must be under one sample period of 1000.0 us",
+    )
+
+
+def test_the_bound_is_exact_at_a_period_that_has_no_float_form():
+    rate_hz = 3.0
+    _check([(0, 3, 0), (3, 2, 1_333_333)], num_samples=5, rate_hz=rate_hz)
+    _check([(0, 3, 0), (3, 2, 666_667)], num_samples=5, rate_hz=rate_hz)
+    _fails(
+        [(0, 3, 0), (3, 2, 1_333_334)],
+        "runs row 1 has time 1333334 us",
+        num_samples=5,
+        rate_hz=rate_hz,
+    )
+    _fails(
+        [(0, 3, 0), (3, 2, 666_666)],
+        "runs row 1 has time 666666 us",
+        num_samples=5,
+        rate_hz=rate_hz,
+    )
+
+
+def test_the_first_failing_row_is_the_one_named():
+    _fails(
+        [(0, 4, 0), (7, 1, 9000), (9, 1, 12_000)],
+        "runs row 1 has time 9000",
+        num_samples=10,
+    )
+
+
+def _outside(values, first=0, rows=((0, 4, 0), (7, 3, 6700))):
+    check_outside_runs(
+        "channel 3", np.array(values, dtype=np.float32), first, _table(*rows)
+    )
+
+
+def test_nan_outside_every_run_passes():
+    _outside([1, 2, 3, 4, np.nan, np.nan, np.nan, 8, 9, 10])
+
+
+def test_a_non_finite_sample_inside_a_run_passes():
+    _outside([1, np.nan, np.inf, 4, np.nan, np.nan, np.nan, 8, -np.inf, 10])
+
+
+def test_a_value_between_two_runs_is_rejected_with_its_sample_index():
+    with pytest.raises(
+        ValueError,
+        match="channel 3: raw sample 5 lies outside every run and holds "
+        "5.0; it must be NaN",
+    ):
+        _outside([1, 2, 3, 4, np.nan, 5, np.nan, 8, 9, 10])
+
+
+def test_an_infinity_between_two_runs_is_rejected():
+    with pytest.raises(ValueError, match="raw sample 4 lies outside .* inf"):
+        _outside([1, 2, 3, 4, np.inf, np.nan, np.nan, 8, 9, 10])
+
+
+def test_the_sample_index_counts_from_the_first_sample_of_the_window():
+    with pytest.raises(ValueError, match="raw sample 6 lies outside"):
+        _outside([np.nan, 1.5, 8], first=5)
+
+
+def test_a_window_inside_a_run_passes_whatever_lies_outside():
+    _outside([2, 3], first=1)
+    _outside([], first=5)

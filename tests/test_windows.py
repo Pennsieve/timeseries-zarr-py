@@ -17,9 +17,12 @@ from timeseries_zarr.windows import (
     check_level_numbers,
     check_not_string,
     duration_us,
+    entry_time,
     index_range,
     integer_argument,
     merge_spans,
+    run_index_range,
+    run_time_axis,
     select_level,
     time_axis,
     window_bounds,
@@ -711,3 +714,173 @@ def test_check_not_string_rejects_a_string_and_names_the_argument():
     )
     with pytest.raises(TypeError, match=message):
         check_not_string("text", "drop_columns")
+
+
+# Runs
+
+_RUN_PERIOD = Fraction(1000)
+_RUN_LENGTH = 10
+_RUN_TABLE = np.array([[0, 4, 0], [7, 3, 6700]], dtype=np.int64)
+"""Samples 0 through 3 at 0 us, a gap of grid samples 4 through 6, then
+samples 7 through 9 at 6700 us, 300 us before their grid time."""
+_LATE_TABLE = np.array([[0, 4, 0], [7, 3, 7300]], dtype=np.int64)
+
+
+def _run_range(start, end, table=_RUN_TABLE):
+    return run_index_range(start, end, table, 0, _RUN_PERIOD, _RUN_LENGTH)
+
+
+def test_run_index_range_matches_the_grid_when_runs_sit_on_the_grid():
+    table = np.array([[0, 4, 0], [7, 3, 7000]], dtype=np.int64)
+    times = _boundary_times(0, _RUN_PERIOD, _RUN_LENGTH)
+    for start in [None, *times]:
+        for end in [None, *times]:
+            if start is not None and end is not None and end < start:
+                continue
+            assert run_index_range(
+                start, end, table, 0, _RUN_PERIOD, _RUN_LENGTH
+            ) == index_range(start, end, 0, _RUN_PERIOD, _RUN_LENGTH)
+
+
+def test_run_index_range_matches_index_range_for_a_single_offset_run():
+    table = np.array([[0, 10, 2500]], dtype=np.int64)
+    times = _boundary_times(2500, _RUN_PERIOD, _RUN_LENGTH)
+    for start in [None, *times]:
+        for end in [None, *times]:
+            if start is not None and end is not None and end < start:
+                continue
+            assert run_index_range(
+                start, end, table, 2500, _RUN_PERIOD, _RUN_LENGTH
+            ) == index_range(start, end, 2500, _RUN_PERIOD, _RUN_LENGTH)
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "expected"),
+    [
+        (None, None, (0, 10)),
+        (0, 1, (0, 1)),
+        (3500, 3600, (3, 4)),
+        (3999, 4000, (3, 4)),
+        (4000, 4001, (4, 5)),
+        (4500, 4800, (4, 5)),
+        (6000, 6700, (6, 7)),
+        (6600, 6700, (6, 7)),
+        (6700, 6701, (7, 8)),
+        (6699, 6701, (6, 8)),
+        (6999, 7000, (7, 8)),
+        (7699, 7701, (7, 9)),
+        (3500, 7000, (3, 8)),
+        (-500, 500, (0, 1)),
+        (8700, None, (9, 10)),
+        (9700, None, (10, 10)),
+        (50_000, 60_000, (10, 10)),
+        (-60_000, -50_000, (0, 0)),
+    ],
+)
+def test_run_index_range_maps_a_window_through_the_exact_run_times(
+    start, end, expected
+):
+    assert _run_range(start, end) == expected
+
+
+def test_run_index_range_gives_an_empty_range_for_equal_bounds():
+    assert _run_range(6700, 6700) == (7, 7)
+    assert _run_range(4200, 4200) == (4, 4)
+    assert _run_range(-5, -5) == (0, 0)
+
+
+def test_run_index_range_clamps_a_late_resume_to_the_first_sample_of_the_run():
+    assert run_index_range(
+        7100, 7200, _LATE_TABLE, 0, _RUN_PERIOD, _RUN_LENGTH
+    ) == (7, 7)
+    assert run_index_range(
+        7100, 7301, _LATE_TABLE, 0, _RUN_PERIOD, _RUN_LENGTH
+    ) == (7, 8)
+
+
+def test_run_index_range_rejects_an_end_before_the_start():
+    with pytest.raises(ValueError, match="end_us must be at or after start_us"):
+        _run_range(5, 4)
+
+
+def test_run_index_range_rejects_a_bound_that_is_not_an_integer():
+    with pytest.raises(TypeError, match="start_us must be an integer"):
+        _run_range(1.5, 2)
+
+
+def test_entry_time_reads_the_run_for_a_sample_inside_it():
+    assert entry_time(0, 0, _RUN_PERIOD, _RUN_TABLE) == 0
+    assert entry_time(3, 0, _RUN_PERIOD, _RUN_TABLE) == 3000
+    assert entry_time(7, 0, _RUN_PERIOD, _RUN_TABLE) == 6700
+    assert entry_time(9, 0, _RUN_PERIOD, _RUN_TABLE) == 8700
+
+
+def test_entry_time_reads_the_grid_for_a_sample_between_runs():
+    for index in (4, 5, 6):
+        assert entry_time(index, 0, _RUN_PERIOD, _RUN_TABLE) == index * 1000
+
+
+def test_entry_time_without_a_table_is_the_grid_time():
+    assert entry_time(7, 250, _RUN_PERIOD) == 7250
+
+
+def test_entry_time_is_exact_in_a_period_that_has_no_float_form():
+    period = Fraction(1_000_000, 30_000)
+    table = np.array([[0, 5, 0], [9, 4, 301]], dtype=np.int64)
+    assert entry_time(11, 0, period, table) == 301 + 2 * period
+
+
+def test_run_time_axis_takes_run_times_and_grid_times_for_the_gap():
+    axis = run_time_axis(3, 6, 0, 1000.0, _RUN_TABLE)
+    assert axis.tolist() == [3000.0, 4000.0, 5000.0, 6000.0, 6700.0, 7700.0]
+    assert axis.dtype == np.float64
+
+
+def test_run_time_axis_of_no_samples_is_empty():
+    assert run_time_axis(4, 0, 0, 1000.0, _RUN_TABLE).shape == (0,)
+
+
+def test_run_time_axis_is_strictly_increasing_across_a_late_resume():
+    axis = run_time_axis(0, 10, 0, 1000.0, _LATE_TABLE)
+    assert np.all(np.diff(axis) > 0)
+    assert axis[7] == 7300.0
+
+
+def test_merge_spans_with_a_table_starts_each_span_at_the_exact_time():
+    populated = np.array([1, 1, 1, 1, 0, 0, 0, 1, 1, 1], dtype=bool)
+    spans = merge_spans(
+        populated, 0, 0, _RUN_PERIOD, 0, 9700, 0, table=_RUN_TABLE
+    )
+    assert spans == [(0, 4000), (6700, 9700)]
+
+
+def test_merge_spans_with_a_table_rounds_an_exact_edge_outward():
+    table = np.array([[0, 4, 0], [7, 3, 6700]], dtype=np.int64)
+    populated = np.array([1, 1, 1, 1, 0, 0, 0, 1, 1, 0], dtype=bool)
+    spans = merge_spans(populated, 0, 0, Fraction(1000), 0, 20_000, 0, table)
+    assert spans == [(0, 4000), (6700, 8700)]
+    period = Fraction(1_000_000, 3)
+    third = np.array([[0, 1, 0], [2, 2, 700_001]], dtype=np.int64)
+    spans = merge_spans(
+        np.array([0, 0, 1, 0, 0], dtype=bool),
+        0,
+        0,
+        period,
+        0,
+        10**7,
+        0,
+        third,
+    )
+    assert spans == [(700_001, 1_033_335)]
+
+
+def test_merge_spans_with_a_table_bridges_a_gap_of_gap_us():
+    populated = np.array([1, 1, 1, 1, 0, 0, 0, 1, 1, 1], dtype=bool)
+    joined = merge_spans(
+        populated, 0, 0, _RUN_PERIOD, 0, 9700, 2700, table=_RUN_TABLE
+    )
+    assert joined == [(0, 9700)]
+    apart = merge_spans(
+        populated, 0, 0, _RUN_PERIOD, 0, 9700, 2699, table=_RUN_TABLE
+    )
+    assert apart == [(0, 4000), (6700, 9700)]

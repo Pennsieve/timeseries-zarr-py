@@ -151,7 +151,7 @@ A run is a maximal sequence of consecutive samples recorded at the sample rate, 
 sample period of `1e6 / rate_hz` microseconds apart. A channel recorded without
 interruption is one run and needs no `runs` array. A channel whose recording paused
 holds one run per span of recording, and `runs` lists the runs in order. Let `first_r`,
-`n_r`, and `time_r` be columns 0, 1, and 2 of row `r`. Rows ascend in every column. Row 0
+`n_r`, and `time_r` be columns 0, 1, and 2 of row `r`. Rows ascend in columns 0 and 2. Row 0
 is `[0, n_0, offset_us]`. Every `n_r` is at least 1. Runs do not overlap
 (`first_(r+1) >= first_r + n_r`), and the last run ends at `N`. Every sample outside a
 run MUST be NaN.
@@ -557,7 +557,7 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - Every array has the shape and dtype of its table, and all members of one level
   have the same number of bins, `ceil(N / s_k)` at level `k` of a continuous channel.
 - `raw` and the float level members declare NaN fill. Integer arrays declare 0.
-- When a continuous channel holds `runs`, its rows ascend in every column, row 0 is
+- When a continuous channel holds `runs`, its rows ascend in columns 0 and 2, row 0 is
   `[0, n_0, offset_us]`, every `n_r` is at least 1, runs do not overlap, and the last run
   ends at `N`. Every `time_r` lies within one sample period of the grid time of sample
   `first_r`, and every sample of `raw` outside a run is NaN.
