@@ -43,11 +43,12 @@ without touching a store.
 
 `fold.py` reduces one level to the next over disjoint blocks of `decimation_factor` rows.
 `Statistics` holds the minimum, maximum, mean, population variance, and count of finite
-samples of consecutive bins, as one float64 array each. `fold_raw` and `fold_statistics` fold it on column
-views, and `Statistics.members` converts it to the member arrays a level stores. A
-`LevelFolder` holds the state of one channel's pyramid. It folds raw samples into every
-level as they arrive and emits one chunk of every member each time a level fills
-`inner_len` rows. A level never holds more than one chunk of pending rows. See
+samples of consecutive bins, as one float64 array each. `fold_raw` and
+`fold_statistics` fold it on column views, and `Statistics.members` converts it to the
+member arrays a level stores. A `LevelFolder` holds the state of one channel's pyramid.
+It folds raw samples into every level as they arrive and emits one chunk of every member
+each time a level fills `inner_len` rows. A level never holds more than one chunk of
+pending rows. See
 [the format spec](./spec.md) for the exact rules and the NaN behavior.
 
 `streaming.py` reads a source in blocks and re-cuts block streams. The count levels of an

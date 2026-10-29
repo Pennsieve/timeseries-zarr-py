@@ -33,10 +33,10 @@ level, up to `inner_len` rows of float64 statistics, plus the index of each open
 and up to 1 MiB of encoded chunks that wait to be written. `max_levels=8` lowers the
 figure to about 3.6 MiB.
 `timeseries_zarr.channel_writer_bytes(opts)` returns the estimate in bytes for the
-levels that `opts` allows. A `MultiChannelSource` also holds two batches of windows, the one
-that the writer folds and the one that it gathers. The writer gathers consecutive windows
-until they hold 262,144 rows of a channel or 64 MiB, so a batch holds at most 64 MiB plus
-one window.
+levels that `opts` allows. A `MultiChannelSource` also holds two batches of windows, the
+one that the writer folds and the one that it gathers. The writer gathers consecutive
+windows until they hold 262,144 rows of a channel or 64 MiB, so a batch holds at most
+64 MiB plus one window.
 
 `voltage_policy="convert"` scales a voltage channel to microvolts and labels it `uV`.
 `"require_uv"` raises `ValueError` for a voltage channel in any other unit.

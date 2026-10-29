@@ -70,7 +70,8 @@ channel at a time, and lets a reader fetch only the channels on screen.
 ### Continuous channels
 
 A continuous channel holds a regularly sampled signal of `N` samples and a ladder of
-levels, each level coarser than the one before it by a whole number of samples per bin.
+levels. The bin width of each level is an integer multiple, at least 2, of the bin width
+of the level before it.
 
 ```
 0                            # Channel group. Attributes: kind = "continuous", name,

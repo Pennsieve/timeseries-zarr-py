@@ -7,18 +7,17 @@ decimation_factor**k raw samples into each bin.
 from timeseries_zarr.constants import (
     DEFAULT_DECIMATION_FACTOR,
     MICROSECONDS_PER_SECOND,
+    MIN_DECIMATION_FACTOR,
     max_levels_for,
 )
 from timeseries_zarr.types import LevelPlan
 
-MIN_SAMPLES_PER_BIN = 2
-
 
 def _require_samples_per_bin(samples_per_bin: int) -> None:
     """Raise ValueError if samples_per_bin is below 2."""
-    if samples_per_bin < MIN_SAMPLES_PER_BIN:
+    if samples_per_bin < MIN_DECIMATION_FACTOR:
         raise ValueError(
-            f"samples_per_bin must be {MIN_SAMPLES_PER_BIN} or more, "
+            f"samples_per_bin must be {MIN_DECIMATION_FACTOR} or more, "
             f"got {samples_per_bin}"
         )
 

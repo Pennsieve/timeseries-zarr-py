@@ -46,8 +46,8 @@ def level1_period_us(
     widest window it still serves from the events themselves: a window holding
     RASTER_BUDGET events at the channel's mean rate, drawn across
     CANVAS_PIXELS pixels. The period is that width rounded down to the ladder
-    COUNT_LADDER_BASE_US times a power of decimation_factor, so every event channel in a
-    bundle shares one set of bin grids. It is never finer than
+    COUNT_LADDER_BASE_US times a power of decimation_factor, so every event
+    channel in a bundle shares one set of bin grids. It is never finer than
     COUNT_LADDER_BASE_US, and a width exactly on a rung of the ladder keeps
     that rung. The arithmetic is exact in integers. Events all at one time
     give the finest period.

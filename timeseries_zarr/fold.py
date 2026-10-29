@@ -107,8 +107,8 @@ class Statistics:
             float32 of shape (rows, 2) with the minimum in column 0 and the
             maximum in column 1. mean and var are float32 of shape (rows,),
             and var is None when with_var is false. count is uint32 of shape
-            (rows,) and exact, because a level within max_levels_for never counts
-            2**32 samples.
+            (rows,) and exact, because a level within max_levels_for never
+            counts 2**32 samples.
         """
         minmax = np.empty((self.rows, ENVELOPE_PAIR_SIZE), dtype=np.float32)
         with np.errstate(over="ignore"):
@@ -278,15 +278,15 @@ def _children(
 def fold_statistics(statistics: Statistics, block: int) -> Statistics:
     """Fold statistics into the next coarser level in blocks of rows.
 
-    Each output row combines up to block child rows: the minimum of the minimums,
-    the maximum of the maximums, the count-weighted mean of the means, the
-    count-weighted mean of each child's variance plus the squared distance of
-    its mean from the parent mean, and the sum of the counts. In exact
-    arithmetic the result equals the statistics of the raw samples the
+    Each output row combines up to block child rows: the minimum of the
+    minimums, the maximum of the maximums, the count-weighted mean of the
+    means, the count-weighted mean of each child's variance plus the squared
+    distance of its mean from the parent mean, and the sum of the counts. In
+    exact arithmetic the result equals the statistics of the raw samples the
     children cover. A NaN in any child statistic makes the parent's four
     statistics NaN, and so do children whose counts sum to 0; the count is
-    the plain sum in every case. A final partial block of fewer than block rows
-    becomes one row. An empty input yields zero rows.
+    the plain sum in every case. A final partial block of fewer than block
+    rows becomes one row. An empty input yields zero rows.
 
     Args:
         statistics: Statistics of the finer level.
