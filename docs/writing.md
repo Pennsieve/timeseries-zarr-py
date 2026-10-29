@@ -7,7 +7,8 @@
 | Field | Description | Default |
 |---|---|---|
 | `zstd_level` | Zstd compression level | 5 |
-| `max_levels` | maximum number of levels | 15 |
+| `decimation_factor` | samples per bin of level 1, and the ratio between consecutive levels; at least 2 | 4 |
+| `max_levels` | most levels; `None` is the most the factor allows, 15 at 4x | `None` |
 | `min_bins` | fewest bins a level may hold | 1024 |
 | `inner_len` | inner Zarr chunk length in samples | 8192 |
 | `target_shard_bytes` | target outer shard size in bytes | 16 MiB |
@@ -32,7 +33,7 @@ level, up to `inner_len` rows of float64 statistics, plus the index of each open
 and up to 1 MiB of encoded chunks that wait to be written. `max_levels=8` lowers the
 figure to about 3.6 MiB.
 `timeseries_zarr.channel_writer_bytes(opts)` returns the estimate in bytes for the
-`max_levels` of `opts`. A `MultiChannelSource` also holds two batches of windows, the one
+levels that `opts` allows. A `MultiChannelSource` also holds two batches of windows, the one
 that the writer folds and the one that it gathers. The writer gathers consecutive windows
 until they hold 262,144 rows of a channel or 64 MiB, so a batch holds at most 64 MiB plus
 one window.

@@ -31,7 +31,8 @@ level's bin count and `period_us`. `sizing.py` decides the inner chunk and outer
 shapes for one array. Every member of a level takes the row counts of its `minmax` array.
 
 `counts.py` plans the count levels of a dense event channel. Level 1 takes its period
-from a ladder of `1000 * 4^j` microseconds, and each level above it spans 4x the time.
+from a ladder of `1000 * decimation_factor^j` microseconds, and each level above it spans
+`decimation_factor` times the time.
 `columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows.
 `units.py` resolves the factor and stored unit of a continuous channel.
 
@@ -40,9 +41,9 @@ without touching a store.
 
 ## Numeric core
 
-`fold.py` reduces one level to the next over disjoint blocks of 4. `Statistics` holds the
-minimum, maximum, mean, population variance, and count of finite samples of consecutive
-bins, as one float64 array each. `fold_raw` and `fold_statistics` fold it on column
+`fold.py` reduces one level to the next over disjoint blocks of `decimation_factor` rows.
+`Statistics` holds the minimum, maximum, mean, population variance, and count of finite
+samples of consecutive bins, as one float64 array each. `fold_raw` and `fold_statistics` fold it on column
 views, and `Statistics.members` converts it to the member arrays a level stores. A
 `LevelFolder` holds the state of one channel's pyramid. It folds raw samples into every
 level as they arrive and emits one chunk of every member each time a level fills
