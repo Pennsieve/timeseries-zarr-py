@@ -117,7 +117,7 @@ CANVAS_PIXELS: Final = 2000
 COUNT_LADDER_BASE_US: Final = 1000
 """Finest count level period in microseconds.
 
-Level 1 lies on base * 4^j when the decimation factor is 4.
+Level 1 lies on base * decimation_factor^j.
 """
 
 MICROSECONDS_PER_SECOND: Final = 1_000_000.0

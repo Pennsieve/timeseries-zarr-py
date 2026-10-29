@@ -531,10 +531,10 @@ def write_count_levels(
     offset_us, with one uint32 array "count" shaped (bins, L). L is the label
     count, or 1 without labels, and the bin axis is named "time". Level 1 is
     counted from the source's event times and labels, streamed in blocks of
-    events; every level above it sums decimation_factor rows of the stored level
-    below, one shard at a time, after the rows that precede its bin 0 are padded with
-    zeros so the two grids align. Channels with too few events, or whose
-    level 1 would hold fewer than opts.min_bins bins, get no levels and
+    events; every level above it sums decimation_factor rows of the stored
+    level below, one shard at a time, after the rows that precede its bin 0 are
+    padded with zeros so the two grids align. Channels with too few events, or
+    whose level 1 would hold fewer than opts.min_bins bins, get no levels and
     nothing is created. Every write covers a whole shard.
 
     Args:
