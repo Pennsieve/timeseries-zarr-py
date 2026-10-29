@@ -59,17 +59,20 @@ def _channel(location, key):
     )
 
 
-def _hand_nodes(num_samples=_HAND_SAMPLES, levels=2):
+def _hand_nodes(num_samples=_HAND_SAMPLES, levels=2, widths=None):
     """Return the nodes of a valid channel keyed by path below the channel.
 
     A dict is the attributes of a group and an array is the data of an
-    array. Each level holds minmax only.
+    array. Each level holds minmax only. widths lists the samples per bin of
+    each level, and the default is 4 to the power of the level number.
     """
+    if widths is None:
+        widths = [4**level for level in range(1, levels + 1)]
     nodes = {RAW_KEY: np.arange(num_samples, dtype=np.float32)}
-    for level in range(1, levels + 1):
-        bins = level_bins(num_samples, 4**level)
+    for level, width in enumerate(widths, start=1):
+        bins = level_bins(num_samples, width)
         nodes[str(level)] = level_group_attrs(
-            level_period_us(_HAND_RATE_HZ, 4**level)
+            level_period_us(_HAND_RATE_HZ, width)
         )
         nodes[f"{level}/{MINMAX_KEY}"] = np.zeros((bins, 2), np.float32)
     return nodes
@@ -826,6 +829,62 @@ def test_parse_rejects_a_period_outside_the_tolerance():
         _hand_parse(nodes)
 
 
+def test_parse_accepts_a_ladder_that_is_not_a_power_of_4():
+    channel = _hand_parse(_hand_nodes(widths=[2, 10]))
+    assert [level.samples_per_bin for level in channel.levels.values()] == [
+        2,
+        10,
+    ]
+    assert [level.bins for level in channel.levels.values()] == [32, 7]
+
+
+def test_read_reports_the_period_and_bin_count_of_a_10x_level():
+    channel = _hand_parse(_hand_nodes(widths=[10, 100]))
+    bins = channel.read(level=2)
+    assert bins.period_us == level_period_us(_HAND_RATE_HZ, 100)
+    assert len(bins.min) == 1
+
+
+def test_parse_rejects_a_period_that_is_not_a_whole_number_of_samples():
+    nodes = _hand_nodes(levels=1)
+    nodes["1"] = level_group_attrs(2.5e6 / _HAND_RATE_HZ)
+    message = (
+        "channel 0 level 1: tsz.period_us must be a whole number of "
+        "samples, at least 2, at rate_hz 512.0, got 4882.8125"
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _hand_parse(nodes)
+
+
+def test_parse_rejects_a_level_one_sample_wide():
+    nodes = _hand_nodes(levels=1)
+    nodes["1"] = level_group_attrs(1e6 / _HAND_RATE_HZ)
+    message = (
+        "channel 0 level 1: tsz.period_us must be a whole number of "
+        "samples, at least 2, at rate_hz 512.0, got 1953.125"
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _hand_parse(nodes)
+
+
+def test_parse_rejects_a_level_that_is_not_a_multiple_of_the_level_below():
+    message = (
+        "channel 0 level 2: tsz.period_us must be an integer multiple of "
+        "level 1's 7812.5, at least 2 times it, got 11718.75"
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _hand_parse(_hand_nodes(widths=[4, 6]))
+
+
+def test_parse_rejects_a_level_as_wide_as_the_level_below():
+    message = (
+        "channel 0 level 2: tsz.period_us must be an integer multiple of "
+        "level 1's 7812.5, at least 2 times it, got 7812.5"
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _hand_parse(_hand_nodes(widths=[4, 4]))
+
+
 def test_parse_lists_levels_past_9_in_level_order():
     root = _hand_build(_hand_nodes(num_samples=4**10, levels=11))
     zarr.consolidate_metadata(root.store)
@@ -915,8 +974,8 @@ def test_parse_rejects_a_period_that_does_not_match_the_rate():
     nodes = _hand_nodes()
     nodes["2"] = level_group_attrs(31_281.25)
     message = (
-        "channel 0 level 2: tsz.period_us must be 31250.0 to match rate_hz "
-        "512.0, got 31281.25"
+        "channel 0 level 2: tsz.period_us must be a whole number of "
+        "samples, at least 2, at rate_hz 512.0, got 31281.25"
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         _hand_parse(nodes)

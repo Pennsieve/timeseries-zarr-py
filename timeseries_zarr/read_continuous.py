@@ -18,11 +18,11 @@ import numpy.typing as npt
 from timeseries_zarr.attrs import parse_continuous_attrs, parse_level_attrs
 from timeseries_zarr.constants import (
     COUNT_KEY,
-    DEFAULT_DECIMATION_FACTOR,
     ENVELOPE_PAIR_SIZE,
     LEVEL_PERIOD_TOLERANCE,
     MEAN_KEY,
     MICROSECONDS_PER_SECOND,
+    MIN_DECIMATION_FACTOR,
     MINMAX_KEY,
     RAW_KEY,
     TSZ_KEY,
@@ -676,21 +676,36 @@ def _parse_level(
     arrays: Mapping[str, ZarrArray],
     rate_hz: float,
     num_samples: int,
+    previous: Level | None,
 ) -> Level:
-    """Return one level of channel key.
+    """Return one level of channel key, given the level below it or None.
 
     Raises:
-        ValueError: If period_us does not match rate_hz, if minmax is
-            missing, or if a member has the wrong shape or dtype kind.
+        ValueError: If period_us is not a whole number of samples of at least
+            2, if it is not an integer multiple of previous.period_us of at
+            least 2, if minmax is missing, or if a member has the wrong shape
+            or dtype kind.
     """
     where = f"channel {key} level {number}"
     period_us = parse_level_attrs(group.attrs, where)
-    samples_per_bin = DEFAULT_DECIMATION_FACTOR**number
-    expected = level_period_us(rate_hz, samples_per_bin)
-    if not math.isclose(period_us, expected, rel_tol=LEVEL_PERIOD_TOLERANCE):
+    width = period_us * rate_hz / MICROSECONDS_PER_SECOND
+    samples_per_bin = round(width)
+    if samples_per_bin < MIN_DECIMATION_FACTOR or not math.isclose(
+        width, samples_per_bin, rel_tol=LEVEL_PERIOD_TOLERANCE
+    ):
         raise ValueError(
-            f"{where}: {TSZ_KEY}.period_us must be {expected!r} to match "
-            f"rate_hz {rate_hz!r}, got {period_us!r}"
+            f"{where}: {TSZ_KEY}.period_us must be a whole number of samples, "
+            f"at least {MIN_DECIMATION_FACTOR}, at rate_hz {rate_hz!r}, "
+            f"got {period_us!r}"
+        )
+    if previous is not None and (
+        samples_per_bin % previous.samples_per_bin != 0
+        or samples_per_bin < MIN_DECIMATION_FACTOR * previous.samples_per_bin
+    ):
+        raise ValueError(
+            f"{where}: {TSZ_KEY}.period_us must be an integer multiple of "
+            f"level {previous.number}'s {previous.period_us!r}, at least "
+            f"{MIN_DECIMATION_FACTOR} times it, got {period_us!r}"
         )
     bins = level_bins(num_samples, samples_per_bin)
     envelope = (bins, ENVELOPE_PAIR_SIZE)
@@ -752,24 +767,27 @@ def parse_continuous_channel(
     Raises:
         ValueError: If a required key or array is missing, an array has the
             wrong shape or dtype kind, the level numbers have a gap, a level
-            is stored as an array, or a level's period_us does not match
-            rate_hz. The message names the channel and the level at fault.
+            is stored as an array, or a level's period_us is not a whole
+            number of samples or not an integer multiple of the level below
+            it. The message names the channel and the level at fault.
     """
     where = f"channel {key}"
     fields = parse_continuous_attrs(attributes, where)
     numbers = _level_numbers(where, groups, arrays)
     raw = _parse_raw(where, arrays)
-    levels = {
-        number: _parse_level(
+    levels: dict[int, Level] = {}
+    previous: Level | None = None
+    for number in numbers:
+        previous = _parse_level(
             key,
             number,
             groups[str(number)],
             arrays,
             fields.rate_hz,
             raw.shape[0],
+            previous,
         )
-        for number in numbers
-    }
+        levels[number] = previous
     return ContinuousChannel(
         key=key,
         name=fields.name,

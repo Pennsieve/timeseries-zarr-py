@@ -390,13 +390,13 @@ def _reduce_bins(values, width, reduce):
     return np.concatenate(parts)
 
 
-def _level_statistics(samples, level):
-    """Return every member of level folded from samples, keyed by name.
+def _level_statistics(samples, samples_per_bin):
+    """Return every member of a level of samples_per_bin, keyed by name.
 
     A NaN sample makes minmax, mean, var, and median of its bin NaN. count
     holds the number of finite samples in each bin.
     """
-    width = DEFAULT_DECIMATION_FACTOR**level
+    width = samples_per_bin
     values = samples.astype(np.float64)
     minimum = _reduce_bins(values, width, np.min)
     maximum = _reduce_bins(values, width, np.max)
@@ -412,22 +412,27 @@ def _level_statistics(samples, level):
     }
 
 
-def _write_continuous(root, key, attrs, samples, levels):
+def _write_continuous(root, key, attrs, samples, levels, widths=None):
     """Write continuous channel key with raw and the named level members.
 
-    levels maps each level number to the names of the members it holds.
+    levels maps each level number to the names of the members it holds. widths
+    lists the samples per bin of level 1, 2, and so on, and the default is
+    DEFAULT_DECIMATION_FACTOR to the power of the level number.
     """
     channel = create_group_with_attrs(root, str(key), attrs)
     _write_rows(channel, RAW_KEY, samples, (TIME_DIMENSION,))
     rate_hz = attrs[TSZ_KEY]["rate_hz"]
     for level, members in levels.items():
-        statistics = _level_statistics(samples, level)
+        width = (
+            DEFAULT_DECIMATION_FACTOR**level
+            if widths is None
+            else widths[level - 1]
+        )
+        statistics = _level_statistics(samples, width)
         group = create_group_with_attrs(
             channel,
             str(level),
-            level_group_attrs(
-                level_period_us(rate_hz, DEFAULT_DECIMATION_FACTOR**level)
-            ),
+            level_group_attrs(level_period_us(rate_hz, width)),
         )
         for member in members:
             dimensions = (

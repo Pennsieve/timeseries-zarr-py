@@ -1053,6 +1053,23 @@ def test_count_level_periods_within_the_tolerance_are_accepted():
     ]
 
 
+def test_count_levels_accept_whole_ratios_that_differ_by_level():
+    channel = _built(
+        {
+            "events": _BUILT_EVENTS,
+            "1/count": _counts(1, 2),
+            "2/count": _counts(1, 2),
+            "3/count": _counts(1, 2),
+        },
+        groups=_levels(1000.0, 2000.0, 6000.0),
+    )
+    assert [level.period_us for level in channel.count_levels.values()] == [
+        1000.0,
+        2000.0,
+        6000.0,
+    ]
+
+
 def test_count_levels_follow_the_label_names():
     channel = _built(
         {
@@ -1327,11 +1344,25 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
                 "1/count": _counts(1, 1),
                 "2/count": _counts(1, 1),
             },
-            _levels(1000.0, 3000.0),
+            _levels(1000.0, 1500.0),
             None,
-            "channel 4 count level 2: tsz.period_us must be 4000.0, 4 times "
-            "that of count level 1, got 3000.0",
-            id="count-level-ratio",
+            "channel 4 count level 2: tsz.period_us must be an integer "
+            "multiple of 1000.0, the period_us of count level 1, at least 2 "
+            "times it, got 1500.0",
+            id="count-level-ratio-fractional",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
+                "1/count": _counts(1, 1),
+                "2/count": _counts(1, 1),
+            },
+            _levels(1000.0, 1000.0),
+            None,
+            "channel 4 count level 2: tsz.period_us must be an integer "
+            "multiple of 1000.0, the period_us of count level 1, at least 2 "
+            "times it, got 1000.0",
+            id="count-level-ratio-1",
         ),
         pytest.param(
             {
@@ -1342,8 +1373,9 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
             },
             _levels(1000.0, 4000.0, 15000.0),
             None,
-            "channel 4 count level 3: tsz.period_us must be 16000.0, 4 times "
-            "that of count level 2, got 15000.0",
+            "channel 4 count level 3: tsz.period_us must be an integer "
+            "multiple of 4000.0, the period_us of count level 2, at least 2 "
+            "times it, got 15000.0",
             id="count-level-ratio-past-level-2",
         ),
         pytest.param(
@@ -1354,7 +1386,8 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
             },
             _levels(1000.0, 4000.0 * (1 + 1e-8)),
             None,
-            r"channel 4 count level 2: tsz\.period_us must be 4000\.0",
+            r"channel 4 count level 2: tsz\.period_us must be an integer "
+            r"multiple of 1000\.0",
             id="count-level-ratio-past-the-tolerance",
         ),
         pytest.param(

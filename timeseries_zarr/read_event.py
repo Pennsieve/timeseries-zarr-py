@@ -23,7 +23,6 @@ from timeseries_zarr.columns import decode_channels_rows, decode_event_text
 from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
-    DEFAULT_DECIMATION_FACTOR,
     DURATIONS_KEY,
     EVENT_DIMENSION,
     EVENTS_KEY,
@@ -32,6 +31,7 @@ from timeseries_zarr.constants import (
     LABELS_KEY,
     LEVEL_PERIOD_TOLERANCE,
     MICROSECONDS_PER_SECOND,
+    MIN_DECIMATION_FACTOR,
     TEXT_KEY,
     TSZ_KEY,
     VALUES_KEY,
@@ -942,7 +942,8 @@ def _parse_count_levels(
             or a level lacks period_us or count. Also raised when offset_us
             is not a multiple of period_us, count is not a rank-2 integer
             array, the levels disagree on the number of labels, or a
-            period_us is not DEFAULT_DECIMATION_FACTOR times the one before it.
+            period_us is not an integer multiple, at least 2, of the one
+            before it.
     """
     check_level_arrays(where, "count level", COUNT_KEY, arrays)
     numbers = check_level_numbers(where, "count levels", groups)
@@ -974,15 +975,19 @@ def _check_period(where: str, period_us: float, previous: CountLevel) -> None:
     """Check that period_us follows the count level previous.
 
     Raises:
-        ValueError: period_us is not DEFAULT_DECIMATION_FACTOR times the period_us of
-            previous.
+        ValueError: period_us is not an integer multiple of the period_us of
+            previous, or the multiple is below 2.
     """
-    expected = DEFAULT_DECIMATION_FACTOR * previous.period_us
-    if not math.isclose(period_us, expected, rel_tol=LEVEL_PERIOD_TOLERANCE):
+    ratio = period_us / previous.period_us
+    multiple = round(ratio)
+    if multiple < MIN_DECIMATION_FACTOR or not math.isclose(
+        ratio, multiple, rel_tol=LEVEL_PERIOD_TOLERANCE
+    ):
         raise ValueError(
-            f"{where}: {TSZ_KEY}.period_us must be {expected!r}, "
-            f"{DEFAULT_DECIMATION_FACTOR} times that of count level "
-            f"{previous.number}, got {period_us!r}"
+            f"{where}: {TSZ_KEY}.period_us must be an integer multiple of "
+            f"{previous.period_us!r}, the period_us of count level "
+            f"{previous.number}, at least {MIN_DECIMATION_FACTOR} times it, "
+            f"got {period_us!r}"
         )
 
 
@@ -1036,8 +1041,8 @@ def parse_event_channel(
             wrong rank, dtype kind, or number of rows. Also raised when count
             level numbers have a gap, count levels disagree on the number of
             labels, a count level is stored as an array, or a period_us is
-            not DEFAULT_DECIMATION_FACTOR times the one before it. The message names
-            the channel, and the array or count level at fault.
+            not an integer multiple, at least 2, of the one before it. The
+            message names the channel, and the array or count level at fault.
     """
     where = f"channel {key}"
     fields = parse_event_attrs(attributes, where)
