@@ -23,7 +23,12 @@ from tests.conftest import (
     ODD_TEXT_WIDTH,
     ODD_TIE,
     ODD_WAVEFORM_PERIOD_US,
+    RUNS_GRID_LENGTH,
+    RUNS_LENGTHS,
+    RUNS_RATE_HZ,
+    RUNS_TABLE,
     memory_store,
+    runs_samples,
 )
 from tests.test_bundle import (
     _MIXED_PROVENANCE,
@@ -490,3 +495,47 @@ def test_odd_bundle_channel_12_holds_durations_without_a_bound(odd_bundle):
     assert channel["events"][:].tolist() == list(ODD_INTERVAL_EVENTS)
     assert channel["durations"][:].tolist() == list(ODD_INTERVAL_DURATIONS)
     assert "max_duration_us" not in _tsz(channel)
+
+
+def test_runs_bundle_channel_0_holds_the_runs_array_and_channel_1_none(
+    runs_bundle,
+):
+    root = _open(runs_bundle)
+    runs = root["0"]["runs"]
+    assert runs.shape == (2, 3)
+    assert runs.dtype == np.int64
+    assert runs.metadata.dimension_names == ("run", None)
+    assert runs[:].tolist() == [list(row) for row in RUNS_TABLE]
+    assert "runs" not in list(root["1"].array_keys())
+
+
+def test_runs_bundle_channels_share_one_grid_length(runs_bundle):
+    root = _open(runs_bundle)
+    assert root["0"]["raw"].shape == (RUNS_GRID_LENGTH,)
+    assert root["1"]["raw"].shape == (RUNS_GRID_LENGTH,)
+    assert RUNS_TABLE[-1][0] + RUNS_TABLE[-1][1] == RUNS_GRID_LENGTH
+
+
+def test_runs_bundle_channel_0_starts_at_the_reference_time(runs_bundle):
+    attributes = _tsz(_open(runs_bundle)["0"])
+    assert attributes["offset_us"] == 0
+    assert attributes["rate_hz"] == RUNS_RATE_HZ
+
+
+def test_runs_bundle_raw_is_nan_between_the_runs_and_the_samples_elsewhere(
+    runs_bundle,
+):
+    raw = _open(runs_bundle)["0"]["raw"][:]
+    first, second = runs_samples()
+    end = RUNS_LENGTHS[0]
+    resume = RUNS_TABLE[1][0]
+    assert np.array_equal(raw[:end], first)
+    assert np.isnan(raw[end:resume]).all()
+    assert np.array_equal(raw[resume:], second)
+
+
+def test_runs_bundle_count_is_zero_over_the_pause(runs_bundle):
+    count = _open(runs_bundle)["0"]["1"]["count"][:]
+    assert (count[1024:1216] == 0).all()
+    assert count[:1024].min() == 4
+    assert count[1216:].min() == 4

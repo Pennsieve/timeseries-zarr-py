@@ -6,11 +6,15 @@ input creates the arrays and writes nothing.
 
 ChannelWriter writes one channel in one pass. Each block of samples goes to
 the raw array and through a LevelFolder, and every chunk that the folder
-emits goes to its member array. Nothing is read back from the store.
+emits goes to its member array. Nothing is read back from the store. A channel
+with several runs also gets the NaN samples between them, pushed through the
+same path in pieces of at most one raw shard, and a runs array that lists the
+runs.
 write_continuous_channel writes one source, and write_continuous_channels
 writes every channel of a multi-channel source in one sweep over its windows.
 """
 
+from bisect import bisect_right
 from collections.abc import Sequence
 from concurrent.futures import Executor, Future, ThreadPoolExecutor, wait
 from contextlib import nullcontext
@@ -28,6 +32,8 @@ from timeseries_zarr.constants import (
     MEAN_KEY,
     MINMAX_KEY,
     RAW_KEY,
+    RUN_DIMENSION,
+    RUNS_KEY,
     TIME_DIMENSION,
     VAR_KEY,
     WINDOW_BATCH_BYTES,
@@ -41,7 +47,9 @@ from timeseries_zarr.protocols import (
     MultiChannelSource,
     Window,
     source_provenance,
+    source_runs,
 )
+from timeseries_zarr.runs import Placement, check_source_runs, place_runs
 from timeseries_zarr.shards import AppendBudget, ArrayWriter, ShardLayout
 from timeseries_zarr.sizing import level_sizing, member_sizing, raw_sizing
 from timeseries_zarr.streaming import iter_raw_blocks, scale_block
@@ -61,9 +69,39 @@ from timeseries_zarr.zarr_io import (
     create_nodes,
     group_metadata,
     shard_layout,
+    write_region,
 )
 
 _MATRIX_RANK = 2
+_RUN_COLUMNS = 3
+_MIN_RUNS_FOR_TABLE = 2
+
+
+def channel_placement(
+    channel: ContinuousChannelMetadata, reference_us: int
+) -> Placement:
+    """Return the placement of the runs of channel on its sample grid.
+
+    A channel without runs is one run that starts at start_us. A channel
+    without samples has an empty table and a grid length of 0.
+
+    Args:
+        channel: The channel metadata.
+        reference_us: The reference time in microseconds.
+
+    Raises:
+        ValueError: If the runs of the channel do not start at start_us and
+            total num_samples, or place_runs rejects them.
+    """
+    runs = source_runs(channel)
+    if channel.num_samples() == 0 and not any(run.num_samples for run in runs):
+        return Placement(
+            channel.start_us() - reference_us,
+            0,
+            np.zeros((0, _RUN_COLUMNS), dtype=np.int64),
+        )
+    check_source_runs(runs, channel.start_us(), channel.num_samples())
+    return place_runs(runs, channel.rate_hz(), reference_us)
 
 
 def _channel_group_metadata(
@@ -321,6 +359,10 @@ class ChannelWriter:
     wait to be written. Its memory does not grow with the length of the
     channel. Every shard is written once, as it fills. The bytes written do not
     depend on the executor.
+
+    A pause between runs is NaN samples on the grid. The writer pushes them
+    before the first sample of the next run, in pieces of at most one raw
+    shard of rows.
     """
 
     def __init__(
@@ -333,6 +375,7 @@ class ChannelWriter:
         inner_len: int,
         decimation_factor: int,
         executor: Executor | None = None,
+        placement: Placement | None = None,
     ) -> None:
         """Start a channel.
 
@@ -348,12 +391,31 @@ class ChannelWriter:
             executor: Encodes the chunks of a large push in groups. A worker
                 of the executor may call push while another worker is idle.
                 Chunks encode in the calling thread when None.
+            placement: The runs of the channel on its grid. None means one run
+                of num_samples samples.
         """
         self._key = key
         self._channel = channel
         self._factor = factor
         self._num_samples = channel.num_samples()
         self._received = 0
+        self._gap_rows = raw.chunk_rows * raw.chunks_per_shard
+        if placement is None:
+            lengths = [self._num_samples]
+            gaps = [0]
+        else:
+            lengths = [int(length) for length in placement.table[:, 1]]
+            ends = placement.table[:, 0] + placement.table[:, 1]
+            gaps = [0] + [
+                int(first - end)
+                for first, end in zip(
+                    placement.table[1:, 0], ends[:-1], strict=True
+                )
+            ]
+        self._run_starts = [0]
+        for length in lengths:
+            self._run_starts.append(self._run_starts[-1] + length)
+        self._run_gaps = gaps
         budget = AppendBudget(CHANNEL_APPEND_BYTES)
         self._raw = ArrayWriter(raw, executor, budget)
         self._folder = (
@@ -430,9 +492,29 @@ class ChannelWriter:
         if not samples.shape[0]:
             return
         scaled = np.ascontiguousarray(scale_block(samples, self._factor))
-        self._raw.push(scaled)
+        position = 0
+        while position < scaled.shape[0]:
+            index = self._received - scaled.shape[0] + position
+            run = bisect_right(self._run_starts, index) - 1
+            if index == self._run_starts[run]:
+                self._push_gap(self._run_gaps[run])
+            stop = min(
+                scaled.shape[0], position + self._run_starts[run + 1] - index
+            )
+            self._push_rows(scaled[position:stop])
+            position = stop
+
+    def _push_rows(self, rows: npt.NDArray[np.float32]) -> None:
+        """Append rows, which are already scaled, to raw and fold them."""
+        self._raw.push(rows)
         if self._folder is not None:
-            self._route(self._folder.push(scaled))
+            self._route(self._folder.push(rows))
+
+    def _push_gap(self, count: int) -> None:
+        """Append count NaN samples in pieces of at most one raw shard."""
+        for start in range(0, count, self._gap_rows):
+            piece = min(self._gap_rows, count - start)
+            self._push_rows(np.full(piece, np.nan, dtype=np.float32))
 
     def finish(self) -> None:
         """Fold the tails and close the last shard of every array.
@@ -466,13 +548,16 @@ def _add_channel_nodes(
     resolved: ResolvedUnit,
     reference_us: int,
     opts: WriteOpts,
-) -> list[LevelPlan]:
-    """Add the nodes of one channel to nodes and return its level plans.
+) -> tuple[list[LevelPlan], Placement]:
+    """Add the nodes of one channel to nodes and return its plans and placement.
 
-    The nodes are the channel group, its raw array, and every level group
-    with its members, keyed by their path below the parent of the channel.
+    The nodes are the channel group, its raw array, every level group with its
+    members, and the runs array when the channel has two or more runs. Each is
+    keyed by its path below the parent of the channel. Raw and the levels
+    cover the grid length of the placement.
     """
-    num_samples = channel.num_samples()
+    placement = channel_placement(channel, reference_us)
+    num_samples = placement.num_samples
     plans = plan_levels(
         num_samples,
         channel.rate_hz(),
@@ -488,6 +573,16 @@ def _add_channel_nodes(
         raw_sizing(num_samples, opts.inner_len, opts.target_shard_bytes),
         opts.zstd_level,
     )
+    if placement.table.shape[0] >= _MIN_RUNS_FOR_TABLE:
+        nodes[f"{key}/{RUNS_KEY}"] = array_metadata(
+            placement.table.shape,
+            np.int64,
+            placement.table.shape,
+            placement.table.shape,
+            opts.zstd_level,
+            {},
+            dimension_names=(RUN_DIMENSION, None),
+        )
     for plan in plans:
         nodes.update(
             _level_metadata(
@@ -500,7 +595,7 @@ def _add_channel_nodes(
                 prefix=f"{key}/",
             )
         )
-    return plans
+    return plans, placement
 
 
 def _channel_writer(
@@ -508,11 +603,18 @@ def _channel_writer(
     key: int,
     channel: ContinuousChannelMetadata,
     plans: Sequence[LevelPlan],
+    placement: Placement,
     factor: float,
     opts: WriteOpts,
     executor: Executor | None,
 ) -> ChannelWriter:
-    """Return the writer of a channel whose nodes handles holds."""
+    """Return the writer of a channel whose nodes handles holds.
+
+    A channel with a runs array gets its table written here, as one shard.
+    """
+    runs_key = f"{key}/{RUNS_KEY}"
+    if runs_key in handles:
+        write_region(cast("ZarrArray", handles[runs_key]), 0, placement.table)
     levels = []
     for plan in plans:
         members = _level_members(handles, plan, opts.write_var, f"{key}/")
@@ -533,6 +635,7 @@ def _channel_writer(
         opts.inner_len,
         opts.decimation_factor,
         executor,
+        placement,
     )
 
 
@@ -649,15 +752,17 @@ def write_continuous_channel(
     """
     resolved = resolve_unit(source.unit, opts.voltage_policy)
     nodes: dict[str, NodeMetadata] = {}
-    plans = _add_channel_nodes(nodes, key, source, resolved, reference_us, opts)
+    plans, placement = _add_channel_nodes(
+        nodes, key, source, resolved, reference_us, opts
+    )
     handles = create_nodes(parent, nodes)
     block_samples = raw_sizing(
-        source.num_samples(), opts.inner_len, opts.target_shard_bytes
+        placement.num_samples, opts.inner_len, opts.target_shard_bytes
     ).shard_shape[0]
     workers = opts.worker_count
     with _pool(workers) as pool:
         writer = _channel_writer(
-            handles, key, source, plans, resolved.factor, opts, pool
+            handles, key, source, plans, placement, resolved.factor, opts, pool
         )
         for block in iter_raw_blocks(source, block_samples):
             writer.push(block)
@@ -712,10 +817,11 @@ def write_continuous_channels(
         return
     nodes: dict[str, NodeMetadata] = {}
     plans_by_key: dict[int, list[LevelPlan]] = {}
+    placements: dict[int, Placement] = {}
     factors: dict[int, float] = {}
     for key, channel in enumerate(channels, start=first_key):
         resolved = resolve_unit(channel.unit, opts.voltage_policy)
-        plans_by_key[key] = _add_channel_nodes(
+        plans_by_key[key], placements[key] = _add_channel_nodes(
             nodes, key, channel, resolved, reference_us, opts
         )
         factors[key] = resolved.factor
@@ -731,6 +837,7 @@ def write_continuous_channels(
                 key,
                 channel,
                 plans_by_key[key],
+                placements[key],
                 factors[key],
                 opts,
                 encoder,
