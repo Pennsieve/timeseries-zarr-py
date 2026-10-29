@@ -9,7 +9,8 @@ compute the time axis. The [specification](./spec.md) defines the format.
 The examples on this page read `example.zarr`, which the code below writes to the
 working directory. It holds five minutes of five channels. Channels 0 and 1 are 5 Hz
 and 10 Hz tones sampled at 1000 Hz on one grid. Channel 2 is a 1 Hz tone sampled at
-256 Hz. It starts 0.5 s after the reference time and has a gap from 120.5 s to 125 s.
+256 Hz. It starts 0.5 s after the reference time and pauses from 120.5 s. It resumes
+1 ms before 125 s, off its sample grid, and holds two runs.
 Channel 3 holds six marks with durations, labels, text, and the channels each mark
 applies to. Channel 4 holds the spike times of three units, 70,000 events in all, and
 the mean waveform of each unit. `Tone` and `Events` implement the source protocols
@@ -21,7 +22,13 @@ from pathlib import Path
 
 import numpy as np
 
-from timeseries_zarr import RecordingMeta, WriteOpts, text_width, write_bundle
+from timeseries_zarr import (
+    RecordingMeta,
+    Run,
+    WriteOpts,
+    text_width,
+    write_bundle,
+)
 
 SESSION_START = datetime(
     2024, 3, 14, 9, 15, tzinfo=timezone(timedelta(hours=-5))
@@ -41,7 +48,7 @@ def unix_us(seconds):
 class Tone:
     unit = "uV"
 
-    def __init__(self, hertz, rate_hz=1000.0, delay_s=0.0, gap_s=None):
+    def __init__(self, hertz, rate_hz=1000.0, delay_s=0.0, pause_s=None):
         self.id = f"tone-{hertz}"
         self.name = f"{hertz} Hz"
         self._rate_hz = rate_hz
@@ -49,9 +56,20 @@ class Tone:
         seconds = np.arange(round(SECONDS * rate_hz)) / rate_hz
         samples = 100.0 * np.sin(2 * np.pi * hertz * seconds)
         self.samples = samples.astype(np.float32)
-        if gap_s is not None:
-            first, last = (round(edge * rate_hz) for edge in gap_s)
-            self.samples[first:last] = np.nan
+        self._runs = [Run(self._start_us, self.samples.shape[0])]
+        if pause_s is not None:
+            stop, resume = (round(edge * rate_hz) for edge in pause_s)
+            resume_us = int(unix_us(delay_s + pause_s[1]))
+            self._runs = [
+                Run(self._start_us, stop),
+                Run(resume_us, self.samples.shape[0] - resume),
+            ]
+            self.samples = np.concatenate(
+                [self.samples[:stop], self.samples[resume:]]
+            )
+
+    def runs(self):
+        return self._runs
 
     def rate_hz(self):
         return self._rate_hz
@@ -169,7 +187,7 @@ write_bundle(
     [
         Tone(5),
         Tone(10),
-        Tone(1, rate_hz=256.0, delay_s=0.5, gap_s=(120.0, 124.5)),
+        Tone(1, rate_hz=256.0, delay_s=0.5, pause_s=(120.0, 124.499)),
     ],
     [marks, spikes],
     output_path=Path("example.zarr"),
@@ -261,8 +279,9 @@ the specification defines the reference time. A window bound, `level`, `bins`,
 and `gap_us` each take an `int` or a numpy integer. A `float` raises `TypeError`.
 
 A continuous read stores `offset_us`, `first`, and `period_us` in its result.
-Entry `i` of the result starts at `offset_us + (first + i) * period_us` microseconds,
-and `time_us` computes that for every entry.
+Entry `i` of the result starts at `offset_us + (first + i) * period_us` microseconds
+on the sample grid, and `time_us` computes that for every entry. A raw read of a
+channel that has [runs](#runs) gives the exact time of each recorded sample instead.
 
 `time_us` is float64. A sample period of `1e6 / rate_hz` microseconds
 is rarely a whole number, and at 256 Hz it is 3906.25 microseconds.
@@ -299,10 +318,10 @@ A `ContinuousChannel` carries `name`, `id`, `unit`, `rate_hz`, `offset_us`, and
 `provenance` from its group attributes. Its `key` is the number that names its group.
 
 `provenance` is a read-only mapping, or `None` when the group has none.
-`num_samples` is the length of `raw`. `period_us` is the spacing of the raw samples,
-and `start_us` is the time of sample 0. `end_us` is the end of the last sample,
-rounded up to a whole microsecond. A window from `start_us` to `end_us` holds
-every sample.
+`num_samples` is the length of `raw`, which counts the NaN samples of every pause.
+`period_us` is the spacing of the raw samples, and `start_us` is the time of sample 0.
+`end_us` is the end of the last sample, rounded up to a whole microsecond. A window
+from `start_us` to `end_us` holds every sample.
 
 `raw` is the zarr array of samples.
 `levels` maps each level number, from 1, to a `Level`. The `samples_per_bin` of a
@@ -376,14 +395,17 @@ with open_bundle("example.zarr") as bundle:
 
 A NaN sample is a gap. The [continuous channels](./spec.md#continuous-channels)
 section of the specification defines how a gap folds into each level, and the
-reader passes the statistics through unchanged.
+reader passes the statistics through unchanged. A raw read of a channel with runs
+checks that every sample outside a run is NaN and raises `ValueError` otherwise.
 
 `spans(start_us=None, end_us=None, *, level=None, gap_us=0)` returns the
 half-open spans of the window that hold data, as pairs of integer microseconds.
 It reads the coarsest level when `level` is `None`, or the raw samples
 on a channel without levels. A bin holds data when its `count` is above 0.
 On a level without `count`, a bin holds data when a `minmax` value is finite.
-A span that starts at most `gap_us` after the previous span ends joins it.
+A span that starts at most `gap_us` after the previous span ends joins it. A span on
+level 0 of a channel with runs starts and ends at exact sample times. A span on a level
+starts and ends at bin edges on the grid.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -395,6 +417,55 @@ with open_bundle("example.zarr") as bundle:
     print(bins.count)
     print(channel.spans())
     print(channel.spans(level=1, gap_us=5_000_000))
+```
+
+## Runs
+
+A channel whose recording paused and resumed off its sample grid holds a `runs` array.
+Each row describes one run, a span of samples recorded at the sample rate. The
+[continuous channels](./spec.md#continuous-channels) section of the specification
+defines the rows and the rules that place a run on the grid. The grid keeps a NaN
+sample for each sample period of a pause, and `runs` holds the exact time that each
+run starts.
+
+`channel.runs` is `None` for a channel without a `runs` array. Otherwise it is a
+read-only int64 array of shape `(R, 3)`. Column 0 is the index of the first sample of a
+run, column 1 its number of samples, and column 2 the time of its first sample in
+microseconds from the reference time. The first access reads the array and checks every
+row against the specification. A row that breaks a rule raises `ValueError`, and the
+message names the channel and the row.
+
+A raw read of a channel with runs uses the exact times:
+
+- `Samples.time_us` gives the exact time of each sample inside a run. A NaN sample
+  between two runs gets its grid time.
+- A window maps to samples through the exact times of the runs. A window inside a pause
+  maps to the NaN samples on the grid.
+- `end_us` is the exact end of the last run.
+
+`Bins.time_us` stays on the grid at every level, so channels that share a grid still
+stack by index. A reader that ignores `runs` places each sample within one sample
+period of its time.
+
+Channel 2 of `example.zarr` pauses from 120.5 s and resumes 1 ms before 125 s. Sample
+31,872 is the first of the second run. The window below holds three NaN samples of the
+pause and three samples of the second run. The printed difference is 0 for a NaN
+sample and -1000 microseconds for a sample of the run.
+
+```python
+import numpy as np
+
+from timeseries_zarr import open_bundle
+
+with open_bundle("example.zarr") as bundle:
+    channel = bundle.continuous[2]
+    print(channel.runs)
+    samples = channel.read(124_990_000, 125_010_000)
+    print(samples.first, samples.values)
+    indices = samples.first + np.arange(len(samples))
+    print(samples.time_us - (channel.offset_us + indices * channel.period_us))
+    print(channel.spans(level=0))
+    print(channel.spans(level=1))
 ```
 
 ## Event channels
@@ -615,7 +686,9 @@ applies to the whole recording.
 A rewrite leaves out `values`, `waveforms`, and the `event_sample` of `waveform_mean`.
 The writer takes no input for them. A rewrite also leaves out a `text` column of width
 0, and `waveform_mean` when it carries no `labels`. The writer computes the levels and
-count levels again with the `WriteOpts` it gets.
+count levels again with the `WriteOpts` it gets. A rewrite also leaves out the `runs`
+array. The copy keeps the NaN samples of each pause and puts every sample at its grid
+time.
 
 Write the new bundle to a path other than the bundle being read. `write_bundle` clears
 `output_path` before it reads a source, so a rewrite in place leaves only fill values.

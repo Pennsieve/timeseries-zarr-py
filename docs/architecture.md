@@ -14,7 +14,8 @@ array or a sequence with one block per channel.
 channel of a multi-channel source share. An event source exposes its metadata, its event
 times, and the optional columns it provides. Its `columns()` method names them, and the
 writer calls a column's reader only for a column named there. Every channel may also
-define `provenance()`, which the protocols leave optional.
+define `provenance()` and `runs()`, which the protocols leave optional. `RunsSource`
+declares `runs()` and `source_runs` reads it. A channel without it is one run.
 
 Everything downstream depends on the protocols. An adapter for an input format lives in
 its own package and implements them. The NWB adapter is
@@ -35,6 +36,10 @@ from a ladder of `1000 * decimation_factor^j` microseconds, and each level above
 `decimation_factor` times the time.
 `columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows.
 `units.py` resolves the factor and stored unit of a continuous channel.
+`runs.py` holds `Run`, the span of samples that a source states, and `place_runs`, which
+puts the runs of a channel on its sample grid in exact fractions. It returns the offset,
+the grid length, and the table of the `runs` array. The same module checks the table
+and the NaN samples outside the runs when the reader loads a channel.
 
 Keeping these separate from the write path means the format's arithmetic is unit-testable
 without touching a store.
@@ -59,12 +64,15 @@ event channel use it.
 `write_continuous.py` writes continuous channels in one pass. A `ChannelWriter` holds the
 state of one channel. Each block of samples is scaled to the stored unit, appended to
 `raw`, and folded into every level. Each chunk that the folder emits is appended to its
-member array. Nothing is read back from the store. `write_var` decides only whether the
+member array. Nothing is read back from the store. A channel with several runs also gets the NaN
+samples of each pause, pushed through the same path before the first sample of the next
+run. It writes the `runs` array of a channel with two or more runs as one shard through
+`zarr_io.write_region`. `write_var` decides only whether the
 `var` member is stored, because every level folds from float64 statistics and the variance
 stays exact on a channel with a large DC offset.
 
-`write_continuous_channels` writes every channel of a multi-channel source. It builds
-the metadata of every channel group, `raw` array, level group, and level member, and
+`write_continuous_channels` writes every channel of a multi-channel source. It places the
+runs of each channel, builds the metadata of every channel group, `raw` array, level group, and level member, and
 `zarr_io.create_nodes` creates them all in one concurrent call. `zarr_io.array_metadata`
 and `zarr_io.group_metadata` build the metadata, and a test pins that they store the same
 `zarr.json` as `create_array` and `create_group_with_attrs`. The writer then makes one
@@ -126,7 +134,8 @@ metadata in the root `zarr.json`. `read_recording.py` parses `recording.json` in
 
 `read_continuous.py` and `read_event.py` each parse one kind of channel group and hold
 the window reads of that kind. `windows.py` maps a time window to a range of samples
-or bins in exact fractions and computes the float64 time axis of a result. The parsers
+or bins in exact fractions and computes the float64 time axis of a result. For a channel
+with a `runs` table it maps windows and indices through the exact times of the runs. The parsers
 also read channel and level numbers from group names through it. `attrs.py` parses the
 `tsz` attributes beside its builders, and `columns.py` decodes the `text` and
 `channels` rows.

@@ -74,6 +74,12 @@ Sources must provide times in microseconds since the Unix epoch. The writer stor
 each time as an offset from the reference time, the earlier of the session start you
 declare and the first sample. A channel or event before it has a negative time.
 
+A recording that pauses and resumes is a list of runs, which a source states with
+`runs()`. The bundle stores a pause as NaN samples on the sample grid and keeps the exact
+time that each run resumes in a `runs` array.
+[Pauses and runs](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/writing.md#pauses-and-runs)
+shows an example.
+
 Passing a `RecordingMeta` as `recording` adds a `recording.json`. It holds
 `reference_time` as a datetime and the subject, session, and source details
 you give. `session_start_time` is the acquisition time, written as
