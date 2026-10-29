@@ -43,6 +43,87 @@ windows until they hold 262,144 rows of a channel or 64 MiB, so a batch holds at
 `timeseries_zarr.UNIT_TO_UV` maps each voltage unit name to its factor to microvolts.
 The writer keeps every other unit as given.
 
+## Pauses and runs
+
+A recording that pauses and resumes is a list of runs. A run is a span of samples one
+sample period apart. A source states its runs by defining `runs()`, which returns
+`Run(start_us, num_samples)` entries in time order. `start_us` is the time of the first
+sample of the run in microseconds since the Unix epoch.
+
+The first run starts at `start_us()` of the channel, and the run lengths total
+`num_samples()`. A pause adds no sample to `num_samples()`, so `read_samples` and the
+blocks of a `MultiChannelSource` hold recorded samples only. A source without `runs()`
+is one run. A NaN sample inside a run is an ordinary gap, and the source delivers it.
+
+The writer places each run on the sample grid of the channel and fills each pause with
+NaN samples. It stores the runs in a `runs` array when the channel has two or more. The
+[continuous channels](./spec.md#continuous-channels) section of the specification
+defines the array and the placement rule. The `raw` array and every level cover the grid,
+so `raw` is longer than `num_samples()` by the NaN samples of the pauses.
+
+`write_bundle` raises `ValueError` before it clears `output_path` when the runs do not
+fit. The message names the position of the channel. The causes are an empty list, a first
+run that does not start at `start_us()`, run lengths that do not total `num_samples()`,
+a run with no samples, runs out of time order, and a run that starts before the samples
+of the previous run end. The last cause means samples arrive closer together than the
+sample period.
+
+This example writes one channel of two runs at 256 Hz. The first run lasts 15 s. The
+second run starts 5 s after it ends, plus 1 ms, which is off the sample grid.
+
+```python
+from pathlib import Path
+
+import numpy as np
+
+from timeseries_zarr import Run, WriteOpts, open_bundle, write_bundle
+
+RATE_HZ = 256.0
+FIRST_US = 1_700_000_000_000_000
+
+
+class PausedChannel:
+    id = "paused-0"
+    name = "paused"
+    unit = "uV"
+
+    def __init__(self):
+        rng = np.random.default_rng(0)
+        self._samples = rng.normal(0.0, 50.0, size=7_680).astype(np.float32)
+        self._runs = [
+            Run(FIRST_US, 3_840),
+            Run(FIRST_US + 15_000_000 + 5_000_000 + 1_000, 3_840),
+        ]
+
+    def rate_hz(self):
+        return RATE_HZ
+
+    def start_us(self):
+        return FIRST_US
+
+    def num_samples(self):
+        return self._samples.shape[0]
+
+    def runs(self):
+        return self._runs
+
+    def read_samples(self, start, stop):
+        return self._samples[start:stop]
+
+
+write_bundle(
+    [PausedChannel()],
+    [],
+    output_path=Path("paused.zarr"),
+    opts=WriteOpts(),
+)
+
+with open_bundle("paused.zarr") as bundle:
+    channel = bundle.continuous[0]
+    print(channel.num_samples)
+    print(channel.runs)
+```
+
 ## Multi-channel sources
 
 A `ContinuousChannelSource` serves one channel, and `write_bundle` finishes a channel
@@ -58,7 +139,7 @@ A `MultiChannelSource` has two methods.
 `channels()` returns the channels in channel order. Each channel implements
 `ContinuousChannelMetadata`, which holds `id`, `name`, `unit`, `rate_hz()`,
 `start_us()`, and `num_samples()`. A channel needs no `read_samples`. It may define
-`provenance()`.
+`provenance()` and `runs()`.
 
 `iter_windows()` yields one window at a time, and the writer calls it once per write. The
 writer reads the next windows while it writes the previous batch, so a source must not
@@ -71,7 +152,8 @@ rows. It casts each block to float32, so an int16 array works. The sequence form
 strided column views, such as `list(data[start:stop].T)`. In the sequence form, the
 blocks of one window may differ in length, and a block may be empty. A channel whose
 samples end before the others gives an empty block in each later window. For each
-channel, the blocks concatenate to its samples, and their lengths total `num_samples()`.
+channel, the blocks concatenate to its recorded samples, and their lengths total
+`num_samples()`. A pause between runs is not a block.
 
 Blocks may differ in length, so one source can hold channels of different sample rates.
 A one-second EDF record, for example, holds 256 samples of an EEG channel beside 1 sample
