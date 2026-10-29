@@ -80,6 +80,7 @@ of the level before it.
 |   |-- zarr.json
 |   `-- c                    # Chunk objects: c/0, c/1, ... under Zarr's default
 |                            # chunk key encoding, one object per shard.
+|-- runs                     # Array, shape (R, 3), int64. Optional. Spans of recording.
 |-- 1                        # Level 1 group. Attribute: period_us.
 |   |-- zarr.json
 |   |-- minmax               # Array, shape (bins, 2), float32. Per-bin min and max.
@@ -95,7 +96,8 @@ of the level before it.
 
 | array | requirement | shape | dtype | description |
 |---|---|---|---|---|
-| `raw` | MUST | `(N,)` | float32 | The samples. Sample `i` is at time `offset_us + i * 1e6 / rate_hz`. A non-finite sample is a gap. |
+| `raw` | MUST | `(N,)` | float32 | The samples. Sample `i` is at the grid time `offset_us + i * 1e6 / rate_hz`, or at the time `runs` gives. A non-finite sample is a gap. |
+| `runs` | MAY | `(R, 3)` | int64 | Row `r` describes run `r`. Column 0 is the index of its first sample, column 1 its number of samples, and column 2 the time of its first sample in microseconds from the reference time. |
 | `<k>/minmax` | MUST per level | `(bins, 2)` | float32 | Column 0 the minimum and column 1 the maximum of the samples in bin `i`. |
 | `<k>/mean` | MAY | `(bins,)` | float32 | Arithmetic mean of the samples in bin `i`. |
 | `<k>/var` | MAY | `(bins,)` | float32 | Population variance of the samples in bin `i`. |
@@ -144,6 +146,45 @@ one is a single bad sample, which a reader may resolve from a finer level or fro
 fraction of each bin that was recorded. A coverage view of a long timeline costs one
 request. Unwritten chunks read as zero, which is the correct coverage for a span that
 was never recorded.
+
+A run is a maximal sequence of consecutive samples recorded at the sample rate, one
+sample period of `1e6 / rate_hz` microseconds apart. A channel recorded without
+interruption is one run and needs no `runs` array. A channel whose recording paused
+holds one run per span of recording, and `runs` lists the runs in order. Let `first_r`,
+`n_r`, and `time_r` be columns 0, 1, and 2 of row `r`. Rows ascend in every column. Row 0
+is `[0, n_0, offset_us]`. Every `n_r` is at least 1. Runs do not overlap
+(`first_(r+1) >= first_r + n_r`), and the last run ends at `N`. Every sample outside a
+run MUST be NaN.
+
+Sample `i` of run `r`, where `first_r <= i < first_r + n_r`, is at time
+`time_r + (i - first_r) * 1e6 / rate_hz`. `time_r` MUST lie within one sample period of
+the grid time of sample `first_r`:
+`|time_r - (offset_us + first_r * 1e6 / rate_hz)| < 1e6 / rate_hz`. The grid time of
+every sample then lies within one sample period of its time, so a reader that ignores
+`runs` places every sample within one sample period of its time. A producer places a run
+at the grid sample nearest the time of its first sample, or at the sample after the
+previous run ends when that is later. A producer rejects a recording whose samples arrive
+closer together than the sample period.
+
+Level bins are defined on the grid. A time from `runs` differs from the grid time by less
+than one sample period, which is less than the bin width of every level.
+
+Samples inside a run are periodic at `rate_hz`, and no object holds the time of an
+individual sample. A pause of any length is representable to the microsecond, the
+resolution of every time in the bundle. A pause shorter than one sample period leaves no
+NaN on the grid, and `runs` still records the time the recording resumed. Three things
+are not representable:
+
+- **Jitter.** A sample whose time deviates from the grid of its run has no place of its
+  own. A producer chooses a tolerance and keeps a sample within it in its run. Beyond the
+  tolerance, the producer starts a new run or rejects the input.
+- **Drift.** A sample clock slower or faster than `rate_hz` moves the samples of a run
+  off its grid by an amount that grows with the run. A producer that measures a uniform
+  drift stores the measured rate in `rate_hz`. Drift that remains within one run MUST
+  stay below one sample period over the run. A producer splits the run where the
+  deviation reaches its tolerance, or rejects the input.
+- **Rate changes.** A channel has one `rate_hz`. A recording whose sample rate changes
+  MUST be stored as one channel per rate, each with its own runs.
 
 With a constant factor `f` between levels, `raw` plus `minmax` stores
 `N * (f + 1) / (f - 1)` values, and each of `mean`, `var`, and `count` adds
@@ -247,8 +288,9 @@ start and the first sample when it first writes a recording, and keeps it when i
 writes the recording again, so a channel added later may begin before it. Sample and
 event times are `int64` microseconds. Periods are `float64` microseconds.
 `reference_time` in `recording.json` gives the reference time as a datetime,
-when it is known, and no other object holds one. No array carries a time axis; a
-reader computes times from `offset_us`, `rate_hz`, and `period_us`.
+when it is known, and no other object holds one. No array carries a
+per-sample time axis. A reader computes times from `offset_us`, `rate_hz`, and
+`period_us`, and from `runs` when the channel has it.
 
 ### Root metadata
 
@@ -296,7 +338,7 @@ Each channel group's `tsz` object describes the channel.
 | `id` | MAY | string | Producer identifier, stable across exports. |
 | `unit` | MUST for `continuous`, MAY for `event` | string | Unit of `raw` samples, or of the `values` column. |
 | `rate_hz` | MUST for `continuous` | number | Sample rate, greater than 0. |
-| `offset_us` | MAY for `continuous` | integer | Time of sample 0 from the reference time. May be negative. Default 0. |
+| `offset_us` | MAY for `continuous` | integer | Time of sample 0 from the reference time. May be negative. Default 0. When `runs` exists, column 2 of its row 0 holds this value. |
 | `label_names` | MAY for `event` | array of string | Name of each label category, indexed by label value. |
 | `max_duration_us` | MUST when `durations` exists | integer | Upper bound on every value in `durations`. |
 | `provenance` | MAY | object | What produced the channel, such as detector name and version. Content is producer-defined. |
@@ -466,8 +508,8 @@ viewer quantizes to pixels, so float64 precision reaches no screen. Times are
 `int64` microseconds.
 
 Arrays SHOULD declare Zarr `dimension_names`: `"time"` for a sample or bin axis,
-`"event"` for a per-event axis, `"label"` for the `L` axis of `waveform_mean`, and
-`null` for the trailing axes. Generic tools then open a level group as an aligned
+`"event"` for a per-event axis, `"label"` for the `L` axis of `waveform_mean`,
+`"run"` for the `R` axis of `runs`, and `null` for the trailing axes. Generic tools then open a level group as an aligned
 per-bin dataset.
 
 ```json
@@ -515,6 +557,10 @@ A conforming bundle satisfies all of the following, and a validator checks them.
 - Every array has the shape and dtype of its table, and all members of one level
   have the same number of bins, `ceil(N / s_k)` at level `k` of a continuous channel.
 - `raw` and the float level members declare NaN fill. Integer arrays declare 0.
+- When a continuous channel holds `runs`, its rows ascend in every column, row 0 is
+  `[0, n_0, offset_us]`, every `n_r` is at least 1, runs do not overlap, and the last run
+  ends at `N`. Every `time_r` lies within one sample period of the grid time of sample
+  `first_r`, and every sample of `raw` outside a run is NaN.
 - `events` is non-decreasing. Every per-event column has length `n`. `durations`
   values lie between 0 and `max_duration_us`. `labels` values are below `L`.
 - `waveforms` and `waveform_mean` carry `period_us`. `waveform_mean` requires
@@ -562,7 +608,7 @@ Cite this specification by its version and the repository that publishes it,
 
 | revision | date | description |
 |---|---|---|
-| 1.0 (draft) | 2026-10-05 | First versioned release. Namespaced attributes, level groups with `minmax`, `mean`, `var`, `count`, event channels with `text` and `channels` columns, `recording.json`. |
+| 1.0 (draft) | 2026-10-05 | First versioned release. Namespaced attributes, level groups with `minmax`, `mean`, `var`, `count`, event channels with `text` and `channels` columns, `recording.json`, `runs` for the exact times of a recording that pauses and resumes off the sample grid. |
 
 ## Conformance
 
