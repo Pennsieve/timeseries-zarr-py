@@ -39,6 +39,7 @@ from timeseries_zarr.constants import (
     WAVEFORMS_KEY,
 )
 from timeseries_zarr.planning import level_period_us
+from timeseries_zarr.runs import Run
 from timeseries_zarr.zarr_io import (
     consolidate,
     create_array,
@@ -90,6 +91,34 @@ class ArrayContinuousSource:
 def continuous_source():
     """Return the ArrayContinuousSource factory."""
     return ArrayContinuousSource
+
+
+class RunsContinuousSource(ArrayContinuousSource):
+    """In-memory continuous source that states its runs.
+
+    The source holds only recorded samples. Each run is a pair of the time of
+    its first sample in microseconds since the Unix epoch and its samples.
+    start_us is the time of the first run.
+    """
+
+    def __init__(self, runs, **options):
+        runs = [(start, np.asarray(samples)) for start, samples in runs]
+        options["start_us"] = runs[0][0]
+        super().__init__(
+            np.concatenate([samples for _, samples in runs]), **options
+        )
+        self._runs = [
+            Run(start, int(samples.shape[0])) for start, samples in runs
+        ]
+
+    def runs(self):
+        return self._runs
+
+
+@pytest.fixture
+def runs_source():
+    """Return the RunsContinuousSource factory."""
+    return RunsContinuousSource
 
 
 class ArrayMultiChannelSource:
@@ -299,6 +328,64 @@ def write_pair_bundle(path):
         for index, length in enumerate(PAIR_LENGTHS)
     ]
     write_bundle(sources, [], output_path=path, opts=_SPEC_OPTS)
+    return path
+
+
+RUNS_START_US = 10_000_000
+"""Time of the first sample of channel 0 of the runs bundle, as epoch microseconds."""
+RUNS_RATE_HZ = 512.0
+RUNS_LENGTHS = (4096, 2048)
+"""Sample counts of the two runs of channel 0 of the runs bundle."""
+RUNS_RESUME_US = 9_500_700
+"""Time of the first sample of the second run, from the first sample.
+
+The first run ends at 8 000 000 us. The resume is 1 500 700 us later, which is
+0.358 of a sample period past grid sample 4864.
+"""
+RUNS_TABLE = ((0, 4096, 0), (4864, 2048, RUNS_RESUME_US))
+"""The runs array of channel 0 of the runs bundle."""
+RUNS_GRID_LENGTH = 6912
+"""Length of raw in both channels of the runs bundle."""
+
+
+def runs_samples():
+    """Return the recorded samples of channel 0 of the runs bundle, per run."""
+    rng = np.random.default_rng(11)
+    return [
+        (100.0 * (index + 1) + 8.0 * rng.standard_normal(length)).astype(
+            np.float32
+        )
+        for index, length in enumerate(RUNS_LENGTHS)
+    ]
+
+
+def write_runs_bundle(path):
+    """Write a bundle whose channel 0 resumes off its sample grid at path.
+
+    Channel 0 holds two runs at 512 Hz with a pause that ends between two grid
+    samples, so its runs array is RUNS_TABLE and its raw array is NaN from
+    sample 4096 through 4863. Channel 1 has no runs and holds RUNS_GRID_LENGTH
+    samples that start with channel 0. The reference time is the first sample.
+    Returns path.
+    """
+    first, second = runs_samples()
+    gapped = RunsContinuousSource(
+        [
+            (RUNS_START_US, first),
+            (RUNS_START_US + RUNS_RESUME_US, second),
+        ],
+        id="runs-0",
+        name="runs-0",
+        rate_hz=RUNS_RATE_HZ,
+    )
+    plain = ArrayContinuousSource(
+        np.arange(RUNS_GRID_LENGTH, dtype=np.float32),
+        id="runs-1",
+        name="runs-1",
+        rate_hz=RUNS_RATE_HZ,
+        start_us=RUNS_START_US,
+    )
+    write_bundle([gapped, plain], [], output_path=path, opts=_SPEC_OPTS)
     return path
 
 
@@ -613,6 +700,12 @@ def memory_bundle(mixed_bundle):
     One copy sits at the store root and one under MEMORY_PREFIX.
     """
     return memory_store(mixed_bundle, ("", MEMORY_PREFIX))
+
+
+@pytest.fixture(scope="session")
+def runs_bundle(tmp_path_factory):
+    """Return the bundle write_runs_bundle writes, written once per session."""
+    return write_runs_bundle(tmp_path_factory.mktemp("runs") / "bundle")
 
 
 @pytest.fixture(scope="session")

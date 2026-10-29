@@ -25,6 +25,8 @@ from timeseries_zarr.constants import (
     MINMAX_KEY,
     RASTER_BUDGET,
     RAW_KEY,
+    RUN_DIMENSION,
+    RUNS_KEY,
     TEXT_KEY,
     TIME_DIMENSION,
     UINT8_BYTES,
@@ -74,6 +76,11 @@ def test_dimension_names_follow_the_spec():
     assert TIME_DIMENSION == "time"
     assert EVENT_DIMENSION == "event"
     assert LABEL_DIMENSION == "label"
+    assert RUN_DIMENSION == "run"
+
+
+def test_runs_key_follows_the_spec():
+    assert RUNS_KEY == "runs"
 
 
 def test_events_search_limit_is_one_mebibyte_of_int64_events():

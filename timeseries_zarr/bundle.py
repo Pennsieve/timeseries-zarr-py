@@ -26,6 +26,7 @@ from timeseries_zarr.recording import (
 from timeseries_zarr.types import RecordingMeta, WriteOpts
 from timeseries_zarr.units import resolve_unit
 from timeseries_zarr.write_continuous import (
+    channel_placement,
     write_continuous_channel,
     write_continuous_channels,
 )
@@ -398,11 +399,12 @@ def write_bundle(
             of recording has no UTC offset, recording sets reference_time
             with wall_clock False, recording.session holds a start_time key,
             a voltage unit is not "uV" under voltage_policy require_uv, a
-            channel's provenance is not a JSON object of finite values, or
-            output_path is not absent, empty, or a bundle. During the write,
-            if a window of a multi-channel source holds the wrong number of
-            blocks, a block is not rank 1, or the blocks of a channel do not
-            total its num_samples.
+            channel's provenance is not a JSON object of finite values, the
+            runs of a channel do not place on its grid, or output_path is
+            not absent, empty, or a bundle. During the write, if a window of
+            a multi-channel source holds the wrong number of blocks, a block
+            is not rank 1, or the blocks of a channel do not total its
+            num_samples.
     """
     check_sources(continuous, events)
     indexed = assign_indices(continuous, events)
@@ -424,6 +426,9 @@ def write_bundle(
         try:
             if not isinstance(channel, EventChannelSource):
                 resolve_unit(channel.unit, opts.voltage_policy)
+                channel_placement(
+                    channel, 0 if reference is None else reference
+                )
             check_provenance(source_provenance(channel))
         except ValueError as error:
             raise ValueError(

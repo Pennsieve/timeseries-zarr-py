@@ -20,6 +20,9 @@ ZARR_METADATA_FILE: Final = "zarr.json"
 RAW_KEY: Final = "raw"
 """Key of the full-resolution sample array within a channel group."""
 
+RUNS_KEY: Final = "runs"
+"""Key of the table of runs within a continuous channel group."""
+
 MINMAX_KEY: Final = "minmax"
 """Key of the (bins, 2) minimum and maximum member of a level group."""
 
@@ -62,6 +65,9 @@ WAVEFORM_MEAN_KEY: Final = "waveform_mean"
 
 TIME_DIMENSION: Final = "time"
 """Dimension name of a sample axis or a bin axis."""
+
+RUN_DIMENSION: Final = "run"
+"""Dimension name of the per-run axis."""
 
 EVENT_DIMENSION: Final = "event"
 """Dimension name of the per-event axis."""

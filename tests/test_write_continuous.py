@@ -1681,3 +1681,276 @@ def test_write_continuous_channels_rejects_a_rank_2_window_with_the_wrong_column
         match=rf"window 0 holds {columns} blocks and the source has 2 channels",
     ):
         _write_many(tmp_path, source, _OPTS)
+
+
+_RUN_RATE_HZ = 1000.0
+_RUN_FIRST = 300
+_RUN_SECOND = 200
+_RUN_RESUME_US = 700_300
+_RUN_RESUME_INDEX = 700
+_RUN_GRID_LENGTH = 900
+
+
+def _clean(n: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    return (5000.0 + 8.0 * rng.standard_normal(n)).astype(np.float32)
+
+
+def _two_runs(
+    runs_source: Any, seed: int = 0, start_us: int = 0, **options: Any
+) -> Any:
+    """Return a source whose second run resumes 0.3 sample periods off the grid."""
+    return runs_source(
+        [
+            (start_us, _clean(_RUN_FIRST, seed)),
+            (start_us + _RUN_RESUME_US, _clean(_RUN_SECOND, seed + 1)),
+        ],
+        rate_hz=_RUN_RATE_HZ,
+        **options,
+    )
+
+
+def _two_run_grid(seed: int = 0) -> np.ndarray:
+    grid = np.full(_RUN_GRID_LENGTH, np.nan, dtype=np.float32)
+    grid[:_RUN_FIRST] = _clean(_RUN_FIRST, seed)
+    grid[_RUN_RESUME_INDEX:] = _clean(_RUN_SECOND, seed + 1)
+    return grid
+
+
+def test_write_continuous_channel_writes_nan_between_runs_and_the_runs_array(
+    tmp_path: Path, runs_source: Any, opts: WriteOpts
+) -> None:
+    group = _write(tmp_path, _two_runs(runs_source), opts)
+    assert group[RAW_KEY].shape == (_RUN_GRID_LENGTH,)
+    assert np.array_equal(group[RAW_KEY][:], _two_run_grid(), equal_nan=True)
+    runs = group["runs"]
+    assert runs.shape == (2, 3)
+    assert runs.dtype == np.int64
+    assert runs.metadata.dimension_names == ("run", None)
+    assert runs.chunks == runs.shards == (2, 3)
+    assert runs[:].tolist() == [
+        [0, _RUN_FIRST, 0],
+        [_RUN_RESUME_INDEX, _RUN_SECOND, _RUN_RESUME_US],
+    ]
+
+
+def test_write_continuous_channel_offset_is_the_time_of_the_first_run(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    group = _write(
+        tmp_path,
+        _two_runs(runs_source, start_us=5000),
+        _OPTS,
+        reference_us=2000,
+    )
+    assert group.attrs["tsz"]["offset_us"] == 3000
+    assert group["runs"][:, 2].tolist() == [3000, 3000 + _RUN_RESUME_US]
+
+
+def test_write_continuous_channel_levels_over_a_pause_equal_the_fold_of_the_grid(
+    tmp_path: Path, runs_source: Any, opts: WriteOpts
+) -> None:
+    group = _write(tmp_path, _two_runs(runs_source), opts)
+    _assert_levels_equal_the_definition(
+        group, _two_run_grid(), _RUN_RATE_HZ, opts
+    )
+    count = group["1"][COUNT_KEY][:]
+    assert count[_RUN_FIRST // 4 : _RUN_RESUME_INDEX // 4].sum() == 0
+    assert count[: _RUN_FIRST // 4].min() == 4
+
+
+def test_write_continuous_channel_pushes_a_pause_in_pieces_of_one_raw_shard(
+    tmp_path: Path, runs_source: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pieces: list[int] = []
+    push = ChannelWriter._push_rows
+
+    def spy(self: ChannelWriter, rows: np.ndarray) -> None:
+        if np.isnan(rows).all():
+            pieces.append(rows.shape[0])
+        push(self, rows)
+
+    monkeypatch.setattr(ChannelWriter, "_push_rows", spy)
+    group = _write(tmp_path, _two_runs(runs_source), _OPTS)
+    assert group[RAW_KEY].shards == (32,)
+    gap = _RUN_RESUME_INDEX - _RUN_FIRST
+    assert pieces == [32] * (gap // 32) + [gap % 32]
+
+
+def test_write_continuous_channel_writes_each_shard_file_once_over_a_pause(
+    tmp_path: Path,
+    runs_source: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    opts: WriteOpts,
+) -> None:
+    closed = _record_shard_files(monkeypatch)
+    _write(tmp_path, _two_runs(runs_source), opts)
+    root = tmp_path / "bundle"
+    paths = [path for path, _ in closed]
+    on_disk = {
+        file
+        for file in root.rglob("*")
+        if file.is_file()
+        and file.name != "zarr.json"
+        and "runs" not in file.relative_to(root).parts
+    }
+    assert len(paths) > 10
+    assert len(set(paths)) == len(paths)
+    assert set(paths) == on_disk
+    for path, size in closed:
+        assert path.stat().st_size == size, path
+
+
+def test_write_continuous_channel_one_run_writes_the_bytes_of_a_source_without_runs(
+    tmp_path: Path, runs_source: Any, continuous_source: Any, opts: WriteOpts
+) -> None:
+    samples = _clean(500, 4)
+    _write(tmp_path, continuous_source(samples, rate_hz=1000.0), opts, name="a")
+    _write(
+        tmp_path,
+        runs_source([(0, samples)], rate_hz=1000.0),
+        opts,
+        name="b",
+    )
+    left, right = _files(tmp_path / "a"), _files(tmp_path / "b")
+    assert "0/runs/zarr.json" not in right
+    assert left == right
+
+
+def test_write_continuous_channel_records_a_pause_shorter_than_a_period_without_nan(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    source = runs_source(
+        [(0, _clean(40, 1)), (40_300, _clean(30, 2))], rate_hz=1000.0
+    )
+    group = _write(tmp_path, source, _OPTS)
+    assert group[RAW_KEY].shape == (70,)
+    assert not np.isnan(group[RAW_KEY][:]).any()
+    assert group["runs"][:].tolist() == [[0, 40, 0], [40, 30, 40_300]]
+
+
+def test_write_continuous_channel_rejects_runs_that_do_not_total_num_samples(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    source = _two_runs(runs_source)
+    source.num_samples = lambda: _RUN_FIRST + _RUN_SECOND + 1
+    with pytest.raises(ValueError, match="the runs hold 500 samples"):
+        _write(tmp_path, source, _OPTS)
+    assert not (tmp_path / "bundle" / "0").exists()
+
+
+def test_write_bundle_rejects_runs_that_start_after_start_us_before_writing(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    source = _two_runs(runs_source)
+    source.start_us = lambda: 7
+    output = tmp_path / "bundle"
+    with pytest.raises(ValueError, match="channel 0 .* must be equal"):
+        write_bundle([source], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_rejects_runs_that_arrive_faster_than_the_sample_rate(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    source = runs_source(
+        [(0, _clean(40, 1)), (39_000, _clean(30, 2))], rate_hz=1000.0
+    )
+    output = tmp_path / "bundle"
+    with pytest.raises(ValueError, match="at least one sample period"):
+        write_bundle([source], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_continuous_channel_with_runs_places_a_channel_in_a_bundle_by_its_first_run(
+    tmp_path: Path, runs_source: Any, continuous_source: Any
+) -> None:
+    early = continuous_source(_clean(100, 1), rate_hz=1000.0, start_us=-4000)
+    gapped = _two_runs(runs_source, start_us=10_000, id="g")
+    output = tmp_path / "bundle"
+    write_bundle([early, gapped], [], output_path=output, opts=_OPTS)
+    root = open_group(output)
+    assert root["1"].attrs["tsz"]["offset_us"] == 14_000
+    assert root["1"]["runs"][:, 2].tolist() == [14_000, 14_000 + _RUN_RESUME_US]
+
+
+def test_write_continuous_channel_straddling_block_lands_in_both_runs(
+    tmp_path: Path, runs_source: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pushed = _record_pushes(monkeypatch)
+    group = _write(tmp_path, _two_runs(runs_source), _OPTS)
+    shard = group[RAW_KEY].shards[0]
+    assert _RUN_FIRST % shard != 0
+    assert sum(pushed[: _RUN_FIRST // shard + 1]) > _RUN_FIRST
+    assert np.array_equal(group[RAW_KEY][:], _two_run_grid(), equal_nan=True)
+
+
+def test_write_continuous_channels_with_runs_matches_the_single_channel_write(
+    tmp_path: Path,
+    runs_source: Any,
+    continuous_source: Any,
+    multi_channel_source: type[ArrayMultiChannelSource],
+    opts: WriteOpts,
+) -> None:
+    channels = [
+        _two_runs(runs_source, seed=1, id="a"),
+        continuous_source(
+            _clean(_RUN_GRID_LENGTH, 9), id="b", rate_hz=_RUN_RATE_HZ
+        ),
+        _two_runs(runs_source, seed=5, id="c", start_us=20),
+    ]
+    single = open_group(tmp_path / "single")
+    for key, channel in enumerate(channels):
+        write_continuous_channel(
+            single, key, channel, reference_us=0, opts=opts
+        )
+    # Rows 288 through 319 of channel 0 straddle the resume at row 300.
+    source = multi_channel_source(channels, window_rows=[32, 7, 50])
+    root = _write_many(tmp_path, source, opts, name="sweep")
+    left, right = _files(tmp_path / "single"), _files(tmp_path / "sweep")
+    assert "0/runs/zarr.json" in right
+    assert "1/runs/zarr.json" not in right
+    assert left.keys() == right.keys()
+    assert [name for name in left if left[name] != right[name]] == []
+    assert np.array_equal(
+        root["0"][RAW_KEY][:], _two_run_grid(1), equal_nan=True
+    )
+
+
+def test_write_continuous_channels_splits_a_rank_2_window_at_a_run_boundary(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    channels = [
+        _two_runs(runs_source, seed=1, id="a"),
+        _two_runs(runs_source, seed=3, id="b"),
+    ]
+    recorded = np.stack(
+        [channel.read_samples(0, 500) for channel in channels], axis=1
+    )
+    windows = [recorded[:130], recorded[130:310], recorded[310:]]
+    source = _WindowSource(channels, windows)
+    root = _write_many(tmp_path, source, _OPTS)
+    assert np.array_equal(
+        root["0"][RAW_KEY][:], _two_run_grid(1), equal_nan=True
+    )
+    assert np.array_equal(
+        root["1"][RAW_KEY][:], _two_run_grid(3), equal_nan=True
+    )
+
+
+@pytest.mark.parametrize(
+    ("total", "message"),
+    [
+        (499, r"channel 0 \('a'\) yields 499 samples and declares 500"),
+        (501, r"channel 0 \('a'\) yields at least 501 samples"),
+    ],
+    ids=["too few", "too many"],
+)
+def test_write_continuous_channels_with_runs_counts_the_recorded_samples(
+    tmp_path: Path, runs_source: Any, total: int, message: str
+) -> None:
+    channel = _two_runs(runs_source, id="a")
+    blocks = [np.zeros(total - 100, np.float32), np.zeros(100, np.float32)]
+    source = _WindowSource([channel], [[block] for block in blocks])
+    with pytest.raises(ValueError, match=message):
+        _write_many(tmp_path, source, _OPTS)
