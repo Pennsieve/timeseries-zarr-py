@@ -87,6 +87,9 @@ LEVEL_PERIOD_TOLERANCE: Final = 1e-9
 ENVELOPE_PAIR_SIZE: Final = 2
 """Length of the trailing (min, max) axis on every coarser pyramid level."""
 
+RUNS_COLUMNS: Final = 3
+"""Length of the trailing axis of the runs array: first sample, count, time."""
+
 MAX_LABELS: Final = 2**16
 """Most distinct labels an event channel can hold (the uint16 label range)."""
 

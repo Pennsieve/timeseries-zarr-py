@@ -26,6 +26,7 @@ from timeseries_zarr.constants import (
     RASTER_BUDGET,
     RAW_KEY,
     RUN_DIMENSION,
+    RUNS_COLUMNS,
     RUNS_KEY,
     TEXT_KEY,
     TIME_DIMENSION,
@@ -81,6 +82,10 @@ def test_dimension_names_follow_the_spec():
 
 def test_runs_key_follows_the_spec():
     assert RUNS_KEY == "runs"
+
+
+def test_runs_array_has_three_columns():
+    assert RUNS_COLUMNS == 3
 
 
 def test_events_search_limit_is_one_mebibyte_of_int64_events():

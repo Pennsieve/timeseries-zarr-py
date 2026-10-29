@@ -15,6 +15,7 @@ from tests.conftest import (
     MEMORY_PREFIX,
     ODD_KEYS,
     ODD_VERSION,
+    RUNS_TABLE,
     memory_store,
 )
 from tests.test_bundle import (
@@ -191,6 +192,42 @@ def test_continuous_and_events_split_the_channels_by_kind(mixed):
     assert all(
         isinstance(channel, EventChannel) for channel in mixed.events.values()
     )
+
+
+def test_a_bundle_without_runs_reads_with_no_runs_on_any_channel(mixed, odd):
+    for bundle in (mixed, odd):
+        assert all(
+            channel.runs_array is None and channel.runs is None
+            for channel in bundle.continuous.values()
+        )
+        assert all(
+            channel.read().runs is None
+            for channel in bundle.continuous.values()
+        )
+
+
+def test_open_bundle_reads_the_runs_of_one_channel_and_none_for_the_other(
+    runs_bundle,
+):
+    bundle = open_bundle(runs_bundle)
+    assert bundle.continuous[0].runs.tolist() == [list(r) for r in RUNS_TABLE]
+    assert bundle.continuous[1].runs is None
+
+
+def test_open_bundle_rejects_a_runs_array_of_the_wrong_shape(
+    runs_bundle,
+):
+    def narrow(document):
+        document["consolidated_metadata"]["metadata"]["0/runs"]["shape"] = [
+            2,
+            2,
+        ]
+
+    with pytest.raises(
+        ValueError,
+        match=r"channel 0: runs must be an int64 array of shape \(runs, 3\)",
+    ):
+        open_bundle(_copy(runs_bundle, edit_root=narrow))
 
 
 def test_channels_is_a_read_only_mapping_in_key_order(mixed):

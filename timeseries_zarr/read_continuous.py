@@ -7,7 +7,7 @@ or whole bins.
 
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Literal, SupportsIndex, overload
@@ -25,6 +25,8 @@ from timeseries_zarr.constants import (
     MIN_DECIMATION_FACTOR,
     MINMAX_KEY,
     RAW_KEY,
+    RUNS_COLUMNS,
+    RUNS_KEY,
     TSZ_KEY,
     VAR_KEY,
 )
@@ -42,6 +44,7 @@ from timeseries_zarr.planning import (
     level_period_us,
     sample_period_us,
 )
+from timeseries_zarr.runs import check_outside_runs, check_runs_table
 from timeseries_zarr.windows import (
     array_error,
     bin_period,
@@ -52,6 +55,8 @@ from timeseries_zarr.windows import (
     index_range,
     integer_argument,
     merge_spans,
+    run_index_range,
+    run_time_axis,
     select_level,
     time_axis,
     window_bounds,
@@ -63,6 +68,7 @@ if TYPE_CHECKING:
     import xarray as xr
 
 _RAW_EXPECTATION = "a rank-1 floating-point array"
+_RUNS_EXPECTATION = "an int64 array of shape (runs, 3) with at least 1 run"
 _LEVEL_MEMBERS: Final = (MINMAX_KEY, MEAN_KEY, VAR_KEY, COUNT_KEY)
 
 
@@ -70,25 +76,41 @@ _LEVEL_MEMBERS: Final = (MINMAX_KEY, MEAN_KEY, VAR_KEY, COUNT_KEY)
 class Samples:
     """Raw samples of a continuous channel in a window.
 
-    Sample first + i is values[i], at offset_us + (first + i) * period_us
-    microseconds from the reference time. A NaN value is a gap.
+    Sample first + i is values[i]. It is at offset_us + (first + i) *
+    period_us microseconds from the reference time, or at the time that runs
+    gives when the channel has runs. A NaN value is a gap.
 
     Attributes:
         offset_us: The time of sample 0 of the channel in microseconds.
         first: The index of the first sample in the window.
         period_us: The spacing of the samples in microseconds.
         values: The sample values.
+        runs: The runs table of the channel, or None when the channel has
+            none. It is an int64 array of shape (runs, 3) that holds the
+            first sample, the number of samples, and the time of the first
+            sample of each run.
     """
 
     offset_us: int
     first: int
     period_us: float
     values: npt.NDArray[np.floating[Any]]
+    runs: npt.NDArray[np.int64] | None = None
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
-        """Time of each sample in microseconds from the reference time."""
-        return time_axis(self.first, len(self), self.offset_us, self.period_us)
+        """Time of each sample in microseconds from the reference time.
+
+        A sample inside a run is at its exact time. A sample between two runs
+        is NaN and is at its grid time.
+        """
+        if self.runs is None:
+            return time_axis(
+                self.first, len(self), self.offset_us, self.period_us
+            )
+        return run_time_axis(
+            self.first, len(self), self.offset_us, self.period_us, self.runs
+        )
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
@@ -244,6 +266,8 @@ class ContinuousChannel:
         provenance: The provenance object. None when the group omits it.
         raw: The zarr array of samples.
         levels: Maps each level number to its Level, in level order.
+        runs_array: The zarr array of runs, or None when the channel has
+            none. The runs property reads it.
     """
 
     key: int
@@ -255,6 +279,10 @@ class ContinuousChannel:
     provenance: Mapping[str, object] | None
     raw: ZarrArray
     levels: Mapping[int, Level]
+    runs_array: ZarrArray | None = None
+    _runs_cache: list[npt.NDArray[np.int64]] = field(
+        default_factory=list, init=False, repr=False, compare=False
+    )
 
     @property
     def kind(self) -> Literal["continuous"]:
@@ -272,6 +300,34 @@ class ContinuousChannel:
         return sample_period_us(self.rate_hz)
 
     @property
+    def runs(self) -> npt.NDArray[np.int64] | None:
+        """The runs table, or None when the channel has no runs array.
+
+        The table is a read-only int64 array of shape (runs, 3). Row r holds
+        the index of the first sample of run r, its number of samples, and
+        the time of its first sample in microseconds from the reference time.
+        The first access reads the array and checks its rows.
+
+        Raises:
+            ValueError: If a row breaks a rule of the spec. The message names
+                the channel and the row.
+        """
+        if self.runs_array is None:
+            return None
+        if not self._runs_cache:
+            table = np.asarray(self.runs_array[:], dtype=np.int64)
+            check_runs_table(
+                f"channel {self.key}",
+                table,
+                self.offset_us,
+                self.rate_hz,
+                self.num_samples,
+            )
+            table.setflags(write=False)
+            self._runs_cache.append(table)
+        return self._runs_cache[0]
+
+    @property
     def start_us(self) -> int:
         """Time of sample 0 in microseconds from the reference time."""
         return self.offset_us
@@ -282,9 +338,16 @@ class ContinuousChannel:
 
         The end rounds up to a whole microsecond. A window from start_us to
         end_us holds every sample. A channel with no samples has end_us equal
-        to start_us.
+        to start_us. A channel with runs ends at the exact end of its last
+        run.
         """
-        return self.offset_us + duration_us(self.num_samples, self.rate_hz)
+        table = self.runs
+        if table is None:
+            return self.offset_us + duration_us(self.num_samples, self.rate_hz)
+        last = table[-1]
+        return math.ceil(
+            int(last[2]) + int(last[1]) * bin_period(self.rate_hz, 1)
+        )
 
     def __repr__(self) -> str:
         """Return the key, name, sample rate, sample count, and level count."""
@@ -349,13 +412,14 @@ class ContinuousChannel:
         number = self._level_number(level)
         start, end = window_bounds(start_us, end_us)
         selected = self._selected_members(number, members)
-        first, stop = self._index_range(start, end, number)
+        first, stop = self._index_range(start, end, number, exact=True)
         if number == 0:
             return Samples(
                 offset_us=self.offset_us,
                 first=first,
                 period_us=self.period_us,
-                values=read_rows(self.raw, first, stop),
+                values=self._read_raw(first, stop),
+                runs=self.runs,
             )
         chosen = self.levels[number]
         minmax = read_rows(chosen.minmax, first, stop)
@@ -447,7 +511,8 @@ class ContinuousChannel:
             number = self._level_number(level)
         period, length = self._grid(number)
         start, end = window_bounds(start_us, end_us)
-        first, stop = index_range(start, end, self.offset_us, period, length)
+        table = self.runs if number == 0 else None
+        first, stop = self._index_range(start, end, number, exact=True)
         low_us = self.start_us if start is None else max(start, self.start_us)
         high_us = self.end_us if end is None else min(end, self.end_us)
         return merge_spans(
@@ -458,6 +523,7 @@ class ContinuousChannel:
             low_us,
             high_us,
             gap,
+            table,
         )
 
     def _level_number(self, level: SupportsIndex | None) -> int:
@@ -529,18 +595,46 @@ class ContinuousChannel:
         return bin_period(self.rate_hz, chosen.samples_per_bin), chosen.bins
 
     def _index_range(
-        self, start_us: int | None, end_us: int | None, number: int
+        self,
+        start_us: int | None,
+        end_us: int | None,
+        number: int,
+        *,
+        exact: bool = False,
     ) -> tuple[int, int]:
-        """Return the index range of a window on a level's grid."""
+        """Return the index range of a window on a level's grid.
+
+        With exact true, a raw read of a channel with runs maps the window
+        through the exact times of the runs. Every other range is on the
+        grid, which is the one grid that all channels of a stack share.
+        """
         period, length = self._grid(number)
-        return index_range(start_us, end_us, self.offset_us, period, length)
+        table = self.runs if exact and number == 0 else None
+        if table is None:
+            return index_range(start_us, end_us, self.offset_us, period, length)
+        return run_index_range(
+            start_us, end_us, table, self.offset_us, period, length
+        )
+
+    def _read_raw(self, first: int, stop: int) -> npt.NDArray[Any]:
+        """Return raw samples first through stop - 1.
+
+        Raises:
+            ValueError: If the channel has runs and a sample outside every
+                run is not NaN.
+        """
+        values = read_rows(self.raw, first, stop)
+        table = self.runs
+        if table is not None:
+            check_outside_runs(f"channel {self.key}", values, first, table)
+        return values
 
     def _populated(
         self, number: int, first: int, stop: int
     ) -> npt.NDArray[np.bool_]:
         """Return which entries from first to stop hold data on a level."""
         if number == 0:
-            return np.isfinite(read_rows(self.raw, first, stop))
+            return np.isfinite(self._read_raw(first, stop))
         chosen = self.levels[number]
         if chosen.count is not None:
             return read_rows(chosen.count, first, stop) > 0
@@ -594,7 +688,7 @@ def read_entries(
         raise ValueError(channel._level_choices())
     first, stop = channel._index_range(start_us, end_us, number)
     if number == 0:
-        return first, channel.period_us, read_rows(channel.raw, first, stop)
+        return first, channel.period_us, channel._read_raw(first, stop)
     held = member_arrays(channel.levels[number])
     array = held.get(name)
     if array is None:
@@ -635,6 +729,27 @@ def _parse_raw(where: str, arrays: Mapping[str, ZarrArray]) -> ZarrArray:
     ):
         raise array_error(where, RAW_KEY, _RAW_EXPECTATION, raw)
     return raw
+
+
+def _parse_runs(
+    where: str, arrays: Mapping[str, ZarrArray]
+) -> ZarrArray | None:
+    """Return the runs array of a channel, or None when it has none.
+
+    Raises:
+        ValueError: Unless runs is an int64 array of shape (runs, 3) with at
+            least 1 row.
+    """
+    runs = arrays.get(RUNS_KEY)
+    if runs is None:
+        return None
+    if (
+        runs.shape[1:] != (RUNS_COLUMNS,)
+        or runs.shape[0] < 1
+        or runs.dtype != np.int64
+    ):
+        raise array_error(where, RUNS_KEY, _RUNS_EXPECTATION, runs)
+    return runs
 
 
 def _parse_member(
@@ -766,7 +881,8 @@ def parse_continuous_channel(
 
     Raises:
         ValueError: If a required key or array is missing, an array has the
-            wrong shape or dtype kind, the level numbers have a gap, a level
+            wrong shape or dtype kind, runs is not an int64 array of shape
+            (runs, 3), the level numbers have a gap, a level
             is stored as an array, or a level's period_us is not a whole
             number of samples or not an integer multiple of the level below
             it. The message names the channel and the level at fault.
@@ -798,4 +914,5 @@ def parse_continuous_channel(
         provenance=fields.provenance,
         raw=raw,
         levels=MappingProxyType(levels),
+        runs_array=_parse_runs(where, arrays),
     )

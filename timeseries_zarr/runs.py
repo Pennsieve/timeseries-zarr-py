@@ -3,13 +3,15 @@
 A run is a span of recorded samples one sample period apart. A source states
 each run by its start time in microseconds since the Unix epoch. place_runs puts
 the runs on the grid of one channel and builds the table that the bundle stores
-as the runs array. Index arithmetic is exact in Fraction.
+as the runs array. The reader checks that table with check_runs_table and
+check_outside_runs. Index arithmetic is exact in Fraction.
 """
 
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from fractions import Fraction
+from typing import Any
 
 import numpy as np
 import numpy.typing as npt
@@ -171,4 +173,122 @@ def check_source_runs(
         raise ValueError(
             f"the runs hold {total} samples, but num_samples is "
             f"{num_samples}. They must be equal"
+        )
+
+
+def _row_text(row: npt.NDArray[np.int64]) -> str:
+    """Return a row of the runs table as [first, count, time_us]."""
+    return f"[{int(row[0])}, {int(row[1])}, {int(row[2])}]"
+
+
+def check_runs_table(
+    where: str,
+    table: npt.NDArray[np.int64],
+    offset_us: int,
+    rate_hz: float,
+    num_samples: int,
+) -> None:
+    """Check the rows of the runs table of a channel against the spec.
+
+    Args:
+        where: The location, which begins each error message.
+        table: The runs array of the channel, of shape (runs, 3).
+        offset_us: The offset_us of the channel.
+        rate_hz: The sample rate in hertz.
+        num_samples: The length of raw.
+
+    Raises:
+        ValueError: If row 0 is not [0, n_0, offset_us], a run has no
+            samples, the first samples or the times do not ascend, a run
+            starts before the previous run ends, the last run does not end at
+            num_samples, or a run starts one sample period or more from its
+            grid time. The message names the first row at fault.
+    """
+    period = bin_period(rate_hz, 1)
+    firsts, counts, times = table[:, 0], table[:, 1], table[:, 2]
+    head = table[0]
+    if int(head[0]) != 0 or int(head[2]) != offset_us:
+        raise ValueError(
+            f"{where}: runs row 0 is {_row_text(head)}; it must be "
+            f"[0, n_0, {offset_us}], with the offset_us of the channel in "
+            f"column 2"
+        )
+    empty = np.flatnonzero(counts < 1)
+    if empty.size:
+        row = int(empty[0])
+        raise ValueError(
+            f"{where}: runs row {row} holds {int(counts[row])} samples; "
+            f"column 1 must be at least 1"
+        )
+    for column, noun, values in (
+        (0, "first sample", firsts),
+        (2, "time", times),
+    ):
+        stalled = np.flatnonzero(np.diff(values) <= 0)
+        if stalled.size:
+            row = int(stalled[0]) + 1
+            raise ValueError(
+                f"{where}: runs row {row} has {noun} {int(values[row])}, "
+                f"which is not above {int(values[row - 1])} of row "
+                f"{row - 1}; column {column} must ascend"
+            )
+    ends = firsts + counts
+    overlapping = np.flatnonzero(firsts[1:] < ends[:-1])
+    if overlapping.size:
+        row = int(overlapping[0]) + 1
+        raise ValueError(
+            f"{where}: runs row {row} starts at sample {int(firsts[row])}, "
+            f"inside run {row - 1}, which ends at sample "
+            f"{int(ends[row - 1])}; the first sample must be at least "
+            f"{int(ends[row - 1])}"
+        )
+    if int(ends[-1]) != num_samples:
+        raise ValueError(
+            f"{where}: the last run, row {len(table) - 1}, ends at sample "
+            f"{int(ends[-1])}, but raw holds {num_samples} samples; the last "
+            f"run must end at the end of raw"
+        )
+    period_us = float(period)
+    deviation = np.abs(times - (offset_us + firsts * period_us))
+    for row in np.flatnonzero(deviation >= period_us * (1 - 1e-6)).tolist():
+        grid_us = offset_us + int(firsts[row]) * period
+        if abs(int(times[row]) - grid_us) >= period:
+            raise ValueError(
+                f"{where}: runs row {row} has time {int(times[row])} us, "
+                f"which is {float(int(times[row]) - grid_us)} us from the "
+                f"grid time {float(grid_us)} us of sample {int(firsts[row])}; "
+                f"the difference must be under one sample period of "
+                f"{float(period)} us"
+            )
+
+
+def check_outside_runs(
+    where: str,
+    values: npt.NDArray[np.floating[Any]],
+    first: int,
+    table: npt.NDArray[np.int64],
+) -> None:
+    """Check that the raw samples that lie outside every run are NaN.
+
+    Args:
+        where: The location, which begins the error message.
+        values: Raw samples. Element i is sample first + i.
+        first: The index of values[0].
+        table: The runs table of the channel.
+
+    Raises:
+        ValueError: If a sample outside every run is not NaN. The message
+            names the first such sample.
+    """
+    indices = np.arange(first, first + values.shape[0], dtype=np.int64)
+    rows = np.maximum(
+        np.searchsorted(table[:, 0], indices, side="right") - 1, 0
+    )
+    outside = indices >= table[rows, 0] + table[rows, 1]
+    bad = np.flatnonzero(outside & ~np.isnan(values))
+    if bad.size:
+        index = int(indices[bad[0]])
+        raise ValueError(
+            f"{where}: raw sample {index} lies outside every run and holds "
+            f"{float(values[bad[0]])}; it must be NaN"
         )

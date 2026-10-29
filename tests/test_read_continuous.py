@@ -7,7 +7,17 @@ import pytest
 import zarr
 from zarr.storage import MemoryStore
 
-from tests.conftest import ODD_NAN_RUN, ODD_OFFSET_US, ODD_RATE_HZ
+from tests.conftest import (
+    ODD_NAN_RUN,
+    ODD_OFFSET_US,
+    ODD_RATE_HZ,
+    RUNS_GRID_LENGTH,
+    RUNS_LENGTHS,
+    RUNS_RESUME_US,
+    RUNS_START_US,
+    RUNS_TABLE,
+    runs_samples,
+)
 from tests.test_bundle import _ACQUIRE
 from timeseries_zarr import read_continuous
 from timeseries_zarr.attrs import continuous_channel_attrs, level_group_attrs
@@ -16,6 +26,7 @@ from timeseries_zarr.constants import (
     MEAN_KEY,
     MINMAX_KEY,
     RAW_KEY,
+    RUNS_KEY,
     TSZ_KEY,
     VAR_KEY,
 )
@@ -1055,3 +1066,389 @@ def test_parse_rejects_a_member_of_the_wrong_shape_or_dtype_kind(
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         _hand_parse(nodes)
+
+
+# Runs
+
+_GAP_RATE_HZ = 1000.0
+_GAP_ROWS = ((0, 4, 0), (7, 3, 6700))
+"""Samples 0 through 3 at 0 us, a gap of grid samples 4 through 6, and samples
+7 through 9 at 6700 us, 300 us before their grid time."""
+_GAP_NAN = np.nan
+
+
+def _gap_nodes(rows=_GAP_ROWS, raw=None, runs=True):
+    """Return the nodes of a 10-sample channel at 1000 Hz that holds runs."""
+    if raw is None:
+        raw = [0, 1, 2, 3, _GAP_NAN, _GAP_NAN, _GAP_NAN, 7, 8, 9]
+    nodes = {
+        RAW_KEY: np.array(raw, dtype=np.float32),
+        "1": level_group_attrs(level_period_us(_GAP_RATE_HZ, 2)),
+        f"1/{MINMAX_KEY}": np.array(
+            [
+                [0, 0],
+                [0, 0],
+                [_GAP_NAN, _GAP_NAN],
+                [_GAP_NAN, _GAP_NAN],
+                [0, 0],
+            ],
+            dtype=np.float32,
+        ),
+    }
+    if runs:
+        nodes[RUNS_KEY] = np.array(rows, dtype=np.int64)
+    return nodes
+
+
+def _gap_attrs(offset_us=0):
+    return continuous_channel_attrs(
+        "gap", "gap-0", _GAP_RATE_HZ, offset_us, "uV", None
+    )
+
+
+def _gap_channel(**options):
+    return _hand_parse(_gap_nodes(**options), _gap_attrs())
+
+
+def test_a_channel_without_a_runs_array_has_no_runs(odd_bundle):
+    channel = _channel(odd_bundle, 0)
+    assert channel.runs_array is None
+    assert channel.runs is None
+    assert channel.read().runs is None
+
+
+def test_the_runs_property_returns_a_read_only_int64_table():
+    table = _gap_channel().runs
+    assert table.dtype == np.int64
+    assert table.tolist() == [list(row) for row in _GAP_ROWS]
+    assert not table.flags.writeable
+
+
+def test_the_runs_property_reads_the_array_once():
+    channel = _gap_channel()
+    assert channel.runs is channel.runs
+
+
+def test_a_channel_with_runs_reports_the_exact_end_of_its_last_run():
+    channel = _gap_channel()
+    assert channel.start_us == 0
+    assert channel.end_us == 9700
+    assert len(channel.read(channel.start_us, channel.end_us)) == 10
+
+
+def test_a_channel_that_ends_on_a_late_resume_includes_its_last_sample():
+    rows = ((0, 4, 0), (7, 3, 7300))
+    channel = _gap_channel(rows=rows)
+    assert channel.end_us == 10_300
+    assert len(channel.read(channel.start_us, channel.end_us)) == 10
+
+
+def test_sample_times_are_exact_across_a_resume():
+    samples = _gap_channel().read()
+    assert samples.runs is not None
+    assert samples.time_us.tolist() == [
+        0.0,
+        1000.0,
+        2000.0,
+        3000.0,
+        4000.0,
+        5000.0,
+        6000.0,
+        6700.0,
+        7700.0,
+        8700.0,
+    ]
+    assert samples.time_s[7] == 0.0067
+
+
+def test_samples_in_the_gap_take_their_grid_time_and_stay_in_order():
+    rows = ((0, 4, 0), (7, 3, 7300))
+    times = _gap_channel(rows=rows).read().time_us
+    assert times[4:7].tolist() == [4000.0, 5000.0, 6000.0]
+    assert np.all(np.diff(times) > 0)
+
+
+def test_the_exact_time_reaches_the_columns():
+    samples = _gap_channel().read(6000, 8000)
+    assert samples.columns()["time_us"].tolist() == [6000.0, 6700.0, 7700.0]
+
+
+def test_a_window_inside_a_gap_reads_the_nan_samples_of_the_grid():
+    samples = _gap_channel().read(4200, 4800)
+    assert (samples.first, len(samples)) == (4, 1)
+    assert np.isnan(samples.values).all()
+    assert samples.time_us.tolist() == [4000.0]
+
+
+def test_a_window_across_a_seam_holds_both_runs_and_the_gap():
+    samples = _gap_channel().read(3500, 7000)
+    assert (samples.first, len(samples)) == (3, 5)
+    np.testing.assert_array_equal(
+        samples.values, [3, np.nan, np.nan, np.nan, 7]
+    )
+    assert samples.time_us.tolist() == [3000.0, 4000.0, 5000.0, 6000.0, 6700.0]
+
+
+def test_a_window_that_starts_at_a_resume_starts_at_its_first_sample():
+    assert _gap_channel().read(6700, 6701).first == 7
+    assert _gap_channel().read(6699, 6701).first == 6
+
+
+def test_a_window_clamps_inside_the_run_at_its_end():
+    channel = _gap_channel()
+    assert (channel.read(3990, 4000).first, len(channel.read(3990, 4000))) == (
+        3,
+        1,
+    )
+    assert len(channel.read(8700, 9700)) == 1
+    assert len(channel.read(9700, 50_000)) == 0
+    assert len(channel.read(-50_000, 0)) == 0
+
+
+def test_a_window_before_the_first_run_reads_nothing():
+    rows = ((0, 4, 2500), (7, 3, 9200))
+    channel = _hand_parse(_gap_nodes(rows), _gap_attrs(2500))
+    assert len(channel.read(0, 2500)) == 0
+    assert channel.read(0, 2501).first == 0
+
+
+def test_bins_stay_on_the_grid_when_the_channel_has_runs():
+    channel = _gap_channel()
+    bins = channel.read(level=1)
+    assert bins.time_us.tolist() == [0.0, 2000.0, 4000.0, 6000.0, 8000.0]
+    assert channel.read(6700, 7000, level=1).first == 3
+
+
+def test_the_level_choice_ignores_the_runs():
+    channel = _gap_channel()
+    assert channel.level_for(0, 10_000, bins=5) == 1
+    assert channel.level_for(0, 10_000, bins=6) == 0
+
+
+def test_spans_at_the_raw_level_start_and_end_at_exact_times():
+    channel = _gap_channel()
+    assert channel.spans(level=0) == [(0, 4000), (6700, 9700)]
+    assert channel.spans(6800, 8000, level=0) == [(6800, 8000)]
+    assert channel.spans(level=0, gap_us=2700) == [(0, 9700)]
+    assert channel.spans(level=0, gap_us=2699) == [(0, 4000), (6700, 9700)]
+
+
+def test_spans_at_a_level_stay_on_the_grid():
+    channel = _gap_channel(raw=[0, 1, 2, 3, np.nan, np.nan, np.nan, 7, 8, 9])
+    assert channel.spans(level=1) == [(0, 4000), (8000, 9700)]
+
+
+def test_a_nan_inside_a_run_splits_a_raw_span_at_the_sample():
+    raw = [0, 1, np.nan, 3, np.nan, np.nan, np.nan, 7, 8, 9]
+    spans = _gap_channel(raw=raw).spans(level=0)
+    assert spans == [(0, 2000), (3000, 4000), (6700, 9700)]
+
+
+def test_a_value_between_two_runs_fails_a_raw_read_that_covers_it():
+    raw = [0, 1, 2, 3, np.nan, 5.0, np.nan, 7, 8, 9]
+    channel = _gap_channel(raw=raw)
+    with pytest.raises(
+        ValueError,
+        match="channel 0: raw sample 5 lies outside every run and holds "
+        "5.0; it must be NaN",
+    ):
+        channel.read()
+    with pytest.raises(ValueError, match="raw sample 5 lies outside"):
+        channel.spans(level=0)
+    assert len(channel.read(0, 4000)) == 4
+
+
+def test_a_value_between_two_runs_fails_a_stack_read_that_covers_it():
+    raw = [0, 1, 2, 3, np.nan, 5.0, np.nan, 7, 8, 9]
+    channel = _gap_channel(raw=raw)
+    with pytest.raises(ValueError, match="raw sample 5 lies outside"):
+        read_continuous.read_entries(channel, None, None, 0, RAW_KEY)
+
+
+def test_a_stack_read_of_raw_stays_on_the_grid_when_the_channel_has_runs():
+    channel = _gap_channel()
+    first, period_us, rows = read_continuous.read_entries(
+        channel, 6700, 7700, 0, RAW_KEY
+    )
+    assert (first, period_us, len(rows)) == (6, 1000.0, 2)
+
+
+def test_a_runs_array_of_the_wrong_dtype_fails_at_parse():
+    nodes = _gap_nodes()
+    nodes[RUNS_KEY] = np.array(_GAP_ROWS, dtype=np.int32)
+    with pytest.raises(
+        ValueError,
+        match=r"channel 0: runs must be an int64 array of shape \(runs, 3\) "
+        r"with at least 1 run, got shape \(2, 3\) and dtype int32",
+    ):
+        _hand_parse(nodes, _gap_attrs())
+
+
+@pytest.mark.parametrize(
+    "table",
+    [
+        np.zeros((0, 3), np.int64),
+        np.zeros((2, 2), np.int64),
+        np.zeros((2, 4), np.int64),
+        np.zeros((6,), np.int64),
+        np.zeros((1, 3, 1), np.int64),
+    ],
+)
+def test_a_runs_array_of_the_wrong_shape_fails_at_parse(table):
+    nodes = _gap_nodes()
+    nodes[RUNS_KEY] = table
+    with pytest.raises(ValueError, match="channel 0: runs must be an int64"):
+        _hand_parse(nodes, _gap_attrs())
+
+
+def test_row_0_that_misses_the_offset_fails_on_first_access():
+    channel = _gap_channel(rows=((0, 4, 5), (7, 3, 6700)))
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "channel 0: runs row 0 is [0, 4, 5]; it must be [0, n_0, 0]"
+        ),
+    ):
+        channel.runs
+    with pytest.raises(ValueError, match="runs row 0"):
+        channel.read()
+
+
+def test_a_run_of_no_samples_fails_on_first_access():
+    channel = _gap_channel(rows=((0, 4, 0), (7, 0, 6700)))
+    with pytest.raises(ValueError, match="runs row 1 holds 0 samples"):
+        channel.runs
+
+
+def test_first_samples_that_do_not_ascend_fail_on_first_access():
+    channel = _gap_channel(rows=((0, 3, 0), (8, 1, 8000), (5, 1, 9000)))
+    with pytest.raises(ValueError, match="runs row 2 has first sample 5"):
+        channel.runs
+
+
+def test_times_that_do_not_ascend_fail_on_first_access():
+    channel = _gap_channel(rows=((0, 3, 0), (5, 2, 5000), (8, 2, 4000)))
+    with pytest.raises(ValueError, match="runs row 2 has time 4000"):
+        channel.runs
+
+
+def test_overlapping_runs_fail_on_first_access():
+    channel = _gap_channel(rows=((0, 5, 0), (3, 7, 3000)))
+    with pytest.raises(
+        ValueError, match="runs row 1 starts at sample 3, inside run 0"
+    ):
+        channel.runs
+
+
+def test_a_last_run_that_misses_the_end_of_raw_fails_on_first_access():
+    channel = _gap_channel(rows=((0, 4, 0), (7, 2, 6700)))
+    with pytest.raises(
+        ValueError,
+        match="the last run, row 1, ends at sample 9, but raw holds 10",
+    ):
+        channel.runs
+
+
+def test_a_time_a_period_from_its_grid_time_fails_on_first_access():
+    channel = _gap_channel(rows=((0, 4, 0), (7, 3, 8000)))
+    with pytest.raises(
+        ValueError,
+        match="runs row 1 has time 8000 us, .* under one sample period of "
+        "1000.0 us",
+    ):
+        channel.runs
+
+
+def test_a_channel_with_one_run_holds_a_table_that_reads_like_the_grid():
+    nodes = _gap_nodes(rows=((0, 10, 0),), raw=list(range(10)))
+    channel = _hand_parse(nodes, _gap_attrs())
+    plain = _hand_parse(
+        _gap_nodes(runs=False, raw=list(range(10))), _gap_attrs()
+    )
+    for start, end in [(None, None), (2500, 7500), (0, 1), (9000, 12_000)]:
+        exact = channel.read(start, end)
+        grid = plain.read(start, end)
+        assert exact.first == grid.first
+        np.testing.assert_array_equal(exact.values, grid.values)
+        np.testing.assert_array_equal(exact.time_us, grid.time_us)
+    assert channel.end_us == plain.end_us
+
+
+# Runs bundle
+
+
+def test_the_runs_bundle_channel_reads_its_table(runs_bundle):
+    channel = _channel(runs_bundle, 0)
+    assert channel.runs.tolist() == [list(row) for row in RUNS_TABLE]
+    assert _channel(runs_bundle, 1).runs is None
+
+
+def test_the_runs_bundle_gives_the_exact_time_of_each_run_start(runs_bundle):
+    samples = _channel(runs_bundle, 0).read()
+    assert len(samples) == RUNS_GRID_LENGTH
+    time_us = samples.time_us
+    starts = [first for first, _, _ in RUNS_TABLE]
+    assert time_us[starts[0]] == 0.0
+    assert time_us[starts[1]] == RUNS_RESUME_US
+    source_starts = [RUNS_START_US, RUNS_START_US + RUNS_RESUME_US]
+    # The reference time of the bundle is the first sample of channel 0.
+    epoch_us = RUNS_START_US
+    assert (epoch_us + time_us[starts]).tolist() == source_starts
+
+
+def test_the_runs_bundle_times_follow_the_period_inside_each_run(runs_bundle):
+    samples = _channel(runs_bundle, 0).read()
+    period = samples.period_us
+    first, second = runs_samples()
+    time_us = samples.time_us
+    inside_first = time_us[: RUNS_LENGTHS[0]]
+    inside_second = time_us[RUNS_TABLE[1][0] :]
+    np.testing.assert_allclose(
+        inside_first, np.arange(RUNS_LENGTHS[0]) * period, rtol=0, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        inside_second,
+        RUNS_RESUME_US + np.arange(RUNS_LENGTHS[1]) * period,
+        rtol=0,
+        atol=1e-6,
+    )
+    np.testing.assert_array_equal(samples.values[: RUNS_LENGTHS[0]], first)
+    np.testing.assert_array_equal(samples.values[RUNS_TABLE[1][0] :], second)
+
+
+def test_the_runs_bundle_window_at_the_resume_starts_at_the_first_sample(
+    runs_bundle,
+):
+    channel = _channel(runs_bundle, 0)
+    samples = channel.read(RUNS_RESUME_US, RUNS_RESUME_US + 4000)
+    assert samples.first == RUNS_TABLE[1][0]
+    assert samples.time_us[0] == RUNS_RESUME_US
+    assert (
+        channel.read(RUNS_RESUME_US - 1, RUNS_RESUME_US + 1).first
+        == (RUNS_TABLE[1][0])
+    )
+    assert channel.read(RUNS_RESUME_US - 1500, RUNS_RESUME_US).first == (
+        RUNS_TABLE[1][0] - 1
+    )
+
+
+def test_the_runs_bundle_spans_hold_the_two_recorded_spans(runs_bundle):
+    channel = _channel(runs_bundle, 0)
+    period = channel.period_us
+    ends_first = -(-RUNS_LENGTHS[0] * 1_000_000 // 512)
+    ends_second = -(
+        -(RUNS_RESUME_US * 512 + RUNS_LENGTHS[1] * 1_000_000) // 512
+    )
+    assert channel.spans(level=0) == [
+        (0, ends_first),
+        (RUNS_RESUME_US, ends_second),
+    ]
+    assert period == 1953.125
+
+
+def test_the_runs_bundle_end_is_the_exact_end_of_the_last_run(runs_bundle):
+    channel = _channel(runs_bundle, 0)
+    assert channel.end_us == RUNS_RESUME_US + 4_000_000
+    assert len(channel.read(channel.start_us, channel.end_us)) == (
+        RUNS_GRID_LENGTH
+    )

@@ -7,6 +7,10 @@ arithmetic is exact in Fraction, and a computed time axis is float64. The
 module also checks the integer arguments of a read and parses the decimal
 names of channel groups and level groups. It checks a label range and a
 column name argument, and builds the error for an array of the wrong layout.
+A channel with a runs table also maps windows and indices to the exact times
+that the table gives. The table is an int64 array of shape (runs, 3) that holds
+the first sample, the number of samples, and the time of the first sample of
+each run.
 """
 
 import math
@@ -152,6 +156,139 @@ def index_range(
     if end is not None:
         stop = min(max(math.ceil((end - offset_us) / period), 0), length)
     return first, max(stop, first)
+
+
+def _run_of(table: npt.NDArray[np.int64], index: int) -> int:
+    """Return the row of the last run that starts at or before index.
+
+    The result is -1 when index is before the first run.
+    """
+    return int(np.searchsorted(table[:, 0], index, side="right")) - 1
+
+
+def _run_bounds(
+    table: npt.NDArray[np.int64], row: int, length: int
+) -> tuple[int, int]:
+    """Return the end of run row and the first sample of the next run.
+
+    The end of the grid stands for the first sample of a run that does not
+    exist.
+    """
+    end = int(table[row, 0] + table[row, 1])
+    following = int(table[row + 1, 0]) if row + 1 < len(table) else length
+    return end, following
+
+
+def run_index_range(
+    start_us: int | None,
+    end_us: int | None,
+    table: npt.NDArray[np.int64],
+    offset_us: int,
+    period: Fraction,
+    length: int,
+) -> tuple[int, int]:
+    """Return the half-open index range of the samples in a time window.
+
+    A sample inside a run starts at the exact time that the table gives. A
+    sample between two runs starts at its grid time. Every sample that
+    overlaps the window is in the range, and a sample that starts at end_us is
+    not. Equal bounds and a window outside the grid give an empty range.
+
+    Args:
+        start_us: The start of the window in microseconds from the reference
+            time. None leaves that side open.
+        end_us: The end of the window, exclusive. None leaves that side open.
+        table: The runs table of the channel.
+        offset_us: The time of sample 0 of the grid.
+        period: The microseconds one sample spans.
+        length: The number of samples in the grid.
+
+    Raises:
+        TypeError: If a bound is not an integer.
+        ValueError: If end_us is before start_us.
+    """
+    start, end = window_bounds(start_us, end_us)
+    first = 0
+    if start is not None:
+        row = int(np.searchsorted(table[:, 2], start, side="right")) - 1
+        if row >= 0:
+            index = int(table[row, 0]) + math.floor(
+                (start - int(table[row, 2])) / period
+            )
+            run_end, following = _run_bounds(table, row, length)
+            if index >= run_end:
+                grid = math.floor((start - offset_us) / period)
+                index = min(max(grid, run_end), following)
+            first = min(index, length)
+        if end == start:
+            return first, first
+    stop = length
+    if end is not None:
+        row = int(np.searchsorted(table[:, 2], end, side="left")) - 1
+        stop = 0
+        if row >= 0:
+            index = int(table[row, 0]) + math.ceil(
+                (end - int(table[row, 2])) / period
+            )
+            run_end, following = _run_bounds(table, row, length)
+            if index >= run_end:
+                grid = math.ceil((end - offset_us) / period)
+                index = min(max(grid, run_end), following)
+            stop = min(index, length)
+    return first, max(stop, first)
+
+
+def entry_time(
+    index: int,
+    offset_us: int,
+    period: Fraction,
+    table: npt.NDArray[np.int64] | None = None,
+) -> Fraction:
+    """Return the exact start time of grid entry index in microseconds.
+
+    Args:
+        index: The grid index.
+        offset_us: The time of entry 0 of the grid.
+        period: The microseconds one entry spans.
+        table: The runs table of the channel, or None for a grid without
+            runs. An entry inside a run starts at the time that the table
+            gives, and any other entry starts at its grid time.
+    """
+    if table is not None:
+        row = _run_of(table, index)
+        if row >= 0 and index < table[row, 0] + table[row, 1]:
+            return int(table[row, 2]) + (index - int(table[row, 0])) * period
+    return offset_us + index * period
+
+
+def run_time_axis(
+    first: int,
+    count: int,
+    offset_us: int,
+    period_us: float,
+    table: npt.NDArray[np.int64],
+) -> npt.NDArray[np.float64]:
+    """Return the start time in microseconds of count samples from first.
+
+    A sample inside a run starts at the time that the table gives, and any
+    other sample starts at its grid time.
+
+    Args:
+        first: The index of the first sample.
+        count: The number of samples.
+        offset_us: The time of sample 0 of the grid.
+        period_us: The microseconds one sample spans.
+        table: The runs table of the channel.
+    """
+    indices = np.arange(first, first + count, dtype=np.int64)
+    rows = np.maximum(
+        np.searchsorted(table[:, 0], indices, side="right") - 1, 0
+    )
+    firsts = table[rows, 0]
+    inside = indices < firsts + table[rows, 1]
+    exact = table[rows, 2] + (indices - firsts).astype(np.float64) * period_us
+    grid = offset_us + indices.astype(np.float64) * period_us
+    return np.where(inside, exact, grid)
 
 
 def time_axis(
@@ -338,6 +475,7 @@ def merge_spans(
     low_us: int,
     high_us: int,
     gap_us: int,
+    table: npt.NDArray[np.int64] | None = None,
 ) -> list[tuple[int, int]]:
     """Return the time spans that the populated entries of a grid cover.
 
@@ -354,6 +492,9 @@ def merge_spans(
         low_us: The inclusive lower clamp.
         high_us: The exclusive upper clamp.
         gap_us: The widest gap that merges two spans.
+        table: The runs table of the channel when the grid is its raw
+            samples, so that a span starts and ends at exact sample times.
+            None puts every entry at its grid time.
     """
     padded = np.concatenate(([False], populated, [False])).astype(np.int8)
     edges = np.flatnonzero(np.diff(padded))
@@ -362,9 +503,16 @@ def merge_spans(
         edges[0::2].tolist(), edges[1::2].tolist(), strict=True
     ):
         start = max(
-            low_us, offset_us + math.floor((first + run_start) * period)
+            low_us,
+            math.floor(entry_time(first + run_start, offset_us, period, table)),
         )
-        end = min(high_us, offset_us + math.ceil((first + run_stop) * period))
+        end = min(
+            high_us,
+            math.ceil(
+                entry_time(first + run_stop - 1, offset_us, period, table)
+                + period
+            ),
+        )
         if start >= end:
             continue
         if spans and start - spans[-1][1] <= gap_us:
