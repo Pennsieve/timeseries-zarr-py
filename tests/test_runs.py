@@ -352,6 +352,30 @@ def test_a_run_that_starts_where_the_previous_one_ends_does_not_overlap():
     _check([(0, 5, 0), (5, 5, 5000)])
 
 
+def test_a_run_must_not_start_before_the_previous_run_ends_in_time():
+    _fails(
+        [(0, 10, 0), (20, 10, 20_900), (30, 5, 29_100)],
+        "channel 3: runs row 2 has time 29100 us, before the samples of run "
+        "1 end at 30900.0 us; the time must be at least 30900 us",
+        num_samples=35,
+    )
+
+
+def test_a_run_that_starts_where_the_previous_run_ends_in_time_passes():
+    _check([(0, 10, 0), (20, 10, 20_900), (30, 5, 30_900)], num_samples=35)
+
+
+def test_the_time_order_is_exact_at_a_period_that_has_no_float_form():
+    rate_hz = 3.0
+    _check([(0, 3, 0), (3, 2, 1_000_000)], num_samples=5, rate_hz=rate_hz)
+    _fails(
+        [(0, 3, 0), (3, 2, 999_999)],
+        "runs row 1 has time 999999 us, .* at least 1000000 us",
+        num_samples=5,
+        rate_hz=rate_hz,
+    )
+
+
 def test_the_last_run_must_end_at_the_end_of_raw():
     _fails(
         [(0, 4, 0), (7, 3, 6700)],
@@ -378,7 +402,7 @@ def test_a_time_one_period_or_more_from_the_grid_is_rejected(time_us):
 def test_the_bound_is_exact_at_a_period_that_has_no_float_form():
     rate_hz = 3.0
     _check([(0, 3, 0), (3, 2, 1_333_333)], num_samples=5, rate_hz=rate_hz)
-    _check([(0, 3, 0), (3, 2, 666_667)], num_samples=5, rate_hz=rate_hz)
+    _check([(0, 1, 0), (2, 2, 333_334)], num_samples=4, rate_hz=rate_hz)
     _fails(
         [(0, 3, 0), (3, 2, 1_333_334)],
         "runs row 1 has time 1333334 us",
@@ -386,9 +410,9 @@ def test_the_bound_is_exact_at_a_period_that_has_no_float_form():
         rate_hz=rate_hz,
     )
     _fails(
-        [(0, 3, 0), (3, 2, 666_666)],
-        "runs row 1 has time 666666 us",
-        num_samples=5,
+        [(0, 1, 0), (2, 2, 333_333)],
+        "runs row 1 has time 333333 us",
+        num_samples=4,
         rate_hz=rate_hz,
     )
 

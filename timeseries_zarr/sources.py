@@ -25,6 +25,7 @@ from timeseries_zarr.read_bundle import Bundle
 from timeseries_zarr.read_continuous import ContinuousChannel
 from timeseries_zarr.read_event import EventChannel, Snippets
 from timeseries_zarr.recording import epoch_us
+from timeseries_zarr.runs import Run
 from timeseries_zarr.types import EventColumn, RecordingMeta
 from timeseries_zarr.windows import (
     check_label_range,
@@ -96,7 +97,10 @@ def _carried_columns(
 class BundleContinuousSource:
     """A continuous channel of an open bundle as a writer source.
 
-    Sample 0 starts at epoch_us plus the offset_us of the channel.
+    Sample 0 starts at epoch_us plus the offset_us of the channel. A channel
+    with a runs array delivers only its recorded samples, so the NaN samples
+    of each pause are not source samples, and runs states the exact start of
+    each run.
     """
 
     __slots__ = ("_channel", "_epoch_us")
@@ -141,19 +145,57 @@ class BundleContinuousSource:
         """Return the microseconds since the Unix epoch of sample 0."""
         return self._epoch_us + self._channel.offset_us
 
+    def runs(self) -> list[Run]:
+        """Return the runs of the channel in time order.
+
+        A channel without a runs array is one run.
+        """
+        table = self._channel.runs
+        if table is None:
+            return [Run(self.start_us(), self.num_samples())]
+        return [
+            Run(self._epoch_us + int(time_us), int(count))
+            for _, count, time_us in table.tolist()
+        ]
+
     def num_samples(self) -> int:
-        """Return the number of raw samples."""
-        return self._channel.num_samples
+        """Return the number of recorded samples."""
+        table = self._channel.runs
+        if table is None:
+            return self._channel.num_samples
+        return int(table[:, 1].sum())
 
     def read_samples(self, start: int, stop: int) -> npt.NDArray[np.float32]:
-        """Return raw samples start through stop - 1 as float32.
+        """Return recorded samples start through stop - 1 as float32.
 
         Args:
-            start: Index of the first sample.
-            stop: Index after the last sample.
+            start: Index of the first recorded sample.
+            stop: Index after the last recorded sample.
+
+        Raises:
+            ValueError: If start is negative or stop is less than start.
         """
-        samples = read_rows(self._channel.raw, start, stop)
-        return np.asarray(samples, dtype=np.float32)
+        table = self._channel.runs
+        if table is None:
+            samples = read_rows(self._channel.raw, start, stop)
+            return np.asarray(samples, dtype=np.float32)
+        if start < 0 or stop < start:
+            raise ValueError(
+                f"sample range must have 0 <= start <= stop, got "
+                f"[{start}, {stop})"
+            )
+        pieces = []
+        recorded = 0
+        for first, count, _ in table.tolist():
+            low, high = max(start, recorded), min(stop, recorded + count)
+            if low < high:
+                grid = first + low - recorded
+                rows = read_rows(self._channel.raw, grid, grid + high - low)
+                pieces.append(np.asarray(rows, dtype=np.float32))
+            recorded += count
+        if not pieces:
+            return np.empty(0, dtype=np.float32)
+        return np.concatenate(pieces)
 
 
 class BundleEventSource:

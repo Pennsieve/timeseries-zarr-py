@@ -18,6 +18,11 @@ from tests.conftest import (
     ODD_LABELS,
     ODD_OFFSET_US,
     ODD_TEXT_WIDTH,
+    RUNS_GRID_LENGTH,
+    RUNS_LENGTHS,
+    RUNS_RESUME_US,
+    RUNS_START_US,
+    RUNS_TABLE,
 )
 from tests.test_bundle import (
     _ACQUIRE,
@@ -36,6 +41,7 @@ from timeseries_zarr.protocols import (
 )
 from timeseries_zarr.read_bundle import open_bundle
 from timeseries_zarr.recording import RECORDING_FILE
+from timeseries_zarr.runs import Run
 from timeseries_zarr.sources import (
     BundleContinuousSource,
     BundleEventSource,
@@ -1002,3 +1008,69 @@ def test_bundle_sources_rejects_an_epoch_us_that_is_not_an_integer(mixed):
         bundle_sources(mixed, epoch_us=1.5)
     with pytest.raises(TypeError, match="epoch_us must be an integer, got 1.5"):
         bundle_sources(mixed, [], epoch_us=1.5)
+
+
+def test_a_rewrite_of_the_runs_bundle_reproduces_runs_and_raw(
+    runs_bundle, tmp_path
+):
+    copy_path = tmp_path / "copy"
+    with open_bundle(runs_bundle) as original:
+        continuous, events = bundle_sources(original)
+        write_bundle(
+            [*continuous, *events],
+            [],
+            output_path=copy_path,
+            opts=_SPEC_OPTS,
+        )
+        with open_bundle(copy_path) as copy:
+            for key in (0, 1):
+                before, after = original.continuous[key], copy.continuous[key]
+                assert after.offset_us == before.offset_us
+                np.testing.assert_array_equal(after.raw[:], before.raw[:])
+            assert copy.continuous[0].runs.tolist() == [
+                list(row) for row in RUNS_TABLE
+            ]
+            assert copy.continuous[1].runs is None
+
+
+def test_a_source_of_a_channel_with_runs_counts_only_recorded_samples(
+    runs_bundle,
+):
+    with open_bundle(runs_bundle) as bundle:
+        source = BundleContinuousSource(
+            bundle.continuous[0], epoch_us=RUNS_START_US
+        )
+        assert source.num_samples() == sum(RUNS_LENGTHS)
+        assert source.runs() == [
+            Run(RUNS_START_US, RUNS_LENGTHS[0]),
+            Run(RUNS_START_US + RUNS_RESUME_US, RUNS_LENGTHS[1]),
+        ]
+        assert source.start_us() == RUNS_START_US
+
+
+def test_a_source_read_across_a_pause_skips_the_nan_samples(runs_bundle):
+    with open_bundle(runs_bundle) as bundle:
+        channel = bundle.continuous[0]
+        source = BundleContinuousSource(channel, epoch_us=RUNS_START_US)
+        raw = channel.raw[:]
+        across = source.read_samples(4090, 4100)
+        np.testing.assert_array_equal(
+            across, np.concatenate([raw[4090:4096], raw[4864:4868]])
+        )
+        assert not np.isnan(across).any()
+        assert len(source.read_samples(0, sum(RUNS_LENGTHS))) == sum(
+            RUNS_LENGTHS
+        )
+        assert len(source.read_samples(5000, 5000)) == 0
+        assert len(source.read_samples(sum(RUNS_LENGTHS), 9000)) == 0
+        with pytest.raises(ValueError, match="0 <= start <= stop"):
+            source.read_samples(5, 4)
+
+
+def test_a_source_of_a_channel_without_runs_is_one_run(runs_bundle):
+    with open_bundle(runs_bundle) as bundle:
+        source = BundleContinuousSource(
+            bundle.continuous[1], epoch_us=RUNS_START_US
+        )
+        assert source.runs() == [Run(RUNS_START_US, RUNS_GRID_LENGTH)]
+        assert source.num_samples() == RUNS_GRID_LENGTH

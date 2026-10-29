@@ -147,14 +147,15 @@ fraction of each bin that was recorded. A coverage view of a long timeline costs
 request. Unwritten chunks read as zero, which is the correct coverage for a span that
 was never recorded.
 
-A run is a maximal sequence of consecutive samples recorded at the sample rate, one
+A run is a sequence of consecutive samples recorded at the sample rate, one
 sample period of `1e6 / rate_hz` microseconds apart. A channel recorded without
 interruption is one run and needs no `runs` array. A channel whose recording paused
 holds one run per span of recording, and `runs` lists the runs in order. Let `first_r`,
 `n_r`, and `time_r` be columns 0, 1, and 2 of row `r`. Rows ascend in columns 0 and 2. Row 0
 is `[0, n_0, offset_us]`. Every `n_r` is at least 1. Runs do not overlap
-(`first_(r+1) >= first_r + n_r`), and the last run ends at `N`. Every sample outside a
-run MUST be NaN.
+(`first_(r+1) >= first_r + n_r`), and the last run ends at `N`. A run starts no earlier
+than the samples of the run before it end
+(`time_(r+1) >= time_r + n_r * 1e6 / rate_hz`). Every sample outside a run MUST be NaN.
 
 Sample `i` of run `r`, where `first_r <= i < first_r + n_r`, is at time
 `time_r + (i - first_r) * 1e6 / rate_hz`. `time_r` MUST lie within one sample period of
