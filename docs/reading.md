@@ -686,9 +686,8 @@ applies to the whole recording.
 A rewrite leaves out `values`, `waveforms`, and the `event_sample` of `waveform_mean`.
 The writer takes no input for them. A rewrite also leaves out a `text` column of width
 0, and `waveform_mean` when it carries no `labels`. The writer computes the levels and
-count levels again with the `WriteOpts` it gets. A rewrite also leaves out the `runs`
-array. The copy keeps the NaN samples of each pause and puts every sample at its grid
-time.
+count levels again with the `WriteOpts` it gets. A channel with `runs` keeps its runs and
+the exact time of each one.
 
 Write the new bundle to a path other than the bundle being read. `write_bundle` clears
 `output_path` before it reads a source, so a rewrite in place leaves only fill values.

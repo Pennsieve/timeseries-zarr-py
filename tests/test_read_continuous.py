@@ -1340,6 +1340,19 @@ def test_overlapping_runs_fail_on_first_access():
         channel.runs
 
 
+def test_a_run_that_starts_before_the_previous_run_ends_in_time_fails_on_first_access():
+    nodes = _gap_nodes(
+        rows=((0, 10, 0), (20, 10, 20_900), (30, 5, 29_100)),
+        raw=[np.nan] * 35,
+    )
+    nodes[f"1/{MINMAX_KEY}"] = np.full((18, 2), np.nan, dtype=np.float32)
+    channel = _hand_parse(nodes, _gap_attrs())
+    with pytest.raises(
+        ValueError, match="runs row 2 has time 29100 us, before the samples"
+    ):
+        channel.runs
+
+
 def test_a_last_run_that_misses_the_end_of_raw_fails_on_first_access():
     channel = _gap_channel(rows=((0, 4, 0), (7, 2, 6700)))
     with pytest.raises(

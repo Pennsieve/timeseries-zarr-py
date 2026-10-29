@@ -39,7 +39,8 @@ from a ladder of `1000 * decimation_factor^j` microseconds, and each level above
 `runs.py` holds `Run`, the span of samples that a source states, and `place_runs`, which
 puts the runs of a channel on its sample grid in exact fractions. It returns the offset,
 the grid length, and the table of the `runs` array. The same module checks the table
-and the NaN samples outside the runs when the reader loads a channel.
+and the NaN samples outside the runs. The reader checks the table on the first access of
+`runs` and the samples outside the runs on each raw read.
 
 Keeping these separate from the write path means the format's arithmetic is unit-testable
 without touching a store.
@@ -66,8 +67,8 @@ state of one channel. Each block of samples is scaled to the stored unit, append
 `raw`, and folded into every level. Each chunk that the folder emits is appended to its
 member array. Nothing is read back from the store. A channel with several runs also gets the NaN
 samples of each pause, pushed through the same path before the first sample of the next
-run. It writes the `runs` array of a channel with two or more runs as one shard through
-`zarr_io.write_region`. `write_var` decides only whether the
+run. `_channel_writer` writes the `runs` array of a channel with two or more runs as one shard
+through `zarr_io.write_region`. `write_var` decides only whether the
 `var` member is stored, because every level folds from float64 statistics and the variance
 stays exact on a channel with a large DC offset.
 

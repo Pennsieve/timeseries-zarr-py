@@ -201,8 +201,9 @@ def check_runs_table(
         ValueError: If row 0 is not [0, n_0, offset_us], a run has no
             samples, the first samples or the times do not ascend, a run
             starts before the previous run ends, the last run does not end at
-            num_samples, or a run starts one sample period or more from its
-            grid time. The message names the first row at fault.
+            num_samples, a run starts one sample period or more from its grid
+            time, or a run starts in time before the samples of the previous
+            run end. The message names the first row at fault.
     """
     period = bin_period(rate_hz, 1)
     firsts, counts, times = table[:, 0], table[:, 1], table[:, 2]
@@ -259,6 +260,17 @@ def check_runs_table(
                 f"grid time {float(grid_us)} us of sample {int(firsts[row])}; "
                 f"the difference must be under one sample period of "
                 f"{float(period)} us"
+            )
+    slack = times[1:] - times[:-1] - counts[:-1] * period_us
+    tolerance = period_us * 1e-6 + np.abs(times[1:]) * 1e-12
+    for index in np.flatnonzero(slack < tolerance).tolist():
+        ends_us = int(times[index]) + int(counts[index]) * period
+        if int(times[index + 1]) < ends_us:
+            raise ValueError(
+                f"{where}: runs row {index + 1} has time "
+                f"{int(times[index + 1])} us, before the samples of run "
+                f"{index} end at {float(ends_us)} us; the time must be at "
+                f"least {math.ceil(ends_us)} us"
             )
 
 
