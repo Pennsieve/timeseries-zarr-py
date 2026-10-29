@@ -27,6 +27,8 @@ PUBLIC_NAMES = {
     "MultiChannelSource",
     "Recording",
     "RecordingMeta",
+    "Run",
+    "RunsSource",
     "Samples",
     "Snippets",
     "Stack",

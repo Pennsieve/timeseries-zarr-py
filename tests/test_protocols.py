@@ -11,9 +11,12 @@ from timeseries_zarr.protocols import (
     EventChannelSource,
     MultiChannelSource,
     ProvenanceSource,
+    RunsSource,
     missing_members,
     source_provenance,
+    source_runs,
 )
+from timeseries_zarr.runs import Run
 
 
 class FakeContinuous:
@@ -384,3 +387,52 @@ def test_missing_members_sorts_the_names() -> None:
 def test_missing_members_includes_the_members_a_protocol_inherits() -> None:
     names = missing_members(object(), ContinuousChannelSource)
     assert {"id", "read_samples"} <= set(names)
+
+
+def test_a_source_without_runs_is_one_run_from_its_start_and_length():
+    assert source_runs(FakeContinuous()) == [Run(0, 4)]
+
+
+def test_a_source_without_runs_is_not_a_runs_source():
+    assert not isinstance(FakeContinuous(), RunsSource)
+
+
+def test_source_runs_returns_what_the_source_states():
+    class Gapped(FakeContinuous):
+        def runs(self):
+            return (Run(0, 2), Run(5_000, 2))
+
+    assert isinstance(Gapped(), RunsSource)
+    assert source_runs(Gapped()) == [Run(0, 2), Run(5_000, 2)]
+
+
+def test_a_runs_source_still_satisfies_the_channel_protocols():
+    class Gapped(FakeContinuous):
+        def runs(self):
+            return (Run(0, 4),)
+
+    assert isinstance(Gapped(), ContinuousChannelSource)
+    assert isinstance(Gapped(), ContinuousChannelMetadata)
+
+
+def test_source_runs_reads_the_runs_of_a_multi_channel_channel():
+    class Gapped:
+        id = "ch-0"
+        name = "Channel 0"
+        unit = "uV"
+
+        def rate_hz(self):
+            return 1000.0
+
+        def start_us(self):
+            return 10
+
+        def num_samples(self):
+            return 3
+
+        def runs(self):
+            return [Run(10, 1), Run(2_010, 2)]
+
+    (channel,) = [Gapped()]
+    assert isinstance(channel, ContinuousChannelMetadata)
+    assert source_runs(channel) == [Run(10, 1), Run(2_010, 2)]

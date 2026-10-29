@@ -18,6 +18,7 @@ from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
     MultiChannelSource,
+    RunsSource,
 )
 from timeseries_zarr.read_bundle import Bundle, Channel, open_bundle
 from timeseries_zarr.read_continuous import (
@@ -35,6 +36,7 @@ from timeseries_zarr.read_event import (
     Waveform,
 )
 from timeseries_zarr.read_recording import Recording
+from timeseries_zarr.runs import Run
 from timeseries_zarr.sizing import channel_writer_bytes
 from timeseries_zarr.sources import bundle_sources, recording_meta
 from timeseries_zarr.stack import BinMember, Stack
@@ -72,6 +74,8 @@ __all__ = [
     "MultiChannelSource",
     "Recording",
     "RecordingMeta",
+    "Run",
+    "RunsSource",
     "Samples",
     "Snippets",
     "Stack",
