@@ -166,7 +166,8 @@ class WriteOpts:
         write_var: Whether to add the var member to every level. Requires
             max_levels of 1 or more.
         voltage_policy: How a continuous channel with a volts-family unit
-            reaches microvolts.
+            reaches microvolts. The policy also applies to the unit of an event
+            channel.
         max_workers: The threads that fold and encode the channels of a
             window, at least 1. None uses the CPUs available to the process.
             The bytes written do not depend on it.

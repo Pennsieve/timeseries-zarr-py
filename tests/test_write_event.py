@@ -687,9 +687,9 @@ def _means():
     return means
 
 
-def _write_means(tmp_path, source):
+def _write_means(tmp_path, source, opts=WriteOpts(), factor=1.0):
     group = open_group(tmp_path / "bundle")
-    write_waveform_mean_array(group, source, 5)
+    write_waveform_mean_array(group, source, opts, factor)
     return open_group(tmp_path / "bundle")
 
 
@@ -835,9 +835,45 @@ def test_write_waveform_mean_array_is_written_in_one_whole_write(
     assert writes == [(0, (3, 5))]
 
 
+def test_write_waveform_mean_array_scales_in_float64_and_casts_once(
+    tmp_path, event_source
+):
+    means = np.full((3, 5), 0.1, dtype=np.float32)
+    stored = _write_means(
+        tmp_path, _means_source(event_source, means=means), factor=1e3
+    )[WAVEFORM_MEAN_KEY][:]
+    expected = (means.astype(np.float64) * 1e3).astype(np.float32)
+    assert stored.dtype == np.float32
+    assert np.array_equal(stored, expected)
+
+
+def test_write_waveform_mean_array_shrinks_the_chunk_for_a_wide_row(
+    tmp_path, event_source
+):
+    samples = 5000
+    means = np.ones((12, samples), dtype=np.float32)
+    source = event_source(
+        [1, 2, 3],
+        labels=[0, 1, 2],
+        label_names=[str(index) for index in range(12)],
+        waveform_mean=means,
+        waveform_period_us=122.0,
+    )
+    opts = WriteOpts(inner_len=8192, target_shard_bytes=2**16)
+    arr = _write_means(tmp_path, source, opts=opts)[WAVEFORM_MEAN_KEY]
+    row_bytes = samples * 4
+    assert arr.chunks == (opts.target_shard_bytes // row_bytes, samples)
+    assert arr.chunks[0] < 12
+    assert arr.chunks[0] * row_bytes <= opts.target_shard_bytes
+    assert np.array_equal(arr[:3], means[:3])
+    assert np.isnan(arr[3:]).all()
+
+
 def test_write_waveform_mean_array_returns_the_array(tmp_path, event_source):
     group = open_group(tmp_path / "bundle")
-    arr = write_waveform_mean_array(group, _means_source(event_source), 5)
+    arr = write_waveform_mean_array(
+        group, _means_source(event_source), WriteOpts()
+    )
     assert arr.shape == (3, 5)
 
 
@@ -1185,6 +1221,47 @@ def test_write_event_channel_group_attributes_sit_under_tsz(
             "max_duration_us": 110,
         }
     }
+
+
+@pytest.mark.parametrize(
+    ("unit", "stored", "scaled"),
+    [
+        ("mV", "uV", 1000.0),
+        ("V", "uV", 1e6),
+        ("nV", "uV", 1e-3),
+        ("uV", "uV", 1.0),
+        ("a.u.", "a.u.", 1.0),
+    ],
+)
+def test_write_event_channel_resolves_the_unit_and_scales_waveform_mean(
+    tmp_path, event_source, unit, stored, scaled
+):
+    source = _full(
+        event_source,
+        unit=unit,
+        waveform_mean=np.ones((3, 4), dtype=np.float32),
+    )
+    group = _write_channel(tmp_path, source)["7"]
+    assert dict(group.attrs)["tsz"]["unit"] == stored
+    assert np.array_equal(
+        group[WAVEFORM_MEAN_KEY][:],
+        np.full((3, 4), scaled, dtype=np.float32),
+    )
+
+
+def test_write_event_channel_leaves_an_absent_unit_absent(
+    tmp_path, event_source
+):
+    group = _write_channel(tmp_path, _full(event_source, unit=None))["7"]
+    assert "unit" not in dict(group.attrs)["tsz"]
+
+
+def test_write_event_channel_require_uv_rejects_a_volts_unit(
+    tmp_path, event_source
+):
+    opts = dataclasses.replace(_CHANNEL_OPTS, voltage_policy="require_uv")
+    with pytest.raises(ValueError, match="'V'"):
+        _write_channel(tmp_path, _full(event_source, unit="V"), opts=opts)
 
 
 _PROVENANCE = {"software": "review-tool 3.2", "settings": {"threshold": 3.5}}

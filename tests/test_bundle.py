@@ -1222,6 +1222,38 @@ def test_write_bundle_require_uv_rejects_a_volts_source_before_writing(
     assert not output.exists()
 
 
+def test_write_bundle_require_uv_rejects_an_event_unit_before_writing(
+    tmp_path, event_source
+):
+    output = tmp_path / "bundle"
+    source = event_source([1, 2, 3], id="ev-1", unit="V")
+    opts = WriteOpts(voltage_policy="require_uv")
+    with pytest.raises(ValueError, match=r"channel 0 \('ev-1'\).*'V'"):
+        write_bundle([], [source], output_path=output, opts=opts)
+    assert not output.exists()
+
+
+def test_write_bundle_converts_the_unit_and_waveform_mean_of_an_event_channel(
+    tmp_path, event_source
+):
+    output = tmp_path / "bundle"
+    source = event_source(
+        [1, 2, 3],
+        id="ev-1",
+        unit="mV",
+        labels=[0, 1, 0],
+        label_names=["a", "b"],
+        waveform_mean=np.ones((2, 4), dtype=np.float32),
+    )
+    write_bundle([], [source], output_path=output, opts=_OPTS)
+    group = open_group(output)["0"]
+    assert dict(group.attrs)["tsz"]["unit"] == "uV"
+    assert np.array_equal(
+        group["waveform_mean"][:], np.full((2, 4), 1000.0, dtype=np.float32)
+    )
+    _validate_bundle(output)
+
+
 def test_write_bundle_convert_leaves_a_microvolt_source_bit_identical(
     tmp_path, continuous_source
 ):

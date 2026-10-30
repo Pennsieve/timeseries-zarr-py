@@ -434,6 +434,8 @@ def write_bundle(
     for index, channel in channels:
         try:
             if isinstance(channel, EventChannelSource):
+                if channel.unit is not None:
+                    resolve_unit(channel.unit, opts.voltage_policy)
                 check_event_channel(
                     channel, 0 if reference is None else reference, opts
                 )
