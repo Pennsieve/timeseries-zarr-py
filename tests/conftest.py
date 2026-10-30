@@ -1,5 +1,6 @@
 """Shared pytest fixtures, the in-memory sources, and the test bundles."""
 
+import json
 import warnings
 
 import numpy as np
@@ -15,7 +16,9 @@ from tests.test_bundle import (
 )
 from timeseries_zarr.attrs import (
     continuous_channel_attrs,
+    event_channel_attrs,
     level_group_attrs,
+    root_attrs,
     waveform_array_attrs,
 )
 from timeseries_zarr.bundle import write_bundle
@@ -32,6 +35,7 @@ from timeseries_zarr.constants import (
     MEAN_KEY,
     MINMAX_KEY,
     RAW_KEY,
+    RUNS_KEY,
     TEXT_KEY,
     TIME_DIMENSION,
     TSZ_KEY,
@@ -677,6 +681,157 @@ def write_odd_bundle(path):
     _write_intervals(root)
     consolidate(root)
     return path
+
+
+FULL_RATE_HZ = 512.0
+FULL_SAMPLES = 1001
+FULL_GAP = (400, 500)
+"""Samples of channel 0 of the full bundle that lie outside every run."""
+FULL_RESUME_US = 976_563
+"""Time of the first sample of the second run, 0.5 microsecond past its grid time."""
+FULL_EVENTS = 40
+FULL_LABELS = 3
+FULL_WAVEFORM_SAMPLES = 8
+FULL_COUNT_PERIOD_US = 1_024_000
+FULL_MAX_DURATION_US = 6_000_000
+FULL_TEXT_WIDTH = 6
+
+
+def _full_continuous(root):
+    """Write channel 0 of the full bundle: two runs, two levels, a gap."""
+    samples = _odd_signal(FULL_SAMPLES, 4)
+    samples[10] = np.inf
+    samples[20] = np.nan
+    samples[slice(*FULL_GAP)] = np.nan
+    _write_continuous(
+        root,
+        0,
+        continuous_channel_attrs(
+            "runs", "zero", FULL_RATE_HZ, 0, "uV", {"software": "test"}
+        ),
+        samples,
+        {
+            1: (MINMAX_KEY, MEAN_KEY, VAR_KEY, COUNT_KEY),
+            2: (MINMAX_KEY, COUNT_KEY, MEAN_KEY),
+        },
+    )
+    runs = np.array(
+        [
+            [0, FULL_GAP[0], 0],
+            [FULL_GAP[1], FULL_SAMPLES - FULL_GAP[1], FULL_RESUME_US],
+        ],
+        dtype=np.int64,
+    )
+    _write_rows(root["0"], RUNS_KEY, runs, ("run", None))
+    _write_continuous(
+        root,
+        1,
+        continuous_channel_attrs("empty", "one", 30_000.0, 0, "uV", None),
+        np.zeros(0, dtype=np.float32),
+        {},
+    )
+
+
+def _full_waveforms(labels):
+    """Return waveforms with NaN values, and the mean of each label's rows."""
+    rng = np.random.default_rng(21)
+    waveforms = rng.standard_normal((FULL_EVENTS, FULL_WAVEFORM_SAMPLES))
+    waveforms = waveforms.astype(np.float32)
+    waveforms[3, 2] = np.nan
+    waveforms[labels == 1, 5] = np.nan
+    means = np.full((FULL_LABELS, FULL_WAVEFORM_SAMPLES), np.nan)
+    for label in range(FULL_LABELS):
+        rows = waveforms[labels == label].astype(np.float64)
+        for sample in range(FULL_WAVEFORM_SAMPLES):
+            finite = rows[np.isfinite(rows[:, sample]), sample]
+            if finite.size:
+                means[label, sample] = finite.mean()
+    return waveforms, means.astype(np.float32)
+
+
+def _full_events(root):
+    """Write channel 2 of the full bundle: every column and two count levels."""
+    spare = np.arange(FULL_EVENTS)
+    events = 1_000_000 + 250_000 * spare.astype(np.int64)
+    events[ODD_TIE + 1] = events[ODD_TIE]
+    labels = (spare % FULL_LABELS).astype(np.uint16)
+    durations = np.where(spare % 5 == 0, 1_500_000, 0).astype(np.int64)
+    texts = ["", ODD_FULL_TEXT, "note", "abcdef"] * (FULL_EVENTS // 4)
+    keys = [(0,), (1, 2), (), (0, 1, 2)] * (FULL_EVENTS // 4)
+    waveforms, waveform_mean = _full_waveforms(labels)
+    snippet_attrs = waveform_array_attrs(
+        ODD_WAVEFORM_PERIOD_US, ODD_EVENT_SAMPLE, FULL_WAVEFORM_SAMPLES
+    )
+    channel = create_group_with_attrs(
+        root,
+        "2",
+        event_channel_attrs(
+            "events",
+            "two",
+            "uV",
+            ["a", "b", "c"],
+            FULL_MAX_DURATION_US,
+            None,
+        ),
+    )
+    event_dimensions = (EVENT_DIMENSION,)
+    row_dimensions = (EVENT_DIMENSION, None)
+    _write_rows(channel, EVENTS_KEY, events, event_dimensions)
+    _write_rows(channel, DURATIONS_KEY, durations, event_dimensions)
+    _write_rows(channel, LABELS_KEY, labels, event_dimensions)
+    values = (np.arange(FULL_EVENTS) / 8).astype(np.float32)
+    _write_rows(channel, VALUES_KEY, values, event_dimensions)
+    _write_rows(
+        channel, TEXT_KEY, text_rows(texts, FULL_TEXT_WIDTH), row_dimensions
+    )
+    _write_rows(channel, CHANNELS_KEY, channels_rows(keys, 2), row_dimensions)
+    _write_rows(
+        channel, WAVEFORMS_KEY, waveforms, row_dimensions, snippet_attrs
+    )
+    _write_rows(
+        channel,
+        WAVEFORM_MEAN_KEY,
+        waveform_mean,
+        (LABEL_DIMENSION, None),
+        snippet_attrs,
+    )
+    for level, factor in ((1, 1), (2, 4)):
+        period = FULL_COUNT_PERIOD_US * factor
+        group = create_group_with_attrs(
+            channel, str(level), level_group_attrs(period, 0)
+        )
+        counts = np.zeros(
+            (int(events[-1]) // period + 1, FULL_LABELS), dtype=np.uint32
+        )
+        np.add.at(counts, (events // period, labels), 1)
+        _write_rows(group, COUNT_KEY, counts, (TIME_DIMENSION, None))
+
+
+def write_full_bundle(path):
+    """Write a bundle that holds every array of the specification at path.
+
+    Channel 0 is continuous at FULL_RATE_HZ with two runs, a gap of NaN
+    samples between them, an infinite sample, and levels 1 and 2. Channel 1
+    is continuous and empty. Channel 2 is an event channel with FULL_EVENTS
+    events, every per-event column, waveforms, waveform_mean, and two count
+    levels. Event channel 2 sits beside two continuous channels, so channels
+    holds one byte per row. recording.json holds a reference time. Returns
+    path.
+    """
+    root = open_group(path, root_attrs())
+    _full_continuous(root)
+    _full_events(root)
+    consolidate(root)
+    (path / "recording.json").write_text(
+        json.dumps({"reference_time": "2024-03-14T14:15:00+00:00"})
+    )
+    return path
+
+
+@pytest.fixture(scope="session")
+def full_bundle(tmp_path_factory):
+    """Return the bundle write_full_bundle writes, written once per session."""
+    return write_full_bundle(tmp_path_factory.mktemp("full") / "bundle")
 
 
 @pytest.fixture(scope="session")

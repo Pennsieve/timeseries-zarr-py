@@ -22,6 +22,7 @@ from zarr.core.group import GroupMetadata
 from zarr.core.metadata import ArrayV3Metadata
 from zarr.core.sync import sync
 from zarr.storage import FsspecStore, LocalStore, StorePath, WrapperStore
+from zarr.storage._common import make_store_path
 
 from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.shards import (
@@ -431,6 +432,26 @@ def open_root(
             "carries it in its root zarr.json"
         )
     return root
+
+
+def open_store_path(location: BundleLocation) -> StorePath:
+    """Return the StorePath of a bundle for reading.
+
+    Takes the same locations as open_root and reads nothing from the store.
+
+    Args:
+        location: A local path, a file URL, an fsspec URL, a zarr Store, or a
+            StorePath.
+
+    Raises:
+        ValueError: If a file URL names a host other than localhost or holds
+            a query or fragment.
+    """
+    return sync(
+        make_store_path(
+            _local_location(_read_only_store_path(location)), mode="r"
+        )
+    )
 
 
 def _read_only_store_path(location: BundleLocation) -> BundleLocation:

@@ -34,6 +34,7 @@ from timeseries_zarr.zarr_io import (
     group_metadata,
     open_group,
     open_root,
+    open_store_path,
     read_int,
     read_rows,
     read_store_text,
@@ -474,6 +475,46 @@ def test_open_root_opens_a_writable_store_read_only(reader_tree, make_location):
     assert root.store.read_only
     with pytest.raises(ValueError, match="read-only"):
         root.attrs.update({"marker": "written"})
+
+
+@pytest.mark.parametrize(
+    "make_location",
+    [
+        str,
+        lambda path: path,
+        LocalStore,
+        lambda path: path.as_uri(),
+        _memory_store,
+        lambda path: StorePath(_memory_store(path, _PREFIX), _PREFIX),
+    ],
+    ids=["str", "Path", "LocalStore", "file URL", "MemoryStore", "StorePath"],
+)
+def test_open_store_path_names_the_root_of_each_location_kind(
+    reader_tree, make_location
+):
+    store_path = open_store_path(make_location(reader_tree))
+    assert isinstance(store_path, StorePath)
+    buffer = sync((store_path / "zarr.json").get(default_buffer_prototype()))
+    assert json.loads(buffer.to_bytes())["attributes"]["tsz"] == _ROOT_TSZ
+
+
+def test_open_store_path_opens_a_local_directory_read_only(reader_tree):
+    assert open_store_path(reader_tree).store.read_only
+
+
+def test_open_store_path_reads_a_bundle_without_consolidated_metadata(tmp_path):
+    (tmp_path / "zarr.json").write_text(
+        json.dumps({"zarr_format": 3, "node_type": "group", "attributes": {}})
+    )
+    store_path = open_store_path(tmp_path)
+    assert sync((store_path / "zarr.json").exists())
+
+
+def test_open_store_path_raises_file_not_found_for_a_missing_directory(
+    tmp_path,
+):
+    with pytest.raises(FileNotFoundError):
+        open_store_path(tmp_path / "absent")
 
 
 def test_open_root_opens_a_store_path_whose_store_makes_no_read_only_copy(
