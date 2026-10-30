@@ -1,11 +1,13 @@
 """Check a bundle against docs/spec.md from the command line.
 
 Run python -m timeseries_zarr.validate PATH [--full]. The command prints one
-finding per line and exits with status 1 when it finds any. The checks live
-in timeseries_zarr.validator.
+finding per line and exits with status 1 when it finds any, or with status 2
+when the bundle cannot be validated at all. The checks live in
+timeseries_zarr.validator.
 """
 
 import argparse
+import sys
 from collections.abc import Sequence
 
 from timeseries_zarr.types import Finding
@@ -21,7 +23,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         argv: The command line arguments. None reads sys.argv.
 
     Returns:
-        0 when the bundle has no findings, otherwise 1.
+        0 when the bundle has no findings, 1 when it has findings, and 2 when
+        validation cannot run, for example on a store that cannot list its
+        keys. The reason is printed to standard error.
     """
     parser = argparse.ArgumentParser(
         prog="python -m timeseries_zarr.validate",
@@ -34,7 +38,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="also recompute the statistics from the samples and events",
     )
     arguments = parser.parse_args(argv)
-    findings = validate_bundle(arguments.path, full=arguments.full)
+    try:
+        findings = validate_bundle(arguments.path, full=arguments.full)
+    except ValueError as error:
+        print(f"error: {error}", file=sys.stderr)
+        return 2
     for finding in findings:
         print(
             f"{finding.path or '.'}: section {finding.section}: "
