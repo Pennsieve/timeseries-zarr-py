@@ -42,22 +42,24 @@ def test_block_split_rejects_nonpositive_block(block):
 
 
 def _direct(raw, width=4):
-    """Per-bin statistics straight from the definition, in float64."""
-    x = np.asarray(raw, dtype=np.float64).copy()
-    finite = np.isfinite(x)
-    x[~finite] = np.nan
+    """Per-bin statistics of the finite samples, straight from the definition."""
+    x = np.asarray(raw, dtype=np.float64)
     rows = []
     for i in range(0, len(x), width):
-        bin_values, bin_finite = x[i : i + width], finite[i : i + width]
-        rows.append(
-            [
-                bin_values.min(),
-                bin_values.max(),
-                bin_values.mean(),
-                bin_values.var(),
-                bin_finite.sum(),
-            ]
-        )
+        block = x[i : i + width]
+        block = block[np.isfinite(block)]
+        if block.size:
+            rows.append(
+                [
+                    block.min(),
+                    block.max(),
+                    block.mean(),
+                    block.var(),
+                    block.size,
+                ]
+            )
+        else:
+            rows.append([np.nan, np.nan, np.nan, np.nan, 0.0])
     return np.array(rows, dtype=np.float64).reshape(-1, STATISTIC_COLUMNS)
 
 
@@ -97,16 +99,26 @@ def _generator_fold(statistics):
     minimum, maximum, mean, variance, count = (
         statistics[:, column] for column in range(STATISTIC_COLUMNS)
     )
+    present = count > 0
     total = _reduce(count, 4, np.sum)
     with np.errstate(invalid="ignore", divide="ignore"):
-        parent_mean = _reduce(count * mean, 4, np.sum) / total
+        parent_mean = _reduce(count * np.where(present, mean, 0.0), 4, np.sum)
+        parent_mean = parent_mean / total
         repeated = np.repeat(parent_mean, 4)[: len(mean)]
-        spread = variance + (mean - repeated) ** 2
+        spread = np.where(present, variance + (mean - repeated) ** 2, 0.0)
         parent_variance = _reduce(count * spread, 4, np.sum) / total
     return np.stack(
         [
-            _reduce(minimum, 4, np.min),
-            _reduce(maximum, 4, np.max),
+            np.where(
+                total > 0,
+                _reduce(np.where(present, minimum, np.inf), 4, np.min),
+                np.nan,
+            ),
+            np.where(
+                total > 0,
+                _reduce(np.where(present, maximum, -np.inf), 4, np.max),
+                np.nan,
+            ),
             parent_mean,
             parent_variance,
             total,
@@ -162,14 +174,17 @@ def test_statistics_members_places_each_statistic_in_its_member():
     assert np.array_equal(count, statistics[:, COUNT_COLUMN])
 
 
-def test_statistics_members_keeps_nan_bins_nan_and_their_counts():
+def test_statistics_members_hold_nan_only_in_bins_with_count_zero():
     statistics, (minmax, mean, var, count) = _members()
-    nan_bins = np.isnan(statistics[:, MEAN_COLUMN])
-    assert nan_bins.any()
-    assert np.isnan(minmax[nan_bins]).all()
-    assert np.isnan(mean[nan_bins]).all()
-    assert np.isnan(var[nan_bins]).all()
-    assert (count[nan_bins] <= 3).all()
+    empty = count == 0
+    assert empty.any()
+    assert np.isnan(minmax[empty]).all()
+    assert np.isnan(mean[empty]).all()
+    assert np.isnan(var[empty]).all()
+    assert np.isfinite(minmax[~empty]).all()
+    assert np.isfinite(mean[~empty]).all()
+    assert np.isfinite(var[~empty]).all()
+    assert np.array_equal(np.isnan(statistics[:, MEAN_COLUMN]), empty)
 
 
 def test_statistics_members_without_var_returns_none_and_the_same_others():
@@ -331,20 +346,22 @@ def test_fold_raw_tail_of_three_samples_counts_three():
 
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
-def test_fold_raw_one_non_finite_sample_makes_the_bin_nan(bad):
+def test_fold_raw_skips_one_non_finite_sample(bad):
     raw = np.array([1, 2, bad, 4, 5, 6, 7, 8], dtype=np.float32)
     out = fold_raw(raw, 4)
-    for member in (out.minimum, out.maximum, out.mean, out.variance):
-        assert np.isnan(member[0])
+    assert (out.minimum[0], out.maximum[0]) == (1.0, 4.0)
+    assert out.mean[0] == 7.0 / 3.0
+    assert np.isclose(out.variance[0], 14.0 / 9.0, rtol=1e-12)
     assert out.count.tolist() == [3.0, 4.0]
     assert (out.minimum[1], out.maximum[1]) == (5.0, 8.0)
     assert (out.mean[1], out.variance[1]) == (6.5, 1.25)
 
 
-def test_fold_raw_bin_of_both_infinities_is_nan_with_its_finite_count():
-    raw = np.array([np.inf, -np.inf, 3.0, 4.0], dtype=np.float32)
+def test_fold_raw_bin_of_both_infinities_takes_its_statistics_from_the_rest():
+    raw = np.array([np.inf, -np.inf, 3.0, 5.0], dtype=np.float32)
     out = fold_raw(raw, 4)
-    assert np.isnan(out.minimum[0])
+    assert (out.minimum[0], out.maximum[0]) == (3.0, 5.0)
+    assert (out.mean[0], out.variance[0]) == (4.0, 1.0)
     assert out.count[0] == 2.0
 
 
@@ -355,9 +372,10 @@ def test_fold_raw_all_non_finite_bin_has_count_zero():
     assert out.count[0] == 0.0
 
 
-def test_fold_raw_non_finite_tail_is_nan_with_its_finite_count():
+def test_fold_raw_tail_skips_a_non_finite_sample():
     out = fold_raw(np.array([1, 2, 3, 4, np.nan, 2], dtype=np.float32), 4)
-    assert np.isnan(out.mean[1])
+    assert (out.minimum[1], out.maximum[1], out.mean[1]) == (2.0, 2.0, 2.0)
+    assert out.variance[1] == 0.0
     assert out.count.tolist() == [4.0, 1.0]
 
 
@@ -451,11 +469,22 @@ def test_fold_statistics_weights_a_partial_child_by_its_count():
     assert out.mean[0] == 8.0 / 13.0
 
 
-def test_fold_statistics_one_nan_child_makes_the_parent_nan():
+def test_fold_statistics_one_nan_sample_leaves_the_parent_finite():
     raw = np.array([1, 2, np.nan, 4] + list(range(12)), dtype=np.float32)
     out = fold_statistics(fold_raw(raw, 4), 4)
-    assert np.isnan(_stack(out)[0, :COUNT_COLUMN]).all()
+    _assert_same(out, _direct(raw, 16))
     assert out.count[0] == 15.0
+    assert np.isfinite(_stack(out)).all()
+
+
+def test_fold_statistics_skips_a_child_with_count_zero():
+    raw = np.array([1, 2, 3, 4] + [np.nan] * 4 + [5, 6, 7, 9] * 2, np.float32)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        out = fold_statistics(fold_raw(raw, 4), 4)
+    assert (out.minimum[0], out.maximum[0]) == (1.0, 9.0)
+    assert out.count[0] == 12.0
+    _assert_same(out, _direct(raw, 16))
 
 
 def test_fold_statistics_all_nan_children_give_count_zero_without_warning():
@@ -686,3 +715,72 @@ def test_level_folder_rejects_a_push_after_finish():
         folder.push(np.zeros(4, dtype=np.float32))
     with pytest.raises(RuntimeError, match="twice"):
         folder.finish()
+
+
+def _every_level(raw, levels=6, factor=4):
+    """The statistics of levels 1 to levels, with the width of each level."""
+    statistics = fold_raw(raw, factor)
+    out = []
+    for level in range(1, levels + 1):
+        out.append((factor**level, statistics))
+        statistics = fold_statistics(statistics, factor)
+    return out
+
+
+@pytest.mark.parametrize("bad", [np.nan, np.inf, -np.inf])
+def test_one_non_finite_sample_keeps_finite_statistics_at_every_level(bad):
+    raw = np.random.default_rng(5).standard_normal(5000).astype(np.float32)
+    raw[1234] = bad
+    for width, statistics in _every_level(raw):
+        out = _stack(statistics)
+        want = _direct(raw, width)
+        assert np.isfinite(out).all()
+        bin_index = 1234 // width
+        assert (
+            out[bin_index, COUNT_COLUMN]
+            == min(width, 5000 - bin_index * width) - 1
+        )
+        assert np.array_equal(out[:, COUNT_COLUMN], want[:, COUNT_COLUMN])
+        assert np.array_equal(out[:, :2], want[:, :2])
+        assert np.allclose(out, want, rtol=1e-9, atol=0.0)
+
+
+def test_a_bin_with_no_finite_sample_has_count_zero_and_nan_at_every_level():
+    raw = np.random.default_rng(6).standard_normal(5000).astype(np.float32)
+    raw[1000:2000] = np.nan
+    raw[1500] = np.inf
+    raw[1600] = -np.inf
+    for width, statistics in _every_level(raw):
+        out = _stack(statistics)
+        want = _direct(raw, width)
+        empty = out[:, COUNT_COLUMN] == 0
+        assert np.array_equal(empty, want[:, COUNT_COLUMN] == 0)
+        assert np.isnan(out[empty, :COUNT_COLUMN]).all()
+        assert np.isfinite(out[~empty]).all()
+        assert empty.any() == (width <= 1000)
+
+
+@pytest.mark.parametrize("bad", [np.inf, -np.inf])
+def test_infinity_counts_as_non_finite_at_every_level(bad):
+    raw = np.full(300, 2.0, dtype=np.float32)
+    raw[1] = bad
+    for width, statistics in _every_level(raw, levels=4):
+        out = _stack(statistics)
+        assert np.isfinite(out).all()
+        assert out[0, COUNT_COLUMN] == min(width, 300) - 1
+        assert (out[0, MIN_COLUMN], out[0, MAX_COLUMN]) == (2.0, 2.0)
+        assert out[0, VAR_COLUMN] == 0.0
+
+
+def test_a_channel_with_a_large_offset_folds_variance_at_every_level():
+    raw = (1e4 + np.random.default_rng(7).standard_normal(70_000)).astype(
+        np.float32
+    )
+    for width, statistics in _every_level(raw, levels=8):
+        want = np.array(
+            [
+                np.var(raw[start : start + width].astype(np.float64))
+                for start in range(0, raw.size, width)
+            ]
+        )
+        assert np.allclose(statistics.variance, want, rtol=2.0**-20, atol=0.0)

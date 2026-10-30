@@ -299,16 +299,24 @@ def _series(n, offset=5000.0, scale=8.0, seed=0):
 
 
 def _direct(raw, width):
-    """Per-bin statistics straight from the definition, in float64."""
+    """Per-bin statistics of the finite samples, straight from the definition."""
     values = raw.astype(np.float64)
-    finite = np.isfinite(values)
-    values[~finite] = np.nan
     rows = []
     for i in range(0, len(values), width):
-        block, ok = values[i : i + width], finite[i : i + width]
-        rows.append(
-            [block.min(), block.max(), block.mean(), block.var(), ok.sum()]
-        )
+        block = values[i : i + width]
+        block = block[np.isfinite(block)]
+        if block.size:
+            rows.append(
+                [
+                    block.min(),
+                    block.max(),
+                    block.mean(),
+                    block.var(),
+                    block.size,
+                ]
+            )
+        else:
+            rows.append([np.nan, np.nan, np.nan, np.nan, 0.0])
     return np.array(rows, dtype=np.float64).reshape(-1, 5)
 
 
