@@ -274,7 +274,7 @@ whose root is an array raises `ValueError`.
 ## Times
 
 Every window bound is an integer count of microseconds from the reference time,
-and a time before it is negative. The [timeline](./spec.md#timeline) section of
+and a time before it is negative. The [numeric conventions](./spec.md#23-numeric-conventions) section of
 the specification defines the reference time. A window bound, `level`, `bins`,
 and `gap_us` each take an `int` or a numpy integer. A `float` raises `TypeError`.
 
@@ -327,7 +327,7 @@ from `start_us` to `end_us` holds every sample.
 `levels` maps each level number, from 1, to a `Level`. The `samples_per_bin` of a
 `Level` is the number of raw samples that one bin folds.
 
-The [continuous channels](./spec.md#continuous-channels) section of the
+The [levels](./spec.md#43-levels) section of the
 specification defines the samples each bin covers.
 
 A `Level` holds the zarr arrays `minmax`, `mean`, `var`, and `count`, with
@@ -393,7 +393,7 @@ with open_bundle("example.zarr") as bundle:
     print(len(channel.read(300_000_000, 400_000_000)))
 ```
 
-A NaN sample is a gap. The [continuous channels](./spec.md#continuous-channels)
+A NaN sample is a gap. The [statistics](./spec.md#44-statistics)
 section of the specification defines how a gap folds into each level, and the
 reader passes the statistics through unchanged. A raw read of a channel with runs
 checks that every sample outside a run is NaN and raises `ValueError` otherwise.
@@ -423,7 +423,7 @@ with open_bundle("example.zarr") as bundle:
 
 A channel whose recording paused and resumed off its sample grid holds a `runs` array.
 Each row describes one run, a span of samples recorded at the sample rate. The
-[continuous channels](./spec.md#continuous-channels) section of the specification
+[sample times](./spec.md#42-sample-times) section of the specification
 defines the rows and the rules that place a run on the grid. The grid keeps a NaN
 sample for each sample period of a pause, and `runs` holds the exact time that each
 run starts.
@@ -543,7 +543,7 @@ has no `waveform` column.
 
 `count_levels` maps each count level number, from 1, to a `CountLevel` with
 `period_us` and `offset_us`. `offset_us` is the time of its bin 0. The
-[event channels](./spec.md#event-channels) section of the specification defines
+[count levels](./spec.md#57-count-levels) section of the specification defines
 the bins of a count level. `read_counts(start_us=None, end_us=None, *, level)`
 returns the bins that overlap the window as `Counts`. The bins widen the window,
 so their counts can include events outside it. A window past the last bin returns

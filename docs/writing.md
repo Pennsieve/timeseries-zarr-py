@@ -57,8 +57,8 @@ is one run. A NaN sample inside a run is an ordinary gap, and the source deliver
 
 The writer places each run on the sample grid of the channel and fills each pause with
 NaN samples. It stores the runs in a `runs` array when the channel has two or more. The
-[continuous channels](./spec.md#continuous-channels) section of the specification
-defines the array and the placement rule. The `raw` array and every level cover the grid,
+[sample times](./spec.md#42-sample-times) section of the specification
+defines the array and its rules. The `raw` array and every level cover the grid,
 so `raw` is longer than `num_samples()` by the NaN samples of the pauses.
 
 `write_bundle` raises `ValueError` before it clears `output_path` when the runs do not
@@ -67,6 +67,20 @@ run that does not start at `start_us()`, run lengths that do not total `num_samp
 a run with no samples, runs out of time order, and a run that starts before the samples
 of the previous run end. The last cause means samples arrive closer together than the
 sample period.
+
+The writer places a run at the grid sample nearest the time of its first sample, or at
+the sample after the previous run ends when that is later. Three things have no
+place in the format, and a source decides them before it states its runs.
+
+- Jitter. A sample whose time deviates from the grid of its run has no place of its
+  own. Choose a tolerance and keep a sample within it in its run. Beyond the
+  tolerance, start a new run or reject the input.
+- Drift. A sample clock slower or faster than `rate_hz` moves the samples of a run
+  off its grid by an amount that grows with the run. A source that measures a uniform
+  drift reports the measured rate as `rate_hz`. Split a run where the deviation
+  reaches the tolerance, or reject the input.
+- Rate changes. A channel has one `rate_hz`. Store a recording whose sample rate
+  changes as one channel per rate, each with its own runs.
 
 This example writes one channel of two runs at 256 Hz. The first run lasts 15 s. The
 second run starts 5 s after it ends, plus 1 ms, which is off the sample grid.
@@ -243,3 +257,22 @@ ways:
 
 Each error comes before the writer folds any level. A failed write leaves a partial
 bundle that a reader rejects.
+
+## De-identifying a bundle
+
+Identity can sit in two places of a bundle: `recording.json` and the `text` column of
+an event channel. The [privacy considerations](./spec.md#10-privacy-considerations)
+section of the specification states the rule, and the producer is responsible for
+keeping identity out of `name`, `id`, and `provenance`.
+
+To remove the structured identity and every datetime, delete `recording.json`. No
+other object changes, and a reader opens the bundle without it. To shift the dates
+instead, edit `reference_time` and `session.start_time` in `recording.json` by the
+same amount. Every other time in the bundle is relative to `reference_time`.
+
+To redact free text, rewrite the bundle. `bundle_sources` reads every channel of a
+bundle as sources for `write_bundle`; wrap the event sources so that `read_text`
+returns the redacted texts, and write to a new path. The `text` array is compressed
+like every other array, so editing the stored object in place is not an option.
+Object storage keeps earlier versions of an object when versioning is on, and caches
+keep copies, so check what the store retains after a rewrite.

@@ -87,7 +87,7 @@ you give. `session_start_time` is the acquisition time, written as
 t = 0 when you write it again. Both must be timezone-aware `datetime` values. Set
 `wall_clock=False` when your times do not count from the Unix epoch, and leave
 `reference_time` unset; `recording.json` then holds no `reference_time`. The
-[recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#recording-metadata)
+[recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#66-recording-metadata)
 section of the specification lists what the file can hold.
 
 [Write options](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/writing.md#write-options)
