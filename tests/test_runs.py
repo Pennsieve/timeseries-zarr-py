@@ -11,6 +11,7 @@ from timeseries_zarr.runs import (
     check_run_bound,
     check_runs_table,
     check_source_runs,
+    first_run_end_out_of_range,
     place_runs,
 )
 
@@ -271,6 +272,35 @@ def test_place_runs_rejects_a_reference_that_pushes_the_offset_out_of_range():
 def test_place_runs_rejects_a_grid_whose_last_sample_passes_the_limit():
     with pytest.raises(ValueError, match="grid time of the last sample"):
         place_runs([Run(2**53 - 10, 100)], 1.0, 0)
+
+
+# At 1 Hz, run 1 starts 400000 us after its grid time. Its last sample passes
+# the limit while the grid time of the last sample of the channel stays below it.
+OFFSET_US = 640992
+LATE_RUN = Run(2**53 - 700_000, 2)
+
+
+def test_place_runs_rejects_a_run_whose_last_sample_passes_the_limit():
+    runs = [Run(OFFSET_US, 1), LATE_RUN]
+    with pytest.raises(ValueError, match=r"last sample of run 1 is at"):
+        place_runs(runs, 1.0, 0)
+
+
+def test_place_runs_accepts_a_run_that_ends_just_inside_the_limit():
+    runs = [Run(OFFSET_US, 1), Run(2**53 - 700_000, 1)]
+    assert place_runs(runs, 1.0, 0).table[1, 2] == 2**53 - 700_000
+
+
+def test_the_run_end_check_reports_the_first_failing_row():
+    table = np.array(
+        [[0, 3, 0], [3, 2, 2**53 - 700_000], [5, 5, 2**53 - 1]], np.int64
+    )
+    assert first_run_end_out_of_range(table, 1.0) == (1, 2**53 + 300_000.0)
+
+
+def test_the_run_end_check_passes_a_table_that_ends_inside_the_range():
+    table = np.array([[0, 3, -(2**53) + 1], [3, 2, 0]], np.int64)
+    assert first_run_end_out_of_range(table, 1.0) is None
 
 
 def test_source_runs_that_agree_with_the_channel_pass():

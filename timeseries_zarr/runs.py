@@ -20,7 +20,7 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.attrs import check_time_us
-from timeseries_zarr.constants import MICROSECONDS_PER_SECOND
+from timeseries_zarr.constants import MICROSECONDS_PER_SECOND, TIME_LIMIT_US
 from timeseries_zarr.windows import bin_period, integer_argument
 
 
@@ -99,6 +99,37 @@ def check_run_bound(
         )
 
 
+def first_run_end_out_of_range(
+    table: npt.NDArray[np.int64], rate_hz: float
+) -> tuple[int, float] | None:
+    """Find the first run whose last sample lies outside the time range.
+
+    The time of the last sample of run r is time_r + (n_r - 1) * 1e6 /
+    rate_hz, evaluated in binary64 left to right. It must lie in
+    (-2^53, 2^53) microseconds (docs/spec.md section 2.3).
+
+    Args:
+        table: The runs array, of shape (runs, 3).
+        rate_hz: The sample rate in hertz.
+
+    Returns:
+        The row index and the time in microseconds of the first run that
+        fails, or None when every run passes.
+    """
+    last_us = (
+        table[:, 2].astype(np.float64)
+        + (table[:, 1] - 1).astype(np.float64)
+        * MICROSECONDS_PER_SECOND
+        / rate_hz
+    )
+    inside = (last_us > -TIME_LIMIT_US) & (last_us < TIME_LIMIT_US)
+    outside = np.flatnonzero(~inside)
+    if outside.size == 0:
+        return None
+    row = int(outside[0])
+    return row, float(last_us[row])
+
+
 def place_runs(
     runs: Sequence[Run], rate_hz: float, reference_us: int
 ) -> Placement:
@@ -123,8 +154,9 @@ def place_runs(
         ValueError: If runs is empty, rate_hz is not positive and finite, a
             run has no samples, a run starts before an earlier run, a run
             starts before the samples of the previous run end, or a run
-            time, the offset, or the grid time of the last sample lies
-            outside (-2^53, 2^53) microseconds. The third case means
+            time, the offset, the time of the last sample of a run, or the
+            grid time of the last sample lies outside (-2^53, 2^53)
+            microseconds. The third case means
             samples arrive closer together than the sample period.
     """
     period = bin_period(rate_hz, 1)
@@ -176,6 +208,12 @@ def place_runs(
         offset_us + (previous_end - 1) * MICROSECONDS_PER_SECOND / rate_hz,
         "the grid time of the last sample",
     )
+    failure = first_run_end_out_of_range(table, rate_hz)
+    if failure is not None:
+        raise ValueError(
+            f"the last sample of run {failure[0]} is at {failure[1]} us, "
+            f"which must lie in (-2^53, 2^53) microseconds"
+        )
     return Placement(offset_us, previous_end, table)
 
 
