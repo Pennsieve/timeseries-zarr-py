@@ -177,6 +177,26 @@ class MultiChannelSource(Protocol):
 
 
 @runtime_checkable
+class WaveformEventSampleSource(Protocol):
+    """An optional addition to an event source with a waveform_mean column."""
+
+    def waveform_event_sample(self) -> int:
+        """Return the index of the snippet sample at the event time.
+
+        The index is at least 0 and below the samples of a snippet. A source
+        without this method places the event at sample 0.
+        """
+        ...
+
+
+def source_waveform_event_sample(source: object) -> int:
+    """Return the waveform event sample of source, or 0 without the method."""
+    if isinstance(source, WaveformEventSampleSource):
+        return source.waveform_event_sample()
+    return 0
+
+
+@runtime_checkable
 class EventChannelSource(Protocol):
     """An event channel the writer reads event times and columns from.
 
@@ -214,7 +234,12 @@ class EventChannelSource(Protocol):
         ...
 
     def num_labels(self) -> int:
-        """Return the number of label categories, or 0 without labels."""
+        """Return the number of label categories, or 0 without labels.
+
+        With a labels column this is the number of label names when the source
+        has label_names, else one more than the largest label, or 1 when the
+        source has no events.
+        """
         ...
 
     def max_duration_us(self) -> int | None:
@@ -251,7 +276,7 @@ class EventChannelSource(Protocol):
     def read_channel_ids(self, start: int, stop: int) -> list[list[str]]:
         """Return the channel ids that each event in [start, stop) applies to.
 
-        An empty list means the event applies to the whole recording.
+        An empty list means the event applies to no channel.
         """
         ...
 

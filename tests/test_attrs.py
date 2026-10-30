@@ -14,6 +14,7 @@ from timeseries_zarr.attrs import (
     WaveformAttrs,
     continuous_channel_attrs,
     event_channel_attrs,
+    label_count,
     level_group_attrs,
     parse_channel_kind,
     parse_continuous_attrs,
@@ -1025,3 +1026,17 @@ def test_parsers_read_the_attributes_of_a_reopened_bundle(tmp_path):
     assert parse_waveform_attrs(
         reopened["3/waveforms"].attrs, "channel 3 waveforms"
     ) == WaveformAttrs(31.25, 3)
+
+
+def test_label_count_is_the_number_of_names_when_names_exist():
+    assert label_count(3, 1) == 3
+    assert label_count(3, None) == 3
+
+
+def test_label_count_is_one_more_than_the_largest_label_without_names():
+    assert label_count(None, 0) == 1
+    assert label_count(None, 6) == 7
+
+
+def test_label_count_is_1_without_names_and_without_labels():
+    assert label_count(None, None) == 1

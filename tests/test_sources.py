@@ -38,6 +38,7 @@ from timeseries_zarr.protocols import (
     ContinuousChannelSource,
     EventChannelSource,
     ProvenanceSource,
+    WaveformEventSampleSource,
 )
 from timeseries_zarr.read_bundle import open_bundle
 from timeseries_zarr.recording import RECORDING_FILE
@@ -186,6 +187,7 @@ def _count_reads(monkeypatch):
         return read_rows(array, start, stop)
 
     monkeypatch.setattr("timeseries_zarr.sources.read_rows", counted)
+    monkeypatch.setattr("timeseries_zarr.read_event.read_rows", counted)
     return paths
 
 
@@ -420,7 +422,7 @@ def test_a_rewrite_of_the_odd_bundle_renumbers_the_channels_by_id(
     assert copy.events[5].max_duration_us == max(ODD_INTERVAL_DURATIONS)
 
 
-def test_a_rewrite_leaves_out_values_waveforms_and_the_event_sample(
+def test_a_rewrite_leaves_out_values_and_waveforms_and_keeps_the_event_sample(
     odd, tmp_path
 ):
     marks = odd.events[9]
@@ -428,7 +430,7 @@ def test_a_rewrite_leaves_out_values_waveforms_and_the_event_sample(
     assert marks.values is not None
     assert marks.waveforms is not None
     copied = _rewrite(odd, tmp_path / "odd").events[4]
-    assert copied.waveform_mean.event_sample == 0
+    assert copied.waveform_mean.event_sample == ODD_EVENT_SAMPLE
     assert copied.values is None
     assert copied.waveforms is None
 
@@ -437,15 +439,13 @@ def test_num_labels_is_the_length_of_label_names(mixed):
     assert _event_source(mixed, 2).num_labels() == 3
 
 
-def test_num_labels_is_the_label_columns_of_a_count_level_without_names(odd):
+def test_num_labels_is_one_more_than_the_largest_label_without_names(odd):
     source = _event_source(odd, 9)
     assert source.label_names() is None
     assert source.num_labels() == ODD_LABELS
 
 
-def test_num_labels_is_the_rows_of_waveform_mean_without_count_levels(
-    tmp_path,
-):
+def test_num_labels_ignores_the_rows_of_waveform_mean(tmp_path):
     bundle = _event_bundle(
         {
             "events": np.array([10, 20, 30], dtype=np.int64),
@@ -454,24 +454,47 @@ def test_num_labels_is_the_rows_of_waveform_mean_without_count_levels(
         }
     )
     source = _event_source(bundle)
-    assert source.num_labels() == 4
+    assert source.num_labels() == 2
     assert source.waveform_mean().shape == (4, 2)
     assert source.waveform_period_us() == 100.0
-    copy = _rewrite(bundle, tmp_path / "copy")
-    assert copy.events[0].waveform_mean.read().values.shape == (4, 2)
+    with pytest.raises(ValueError, match="4 rows"):
+        _rewrite(bundle, tmp_path / "copy")
 
 
-def test_num_labels_takes_a_count_level_before_waveform_mean_and_labels():
+def test_num_labels_ignores_the_columns_of_a_count_level():
     bundle = _event_bundle(
         {
             "events": np.array([10, 20, 30], dtype=np.int64),
             "labels": np.array([0, 1, 2], dtype=np.uint16),
-            "waveform_mean": (np.ones((3, 2), np.float32), _PERIOD_ATTRS),
             "1/count": np.array([[1, 1, 1, 0]], dtype=np.uint32),
         },
         groups={"1": {"tsz": {"period_us": 1000.0}}},
     )
-    assert _event_source(bundle).num_labels() == 4
+    assert _event_source(bundle).num_labels() == 3
+
+
+def test_a_rewrite_keeps_the_event_sample_of_waveform_mean(tmp_path):
+    bundle = _event_bundle(
+        {
+            "events": np.array([10, 20, 30], dtype=np.int64),
+            "labels": np.array([0, 1, 1], dtype=np.uint16),
+            "waveform_mean": (
+                np.ones((2, 4), np.float32),
+                {"tsz": {"period_us": 100.0, "event_sample": 2}},
+            ),
+        }
+    )
+    source = _event_source(bundle)
+    assert isinstance(source, WaveformEventSampleSource)
+    assert source.waveform_event_sample() == 2
+    copy = _rewrite(bundle, tmp_path / "copy")
+    assert copy.events[0].waveform_mean.event_sample == 2
+
+
+def test_waveform_event_sample_raises_without_waveform_mean():
+    bundle = _event_bundle({"events": np.array([10], dtype=np.int64)})
+    with pytest.raises(ValueError, match="no waveform_mean"):
+        _event_source(bundle).waveform_event_sample()
 
 
 def test_num_labels_is_one_more_than_the_largest_label_without_other_widths(
@@ -501,7 +524,7 @@ def test_num_labels_reads_the_labels_column_once(monkeypatch):
     assert reads == ["0/labels"]
 
 
-def test_num_labels_is_0_for_labels_without_events():
+def test_num_labels_is_1_for_labels_without_events_or_names():
     bundle = _event_bundle(
         {
             "events": np.zeros(0, dtype=np.int64),
@@ -510,7 +533,18 @@ def test_num_labels_is_0_for_labels_without_events():
     )
     source = _event_source(bundle)
     assert source.columns() == {"labels"}
-    assert source.num_labels() == 0
+    assert source.num_labels() == 1
+
+
+def test_num_labels_is_the_number_of_names_for_labels_without_events():
+    bundle = _event_bundle(
+        {
+            "events": np.zeros(0, dtype=np.int64),
+            "labels": np.zeros(0, dtype=np.uint16),
+        },
+        tsz={"label_names": ["a", "b"]},
+    )
+    assert _event_source(bundle).num_labels() == 2
 
 
 def test_num_labels_is_0_without_a_labels_column(mixed, odd):

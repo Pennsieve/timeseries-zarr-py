@@ -304,43 +304,6 @@ def test_create_array_compresses_with_zstd_by_default(tmp_path):
     assert _inner_codecs(path, "a") == ["bytes", "zstd"]
 
 
-def test_create_array_uncompressed_keeps_the_sharding_codec(tmp_path):
-    path = tmp_path / "bundle"
-    create_array(
-        open_group(path),
-        "a",
-        (4, 3),
-        np.uint8,
-        (4, 3),
-        (4, 3),
-        {},
-        5,
-        compress=False,
-    )
-    assert _node(path, "a")["codecs"][0]["name"] == "sharding_indexed"
-    assert _inner_codecs(path, "a") == ["bytes"]
-
-
-def test_create_array_uncompressed_shard_starts_with_the_plain_rows(tmp_path):
-    path = tmp_path / "bundle"
-    rows = np.arange(12, dtype=np.uint8).reshape(4, 3) + 65
-    arr = create_array(
-        open_group(path),
-        "a",
-        (4, 3),
-        np.uint8,
-        (4, 3),
-        (4, 3),
-        {},
-        5,
-        compress=False,
-    )
-    arr[:] = rows
-    shard = (path / "a" / "c" / "0" / "0").read_bytes()
-    assert shard.startswith(rows.tobytes())
-    assert np.array_equal(open_group(path)["a"][:], rows)
-
-
 def test_open_group_writes_attrs_when_it_creates_the_group(tmp_path):
     path = tmp_path / "bundle"
     group = open_group(path, {"tsz": {"version": "1.0"}})
@@ -1164,8 +1127,13 @@ def test_shard_layout_rejects_a_v2_array():
 
 def test_shard_layout_rejects_a_shard_without_compression(tmp_path):
     group = open_group(tmp_path / "bundle")
-    array = create_array(
-        group, "text", (100,), np.uint8, (10,), (20,), {}, 3, compress=False
+    array = group.create_array(
+        name="text",
+        shape=(100,),
+        dtype=np.uint8,
+        chunks=(10,),
+        shards=(20,),
+        compressors=None,
     )
     with pytest.raises(ValueError, match="inner codecs must be bytes"):
         shard_layout(array)

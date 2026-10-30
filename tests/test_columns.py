@@ -6,6 +6,7 @@ import pytest
 from timeseries_zarr.columns import (
     channels_rows,
     channels_width,
+    check_channels_rows,
     decode_channels_rows,
     decode_text_rows,
     text_rows,
@@ -185,7 +186,7 @@ def test_channels_rows_unpacks_back_to_the_keys_least_significant_bit_first():
     assert keys == [[0, 3, 12], [9], [], [1, 2]]
 
 
-def test_channels_rows_empty_list_is_a_row_of_zeros_meaning_the_whole_recording():
+def test_channels_rows_empty_list_is_a_row_of_zeros_naming_no_channel():
     rows = channels_rows([[], [2], []], 7)
     assert rows.tolist() == [[0], [4], [0]]
 
@@ -379,7 +380,7 @@ def test_decode_channels_rows_gives_each_repeated_key_once_in_ascending_order():
     assert decode_channels_rows(rows) == [[1, 5, 9]]
 
 
-def test_decode_channels_rows_reads_a_row_of_zeros_as_the_whole_recording():
+def test_decode_channels_rows_reads_a_row_of_zeros_as_no_channel():
     rows = channels_rows([[], [2], []], 7)
     assert decode_channels_rows(rows) == [[], [2], []]
 
@@ -412,3 +413,33 @@ def test_decode_channels_rows_rejects_a_dtype_other_than_uint8(dtype):
     rows = np.zeros((2, 1), dtype=dtype)
     with pytest.raises(ValueError, match="dtype uint8"):
         decode_channels_rows(rows)
+
+
+def test_check_channels_rows_accepts_bits_below_the_channel_count():
+    rows = channels_rows([[0, 8], [], [3]], 8)
+    check_channels_rows(rows, 9, range(3), "channel 2")
+
+
+def test_check_channels_rows_accepts_a_row_with_no_bit_set():
+    check_channels_rows(np.zeros((2, 1), np.uint8), 3, range(2), "channel 2")
+
+
+def test_check_channels_rows_rejects_a_bit_at_the_channel_count():
+    rows = channels_rows([[0], [1, 3]], 7)
+    with pytest.raises(
+        ValueError,
+        match="channel 2: event 11 sets channel bit 3, and the bundle has 3 "
+        "channels",
+    ):
+        check_channels_rows(rows, 3, [10, 11], "channel 2")
+
+
+def test_check_channels_rows_rejects_a_bit_in_the_last_byte_past_the_count():
+    rows = np.array([[0, 0b10000000]], np.uint8)
+    with pytest.raises(ValueError, match="sets channel bit 15"):
+        check_channels_rows(rows, 12, [0], "channel 2")
+
+
+def test_check_channels_rows_rejects_rows_that_are_not_uint8_rank_2():
+    with pytest.raises(ValueError, match="rank 2"):
+        check_channels_rows(np.zeros(3, np.uint8), 3, [0], "channel 2")

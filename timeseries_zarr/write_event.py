@@ -16,6 +16,7 @@ import numpy.typing as npt
 from timeseries_zarr.attrs import (
     check_time_us,
     event_channel_attrs,
+    label_count,
     level_group_attrs,
     waveform_array_attrs,
 )
@@ -45,7 +46,11 @@ from timeseries_zarr.counts import (
     iter_count_blocks,
     plan_count_levels,
 )
-from timeseries_zarr.protocols import EventChannelSource, source_provenance
+from timeseries_zarr.protocols import (
+    EventChannelSource,
+    source_provenance,
+    source_waveform_event_sample,
+)
 from timeseries_zarr.sizing import chunk_and_shard
 from timeseries_zarr.streaming import (
     BlockReadableArray,
@@ -64,6 +69,9 @@ from timeseries_zarr.zarr_io import (
 
 WAVEFORM_MEAN_RANK: Final = 2
 """Rank of the waveform_mean array: one axis of labels, one of samples."""
+
+_LABEL_BLOCK_ROWS: Final = 2**20
+"""Rows of labels the writer reads at a time to find the labels in use."""
 
 
 def _write_source_blocks[T: np.generic](
@@ -231,7 +239,8 @@ def write_labels_array(
 
     A rank-1 uint16 array named "labels", with the dimension name "event" and
     no attributes. Each label indexes the channel's label categories, so it
-    must be below source.num_labels().
+    must be below source.num_labels(). Without label_names, num_labels() must
+    be one more than the largest label.
 
     Args:
         group: Channel group to create the array in.
@@ -244,7 +253,9 @@ def write_labels_array(
 
     Raises:
         ValueError: If num_labels() is above MAX_LABELS, which a uint16 cannot
-            index, or if a label is at or above num_labels().
+            index, a label is at or above num_labels(), or the source has no
+            label_names and num_labels() is not one more than the largest
+            label.
     """
     categories = source.num_labels()
     if categories > MAX_LABELS:
@@ -263,12 +274,16 @@ def write_labels_array(
         dimension_names=(EVENT_DIMENSION,),
     )
 
+    largest_label = -1
+
     def check(block: npt.NDArray[np.uint16]) -> None:
+        nonlocal largest_label
         largest = int(block.max())
         if largest >= categories:
             raise ValueError(
                 f"a label {largest} is outside the {categories} label categories"
             )
+        largest_label = max(largest_label, largest)
 
     _write_source_blocks(
         array,
@@ -277,6 +292,14 @@ def write_labels_array(
         source.read_labels,
         check,
     )
+    names = source.label_names()
+    if names is None and source.num_events():
+        expected = label_count(None, largest_label)
+        if categories != expected:
+            raise ValueError(
+                f"num_labels() is {categories}, but the largest label "
+                f"{largest_label} gives {expected} label categories"
+            )
     return array
 
 
@@ -290,9 +313,7 @@ def write_text_array(
 
     A uint8 array named "text" shaped (num_events, W), with W the source's
     text_width(), and the dimension names "event" and None. Row i holds the
-    UTF-8 bytes of event i's text followed by zero bytes. The array is stored
-    without a compression codec, so a shard object is the rows as plain text
-    followed by the shard index, which a text tool can read and redact.
+    UTF-8 bytes of event i's text followed by zero bytes.
 
     Args:
         group: Channel group to create the array in.
@@ -322,7 +343,6 @@ def write_text_array(
         {},
         zstd_level,
         dimension_names=(EVENT_DIMENSION, None),
-        compress=False,
     )
 
     def read(start: int, stop: int) -> npt.NDArray[np.uint8]:
@@ -352,8 +372,7 @@ def write_channels_array(
     A uint8 array named "channels" shaped (num_events, M), with M the byte
     width of a bitmask for keys up to max_key, and the dimension names "event"
     and None. Row i has the bit of each channel key that event i applies to,
-    and a row of zeros means the whole recording. The source names channels by
-    id.
+    and a row of zeros names no channel. The source names channels by id.
 
     Args:
         group: Channel group to create the array in.
@@ -406,6 +425,32 @@ def write_channels_array(
     return array
 
 
+def _labels_in_use(
+    source: EventChannelSource, categories: int
+) -> npt.NDArray[np.bool_]:
+    """Return whether each label category has an event, read from the source.
+
+    Args:
+        source: Source of the labels.
+        categories: The number of label categories.
+
+    Raises:
+        ValueError: If a label is at or above categories.
+    """
+    in_use = np.zeros(categories, dtype=np.bool_)
+    total = source.num_events()
+    for start in range(0, total, _LABEL_BLOCK_ROWS):
+        block = source.read_labels(start, min(start + _LABEL_BLOCK_ROWS, total))
+        tally = np.bincount(block, minlength=categories)
+        if tally.size > categories:
+            raise ValueError(
+                f"a label {tally.size - 1} is outside the {categories} "
+                "label categories"
+            )
+        in_use |= tally > 0
+    return in_use
+
+
 def write_waveform_mean_array(
     group: ZarrGroup,
     source: EventChannelSource,
@@ -416,13 +461,15 @@ def write_waveform_mean_array(
     A float32 array named "waveform_mean" shaped (labels, samples), with the
     dimension names "label" and None, holding the mean snippet of each label
     category. It carries period_us, the microseconds between snippet samples,
-    and no event_sample. A label that has no events keeps whatever the source
-    gives, NaN by the format's convention. The array has one row per label, so
-    it is sized with the default chunk and shard targets and written whole.
+    and event_sample, the snippet sample at the event time, when the source
+    defines waveform_event_sample as WaveformEventSampleSource declares it and
+    the index is above 0. A label that has no events has a row of NaN. The
+    array has one row per label, so it is sized with the default chunk and
+    shard targets and written whole.
 
     Args:
         group: Channel group to create the array in.
-        source: Source of the means and the sample period.
+        source: Source of the means, the sample period, and the labels.
         zstd_level: Zstandard compression level.
 
     Returns:
@@ -430,8 +477,10 @@ def write_waveform_mean_array(
 
     Raises:
         ValueError: If the means are not shaped (labels, samples), have no
-            samples, or have a row count other than source.num_labels(), or if
-            the period is not finite and positive.
+            samples, or have a row count other than source.num_labels(), if
+            a label that has no events has a mean that is not NaN, or if the
+            period is not finite and positive or the event sample is outside
+            the samples.
     """
     means = np.asarray(source.waveform_mean(), dtype=np.float32)
     if len(means.shape) != WAVEFORM_MEAN_RANK:
@@ -446,7 +495,17 @@ def write_waveform_mean_array(
             f"waveform_mean has {labels} rows but the channel has "
             f"{source.num_labels()} label categories"
         )
-    attrs = waveform_array_attrs(source.waveform_period_us(), samples=samples)
+    in_use = _labels_in_use(source, labels)
+    unused = ~in_use & ~np.isnan(means).all(axis=1)
+    if unused.any():
+        raise ValueError(
+            f"label {int(np.flatnonzero(unused)[0])} has no events, so its "
+            "waveform_mean row must be NaN"
+        )
+    event_sample = source_waveform_event_sample(source)
+    attrs = waveform_array_attrs(
+        source.waveform_period_us(), event_sample or None, samples=samples
+    )
     sizing = chunk_and_shard(means.shape, FLOAT32_BYTES)
     array = create_array(
         group,
@@ -633,6 +692,34 @@ def write_count_levels(
         previous = (array, plan)
 
 
+def _check_label_categories(source: EventChannelSource, total: int) -> None:
+    """Raise ValueError if num_labels() contradicts what the metadata fixes.
+
+    The metadata fixes the number of label categories when the source has
+    label_names, and when it has no events. Otherwise the labels fix it, and
+    write_labels_array checks it while it writes.
+
+    Raises:
+        ValueError: If label_names is empty or the number of categories
+            differs from the number the metadata fixes.
+    """
+    names = source.label_names()
+    if names is not None and not names:
+        raise ValueError("label_names must name at least one category")
+    if names is None and total:
+        return
+    expected = label_count(None if names is None else len(names), None)
+    categories = source.num_labels()
+    if categories != expected:
+        basis = (
+            "label_names" if names is not None else "a channel with no events"
+        )
+        raise ValueError(
+            f"num_labels() is {categories}, but {basis} gives {expected} "
+            "label categories"
+        )
+
+
 def check_event_channel(
     source: EventChannelSource, reference_us: int, opts: WriteOpts
 ) -> None:
@@ -650,7 +737,9 @@ def check_event_channel(
     Raises:
         ValueError: If the channel holds 2^32 events or more, the first or
             last event time, max_duration_us, or a count level offset or end
-            lies outside (-2^53, 2^53) microseconds.
+            lies outside (-2^53, 2^53) microseconds, label_names is empty, or
+            num_labels() disagrees with label_names or with a channel that
+            has no events.
     """
     total = source.num_events()
     if total >= EVENT_COUNT_LIMIT:
@@ -661,6 +750,8 @@ def check_event_channel(
         bound = source.max_duration_us()
         if bound is not None:
             check_time_us(bound, "max_duration_us")
+    if "labels" in source.columns():
+        _check_label_categories(source, total)
     if total == 0:
         return
     first_event_us = int(source.read_events(0, 1)[0]) - reference_us

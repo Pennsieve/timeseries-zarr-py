@@ -253,7 +253,7 @@ def test_odd_bundle_arrays_chunk_and_shard_only_the_first_axis(odd_bundle):
         assert array.shards == (1024, *trailing), path
 
 
-def test_odd_bundle_fills_float_arrays_with_nan_and_leaves_text_uncompressed(
+def test_odd_bundle_fills_float_arrays_with_nan_and_compresses_every_array(
     odd_bundle,
 ):
     for path, array in _arrays(_open(odd_bundle)).items():
@@ -261,7 +261,8 @@ def test_odd_bundle_fills_float_arrays_with_nan_and_leaves_text_uncompressed(
             assert np.isnan(array.fill_value), path
         else:
             assert array.fill_value == 0, path
-        assert (array.compressors == ()) == (path == "9/text"), path
+        names = [type(codec).__name__ for codec in array.compressors]
+        assert names == ["ZstdCodec"], path
 
 
 def test_odd_bundle_names_the_axes_of_every_channel_array(odd_bundle):

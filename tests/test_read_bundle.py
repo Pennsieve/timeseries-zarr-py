@@ -926,3 +926,44 @@ def test_reads_fill_a_missing_shard_with_the_fill_value(mixed_bundle):
     np.testing.assert_array_equal(
         bundle.events[4].read_counts(level=1).count, counts
     )
+
+
+def _event_bundle_with_channels(channel_count, width):
+    """Return an in-memory bundle of channel_count event channels.
+
+    Channel 0 holds a channels column of the given width.
+    """
+    root = zarr.open_group(
+        MemoryStore(),
+        mode="w",
+        zarr_format=3,
+        attributes={"tsz": {"version": "1.0"}},
+    )
+    for key in range(channel_count):
+        channel = root.create_group(
+            str(key), attributes={"tsz": {"kind": "event", "name": f"e{key}"}}
+        )
+        channel.create_array("events", data=np.array([1, 2], dtype=np.int64))
+        if key == 0:
+            channel.create_array(
+                "channels", data=np.zeros((2, width), dtype=np.uint8)
+            )
+    zarr.consolidate_metadata(root.store)
+    return root.store
+
+
+@pytest.mark.parametrize(("channel_count", "width"), [(8, 1), (9, 2)])
+def test_open_bundle_accepts_a_channels_width_of_ceil_channel_count_over_8(
+    channel_count, width
+):
+    store = _event_bundle_with_channels(channel_count, width)
+    assert open_bundle(store).events[0].channels.shape == (2, width)
+
+
+@pytest.mark.parametrize(("channel_count", "width"), [(8, 2), (9, 1)])
+def test_open_bundle_rejects_a_channels_width_other_than_ceil_channel_count_over_8(
+    channel_count, width
+):
+    store = _event_bundle_with_channels(channel_count, width)
+    with pytest.raises(ValueError, match="channel 0: channels must have"):
+        open_bundle(store)

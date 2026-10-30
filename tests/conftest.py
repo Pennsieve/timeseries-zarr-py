@@ -168,7 +168,8 @@ class ArrayEventSource:
 
     events are int64 absolute microseconds. An optional column is offered only
     when its data is given. The label count, the text width, and the duration
-    bound come from the data unless passed.
+    bound come from the data unless passed. A source without events and with
+    labels has 1 label category.
     """
 
     def __init__(
@@ -182,6 +183,7 @@ class ArrayEventSource:
         channel_ids=None,
         waveform_mean=None,
         waveform_period_us=100.0,
+        waveform_event_sample=0,
         max_duration_us=None,
         start_us=None,
         id="evt-0",
@@ -207,6 +209,7 @@ class ArrayEventSource:
             else np.asarray(waveform_mean, dtype=np.float32)
         )
         self._waveform_period_us = waveform_period_us
+        self._waveform_event_sample = waveform_event_sample
         self._max_duration_us = max_duration_us
         self._start_us = start_us
         self.id = id
@@ -245,7 +248,7 @@ class ArrayEventSource:
             return 0
         if self._label_names is not None:
             return len(self._label_names)
-        return int(self._labels.max()) + 1 if self._labels.shape[0] else 0
+        return int(self._labels.max()) + 1 if self._labels.shape[0] else 1
 
     def max_duration_us(self):
         if self._durations is None:
@@ -279,6 +282,9 @@ class ArrayEventSource:
 
     def waveform_period_us(self):
         return self._waveform_period_us
+
+    def waveform_event_sample(self):
+        return self._waveform_event_sample
 
 
 @pytest.fixture
@@ -445,9 +451,7 @@ def _odd_signal(num_samples, seed):
     return (100.0 * rng.standard_normal(num_samples)).astype(np.float32)
 
 
-def _write_rows(
-    group, name, data, dimension_names=None, attrs=None, *, compress=True
-):
+def _write_rows(group, name, data, dimension_names=None, attrs=None):
     """Create the array name under group and write data one shard at a time.
 
     Inner chunks hold ODD_INNER_ROWS rows and shards ODD_SHARD_ROWS rows.
@@ -464,7 +468,6 @@ def _write_rows(
         {} if attrs is None else attrs,
         ODD_ZSTD_LEVEL,
         dimension_names=dimension_names,
-        compress=compress,
     )
     for start in range(0, data.shape[0], ODD_SHARD_ROWS):
         write_region(array, start, data[start : start + ODD_SHARD_ROWS])
@@ -576,7 +579,7 @@ def _write_marks(root):
     values = np.arange(ODD_EVENTS, dtype=np.float32) / 8
     _write_rows(channel, VALUES_KEY, values, event_dimensions)
     text = text_rows(texts, ODD_TEXT_WIDTH)
-    _write_rows(channel, TEXT_KEY, text, row_dimensions, compress=False)
+    _write_rows(channel, TEXT_KEY, text, row_dimensions)
     bitmasks = channels_rows(key_lists, max(ODD_KEYS))
     _write_rows(channel, CHANNELS_KEY, bitmasks, row_dimensions)
     _write_rows(

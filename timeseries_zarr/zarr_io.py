@@ -90,7 +90,6 @@ def create_array(
     zstd_level: int,
     *,
     dimension_names: Sequence[str | None] | None = None,
-    compress: bool = True,
 ) -> Array[Any]:
     """Create a v3 sharded array under group with attributes.
 
@@ -115,8 +114,6 @@ def create_array(
         zstd_level: The Zstd level of the inner chunks.
         dimension_names: One name for each axis, with None for an axis that
             has no name. Omitted when None.
-        compress: Whether to compress the inner chunks. When false, each shard
-            object is the chunk bytes followed by the shard index.
 
     Raises:
         ValueError: If dimension_names does not have one entry per axis.
@@ -128,7 +125,7 @@ def create_array(
         dtype=dtype,
         chunks=chunk_shape,
         shards=shard_shape,
-        compressors=ZstdCodec(level=zstd_level) if compress else None,
+        compressors=ZstdCodec(level=zstd_level),
         attributes=cast("dict[str, JSON]", attrs),
         fill_value=float("nan") if is_float else 0,
         dimension_names=dimension_names,
@@ -161,9 +158,8 @@ def array_metadata(
 ) -> ArrayV3Metadata:
     """Return the metadata of a sharded v3 array with Zstd-compressed chunks.
 
-    The metadata stores to the same zarr.json as create_array with the default
-    compress. The fill value follows the rule of create_array: NaN for a float
-    dtype and 0 for any other.
+    The metadata stores to the same zarr.json as create_array. The fill value
+    follows the rule of create_array: NaN for a float dtype and 0 for any other.
 
     Args:
         shape: The shape of the array.

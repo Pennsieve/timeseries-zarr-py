@@ -90,8 +90,8 @@ def channels_rows(
 
     Row i has bit k mod 8 of byte k // 8 set, least significant bit first, for
     each key k in key_lists[i]. An empty list gives a row of zeros, which
-    means the event applies to the whole recording. A repeated key sets its
-    bit once, and keys may come in any order. An empty sequence yields zero
+    names no channel. A repeated key sets its bit once, and keys may come in
+    any order. An empty sequence yields zero
     rows.
 
     Args:
@@ -209,8 +209,8 @@ def decode_channels_rows(rows: npt.NDArray[np.uint8]) -> list[list[int]]:
 
     Bit k mod 8 of byte k // 8, least significant bit first, names channel
     key k. Row i gives its keys in ascending order. A row of zeros gives an
-    empty list, which means the event applies to the whole recording. An
-    array with no rows gives an empty list.
+    empty list, which names no channel. An array with no rows gives an empty
+    list.
 
     Args:
         rows: Rank 2 uint8 array of bitmask rows.
@@ -224,3 +224,35 @@ def decode_channels_rows(rows: npt.NDArray[np.uint8]) -> list[list[int]]:
     _check_rows(rows)
     bits = np.unpackbits(rows, axis=1, bitorder="little")
     return [np.flatnonzero(row).tolist() for row in bits]
+
+
+def check_channels_rows(
+    rows: npt.NDArray[np.uint8],
+    channel_count: int,
+    indices: Iterable[int],
+    where: str,
+) -> None:
+    """Raise ValueError when a bitmask row sets a bit for a missing channel.
+
+    Bits at a position of channel_count or above name no channel of the bundle.
+
+    Args:
+        rows: Rank 2 uint8 array of bitmask rows.
+        channel_count: The number of channels in the bundle.
+        indices: The event index of each row, one per row, for error messages.
+        where: Channel name for error messages.
+
+    Raises:
+        ValueError: rows is not a rank 2 uint8 array, or a row sets a bit at
+            position channel_count or above.
+    """
+    _check_rows(rows)
+    bits = np.unpackbits(rows, axis=1, bitorder="little")[:, channel_count:]
+    if not bits.any():
+        return
+    row, column = np.argwhere(bits)[0]
+    index = list(indices)[int(row)]
+    raise ValueError(
+        f"{where}: event {index} sets channel bit {channel_count + int(column)}"
+        f", and the bundle has {channel_count} channels"
+    )

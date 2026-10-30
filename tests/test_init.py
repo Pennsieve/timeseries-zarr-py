@@ -34,6 +34,7 @@ PUBLIC_NAMES = {
     "Stack",
     "VoltagePolicy",
     "Waveform",
+    "WaveformEventSampleSource",
     "WriteOpts",
     "__version__",
     "bundle_sources",

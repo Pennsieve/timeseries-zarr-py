@@ -15,7 +15,10 @@ channel of a multi-channel source share. An event source exposes its metadata, i
 times, and the optional columns it provides. Its `columns()` method names them, and the
 writer calls a column's reader only for a column named there. Every channel may also
 define `provenance()` and `runs()`, which the protocols leave optional. `RunsSource`
-declares `runs()` and `source_runs` reads it. A channel without it is one run.
+declares `runs()` and `source_runs` reads it. A channel without it is one run. An event
+source with `waveform_mean` may define `waveform_event_sample()`, which
+`WaveformEventSampleSource` declares and `source_waveform_event_sample` reads. A source
+without it places the event at sample 0.
 
 Everything downstream depends on the protocols. An adapter for an input format lives in
 its own package and implements them. The NWB adapter is

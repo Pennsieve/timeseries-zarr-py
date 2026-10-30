@@ -419,6 +419,7 @@ def _parse_channel(
     attributes: Mapping[str, object],
     groups: Mapping[str, ZarrGroup],
     arrays: Mapping[str, ZarrArray],
+    channel_count: int | None = None,
 ) -> Channel | None:
     """Return the channel with that key, or None if its kind is unknown.
 
@@ -429,6 +430,8 @@ def _parse_channel(
         attributes: The attributes of the channel group.
         groups: The groups below the channel group, by relative path.
         arrays: The arrays below the channel group, by relative path.
+        channel_count: The number of channels in the bundle, which an event
+            channel checks its channels column against.
 
     Raises:
         ValueError: The channel group does not parse.
@@ -438,7 +441,9 @@ def _parse_channel(
     if kind == "continuous":
         return parse_continuous_channel(key, attributes, groups, arrays)
     if kind == "event":
-        return parse_event_channel(key, attributes, groups, arrays)
+        return parse_event_channel(
+            key, attributes, groups, arrays, channel_count
+        )
     unknown = tsz_fields(attributes, where)["kind"]
     known = " or ".join(repr(name) for name in CHANNEL_KINDS)
     # The warning names the first caller outside this package.
@@ -476,6 +481,8 @@ def parse_bundle(root: ZarrGroup) -> Bundle:
         for name in groups
         if (number := canonical_number(name)) is not None
     )
+    # The channel keys of a conforming bundle are 0 through C - 1.
+    channel_count = max((number for number, _ in numbered), default=-1) + 1
     channels: dict[int, Channel] = {}
     for key, name in numbered:
         channel = _parse_channel(
@@ -483,6 +490,7 @@ def parse_bundle(root: ZarrGroup) -> Bundle:
             dict(groups[name].attrs),
             groups_below.get(name, {}),
             arrays_below.get(name, {}),
+            channel_count,
         )
         if channel is not None:
             channels[key] = channel

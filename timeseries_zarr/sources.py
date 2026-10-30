@@ -203,7 +203,8 @@ class BundleEventSource:
 
     The source carries a named column when the channel holds it, except a text
     column of width 0, and waveform_mean when it carries no labels. The source
-    never carries values, waveforms, or the event_sample of waveform_mean.
+    never carries values or waveforms. It defines waveform_event_sample, as
+    WaveformEventSampleSource declares it.
     """
 
     __slots__ = (
@@ -290,23 +291,13 @@ class BundleEventSource:
     def num_labels(self) -> int:
         """Return the number of label categories, or 0 without labels.
 
-        The number is the length of label_names, else the label columns of a
-        count level, else the rows of waveform_mean. Without any of them it
-        is one more than the largest label, or 0 without events.
+        The number is the length of label_names. Without label_names it is one
+        more than the largest label, or 1 without events.
         """
         if "labels" not in self._columns:
             return 0
-        channel = self._channel
-        if channel.label_names is not None:
-            return len(channel.label_names)
-        level = next(iter(channel.count_levels.values()), None)
-        if level is not None:
-            return level.num_labels
-        if channel.waveform_mean is not None:
-            return channel.waveform_mean.array.shape[0]
         if self._num_labels is None:
-            labels = read_rows(self._array(LABELS_KEY), 0, channel.num_events)
-            self._num_labels = int(labels.max()) + 1 if labels.size else 0
+            self._num_labels = self._channel.num_labels()
         return self._num_labels
 
     def max_duration_us(self) -> int | None:
@@ -394,7 +385,7 @@ class BundleEventSource:
     def read_channel_ids(self, start: int, stop: int) -> list[list[str]]:
         """Return the channel ids each event start through stop - 1 names.
 
-        An empty list means the event applies to the whole recording.
+        An empty list means the event applies to no channel.
 
         Args:
             start: Index of the first event.
@@ -433,6 +424,14 @@ class BundleEventSource:
             ValueError: If the channel has no waveform_mean.
         """
         return self._snippets().period_us
+
+    def waveform_event_sample(self) -> int:
+        """Return the index of the snippet sample at the event time.
+
+        Raises:
+            ValueError: If the channel has no waveform_mean.
+        """
+        return self._snippets().event_sample
 
     def _array(self, name: str) -> ZarrArray:
         """Return the array of the per-event column called name.
