@@ -36,6 +36,23 @@ def test_main_prints_one_line_for_each_finding_and_returns_1(bundle, capsys):
     assert "session.start_time" in lines[1]
 
 
+def test_main_reports_a_bundle_it_cannot_validate_and_returns_2(
+    bundle, capsys, monkeypatch
+):
+    def refuse(path, *, full):
+        raise ValueError(
+            "structural validation needs a store that lists its keys"
+        )
+
+    monkeypatch.setattr("timeseries_zarr.validate.validate_bundle", refuse)
+    assert main([str(bundle)]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "error: structural validation needs a store that lists its keys\n"
+    )
+
+
 def test_main_names_the_root_group_with_a_dot(bundle, capsys):
     root = json.loads((bundle / "zarr.json").read_text())
     root["attributes"]["tsz"]["version"] = "2.0"
