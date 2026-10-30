@@ -281,7 +281,10 @@ class EventChannelSource(Protocol):
         ...
 
     def waveform_mean(self) -> npt.NDArray[np.float32]:
-        """Return the mean snippet of each label, shaped (labels, samples)."""
+        """Return the mean snippet of each label, shaped (labels, samples).
+
+        The writer stores NaN for a label that has no events.
+        """
         ...
 
     def waveform_period_us(self) -> float:

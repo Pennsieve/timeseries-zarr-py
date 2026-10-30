@@ -497,10 +497,23 @@ def test_write_text_array_empty_source_with_a_width_creates_zero_rows(
     assert arr.shape == (0, 5)
 
 
-def test_write_text_array_rejects_a_zero_width_and_creates_nothing(
+def test_write_text_array_gives_empty_texts_one_column_of_zero_bytes(
     tmp_path, event_source
 ):
     source = event_source([1, 2], text=["", ""])
+    arr = _write_text(tmp_path, source, 1)[TEXT_KEY]
+    assert arr.shape == (2, 1)
+    assert not arr[:].any()
+
+
+def test_write_text_array_rejects_a_negative_width_and_creates_nothing(
+    tmp_path, event_source
+):
+    class Negative(type(event_source([0]))):
+        def text_width(self):
+            return -1
+
+    source = Negative([1, 2], text=["", ""])
     with pytest.raises(ValueError, match="text_width"):
         _write_text(tmp_path, source, 1)
     assert list(open_group(tmp_path / "bundle").array_keys()) == []
@@ -744,7 +757,7 @@ def test_write_waveform_mean_array_rejects_an_event_sample_past_the_samples(
     assert list(open_group(tmp_path / "bundle").array_keys()) == []
 
 
-def test_write_waveform_mean_array_rejects_a_mean_for_a_label_without_events(
+def test_write_waveform_mean_array_stores_nan_for_a_label_without_events(
     tmp_path, event_source
 ):
     source = event_source(
@@ -753,9 +766,9 @@ def test_write_waveform_mean_array_rejects_a_mean_for_a_label_without_events(
         label_names=["a", "b", "c"],
         waveform_mean=np.ones((3, 5)),
     )
-    with pytest.raises(ValueError, match="label 1 has no events"):
-        _write_means(tmp_path, source)
-    assert list(open_group(tmp_path / "bundle").array_keys()) == []
+    stored = _write_means(tmp_path, source)[WAVEFORM_MEAN_KEY][:]
+    assert np.isnan(stored[1]).all()
+    assert (stored[[0, 2]] == 1).all()
 
 
 def test_write_waveform_mean_array_accepts_a_nan_row_for_a_label_without_events(
@@ -795,8 +808,8 @@ def test_write_waveform_mean_array_has_the_name_count_of_rows_without_events(
     finite = event_source(
         [], labels=[], label_names=["a", "b"], waveform_mean=np.ones((2, 4))
     )
-    with pytest.raises(ValueError, match="label 0 has no events"):
-        _write_means(tmp_path / "other", finite)
+    stored = _write_means(tmp_path / "other", finite)[WAVEFORM_MEAN_KEY][:]
+    assert np.isnan(stored).all()
 
 
 def test_write_waveform_mean_array_names_the_label_axis_and_fills_nan(

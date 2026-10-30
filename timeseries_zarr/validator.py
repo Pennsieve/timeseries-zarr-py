@@ -2,8 +2,7 @@
 
 validate_bundle implements section 8.3 (structural validation) and, with
 full set, section 8.4 (full validation). It reports every violation it
-finds. The module reads zarr.json files and recording.json as plain JSON, so
-a malformed node does not stop the checks of its siblings.
+finds. The module reads zarr.json files and recording.json as plain JSON.
 """
 
 import datetime as dt
@@ -35,6 +34,7 @@ from timeseries_zarr.constants import (
     MAJOR_VERSION,
     MEAN_KEY,
     MICROSECONDS_PER_SECOND,
+    MIN_DECIMATION_FACTOR,
     MINMAX_KEY,
     RAW_KEY,
     RUNS_COLUMNS,
@@ -65,6 +65,7 @@ from timeseries_zarr.validate_full import (
     check_raw_outside_runs,
     check_waveform_mean,
 )
+from timeseries_zarr.windows import nearest_integer
 from timeseries_zarr.zarr_io import BundleLocation, ZarrArray, open_store_path
 
 _INTEGER_NAME = re.compile(r"0|[1-9][0-9]*")
@@ -82,9 +83,6 @@ _LAST_SECOND = 60
 _BITS_PER_BYTE = 8
 _ASCII_LIMIT = 128
 _BYTE_MASK = 0xFF
-_MIN_BIN_WIDTH = 2
-_MIN_FACTOR = 2
-_HALF = 0.5
 _OBJECT_KEYS = ("subject", "session", "source")
 
 _FLOAT32 = ("float32", 4)
@@ -119,12 +117,6 @@ def _is_time(value: object) -> TypeGuard[int]:
 def _in_time_range(values: npt.NDArray[np.int64]) -> npt.NDArray[np.bool_]:
     """Return where values lie in (-2^53, 2^53)."""
     return (values > -TIME_LIMIT_US) & (values < TIME_LIMIT_US)
-
-
-def _nearest_integer(value: float) -> int:
-    """Return the integer nearest value, the larger of two equally near."""
-    floor = math.floor(value)
-    return floor + 1 if value - floor >= _HALF else floor
 
 
 def _is_datetime(value: object) -> bool:
@@ -700,9 +692,9 @@ class _Validation:
         if not math.isfinite(scaled):
             self.add(path, "4.3", "the bin width in samples is not finite")
             return None
-        width = _nearest_integer(scaled)
+        width = nearest_integer(scaled)
         exact = width * MICROSECONDS_PER_SECOND / rate
-        if not _MIN_BIN_WIDTH <= width < SAMPLES_PER_BIN_LIMIT:
+        if not MIN_DECIMATION_FACTOR <= width < SAMPLES_PER_BIN_LIMIT:
             self.add(
                 path,
                 "4.3",
@@ -718,7 +710,7 @@ class _Validation:
                 f"{exact}, the width of {width} samples",
             )
         if previous is not None and (
-            width % previous or width < _MIN_FACTOR * previous
+            width % previous or width < MIN_DECIMATION_FACTOR * previous
         ):
             self.add(
                 path,
@@ -832,7 +824,12 @@ class _Validation:
         )
         count = None if events_layout is None else events_layout.shape[0]
         if count is not None and count >= EVENT_COUNT_LIMIT:
-            self.add(path, "5.1", "a channel holds fewer than 2^32 events")
+            self.add(
+                path,
+                "5.1",
+                f"the channel holds {count} events; an event channel holds "
+                "fewer than 2^32",
+            )
 
         def column(
             name: str,
@@ -1199,7 +1196,7 @@ class _Validation:
         if period is None:
             return None, offset
         if previous is not None and (
-            period % previous or period < _MIN_FACTOR * previous
+            period % previous or period < MIN_DECIMATION_FACTOR * previous
         ):
             self.add(
                 path,
@@ -1295,11 +1292,13 @@ class _Validation:
             if key in document and not isinstance(document[key], dict):
                 self.add(RECORDING_FILE, "6.6", f"{key} must be an object")
         session = document.get("session")
-        times = {"reference_time": document.get("reference_time")}
-        if isinstance(session, dict):
-            times["session.start_time"] = session.get("start_time")
+        times: dict[str, object] = {}
+        if "reference_time" in document:
+            times["reference_time"] = document["reference_time"]
+        if isinstance(session, dict) and "start_time" in session:
+            times["session.start_time"] = session["start_time"]
         for key, value in times.items():
-            if value is not None and not _is_datetime(value):
+            if not _is_datetime(value):
                 self.add(
                     RECORDING_FILE,
                     "6.6",

@@ -303,6 +303,21 @@ def write_labels_array(
     return array
 
 
+def _stored_text_width(source: EventChannelSource) -> int:
+    """Return the width of the text array: text_width(), and at least 1.
+
+    A column of empty texts, or of no texts, has text_width() 0. The array
+    still has one column of zero bytes.
+
+    Raises:
+        ValueError: If text_width() is negative.
+    """
+    width = source.text_width()
+    if width < 0:
+        raise ValueError(f"text_width must not be negative, got {width}")
+    return max(1, width)
+
+
 def write_text_array(
     group: ZarrGroup,
     source: EventChannelSource,
@@ -312,8 +327,8 @@ def write_text_array(
     """Create the text array under group and stream the event texts into it.
 
     A uint8 array named "text" shaped (num_events, W), with W the source's
-    text_width(), and the dimension names "event" and None. Row i holds the
-    UTF-8 bytes of event i's text followed by zero bytes.
+    text_width() and at least 1, and the dimension names "event" and None.
+    Row i holds the UTF-8 bytes of event i's text followed by zero bytes.
 
     Args:
         group: Channel group to create the array in.
@@ -326,13 +341,11 @@ def write_text_array(
         The created array.
 
     Raises:
-        ValueError: If text_width() is below 1, a text is longer than the
+        ValueError: If text_width() is negative, a text is longer than the
             width or holds a NUL character, or the source returns a different
             number of texts than requested.
     """
-    width = source.text_width()
-    if width < 1:
-        raise ValueError(f"text_width must be at least 1, got {width}")
+    width = _stored_text_width(source)
     array = create_array(
         group,
         TEXT_KEY,
@@ -387,9 +400,9 @@ def write_channels_array(
         The created array.
 
     Raises:
-        ValueError: If max_index is negative, an id is not in channel_indices, a
-            index is outside 0 to max_index, or the source returns a different
-            number of id lists than requested.
+        ValueError: If max_index is negative, an id is not in channel_indices,
+            an index is outside 0 to max_index, or the source returns a
+            different number of id lists than requested.
     """
     width = channels_width(max_index)
     array = create_array(
@@ -465,8 +478,8 @@ def write_waveform_mean_array(
     category. It carries period_us, the microseconds between snippet samples,
     and event_sample, the snippet sample at the event time, when the source
     defines waveform_event_sample as WaveformEventSampleSource declares it and
-    the index is above 0. A label that has no events has a row of NaN. The
-    array has one row per label, so it is sized with the default chunk and
+    the index is above 0. A label that has no events has a row of NaN whatever
+    the source holds for it. The array has one row per label, so it is sized with the default chunk and
     shard targets and written whole.
 
     Args:
@@ -479,10 +492,9 @@ def write_waveform_mean_array(
 
     Raises:
         ValueError: If the means are not shaped (labels, samples), have no
-            samples, or have a row count other than source.num_labels(), if
-            a label that has no events has a mean that is not NaN, or if the
-            period is not finite and positive or the event sample is outside
-            the samples.
+            samples, or have a row count other than source.num_labels(), or
+            if the period is not finite and positive or the event sample is
+            outside the samples.
     """
     means = np.asarray(source.waveform_mean(), dtype=np.float32)
     if len(means.shape) != WAVEFORM_MEAN_RANK:
@@ -498,12 +510,8 @@ def write_waveform_mean_array(
             f"{source.num_labels()} label categories"
         )
     in_use = _labels_in_use(source, labels)
-    unused = ~in_use & ~np.isnan(means).all(axis=1)
-    if unused.any():
-        raise ValueError(
-            f"label {int(np.flatnonzero(unused)[0])} has no events, so its "
-            "waveform_mean row must be NaN"
-        )
+    means = means.copy()
+    means[~in_use] = np.nan
     event_sample = source_waveform_event_sample(source)
     attrs = waveform_array_attrs(
         source.waveform_period_us(), event_sample or None, samples=samples
@@ -845,7 +853,7 @@ def write_event_channel(
         write_text_array(
             group,
             source,
-            _row_sizing(total, source.text_width(), UINT8_BYTES, opts),
+            _row_sizing(total, _stored_text_width(source), UINT8_BYTES, opts),
             opts.zstd_level,
         )
     if "channels" in columns:

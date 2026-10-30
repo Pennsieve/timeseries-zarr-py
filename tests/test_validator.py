@@ -1012,6 +1012,8 @@ def test_recording_json_that_is_not_json_is_a_finding(bundle):
         {"reference_time": "2024-03-14T14:15:00"},
         {"reference_time": 5},
         {"reference_time": "yesterday"},
+        {"reference_time": None},
+        {"session": {"start_time": None}},
         {"session": {"start_time": "2024-03-14 14:15:00+00:00"}},
         {"session": {"start_time": "2024-13-14T14:15:00Z"}},
     ],

@@ -1,8 +1,7 @@
 """Check the zarr.json of one array and the presence of its chunks.
 
-Each check returns findings instead of raising, so a validator reports every
-violation of an array. The requirements are in sections 7.1 through 7.3 of
-docs/spec.md.
+Each check returns findings instead of raising. The requirements are in
+sections 7.1 through 7.3 of docs/spec.md.
 """
 
 import itertools
