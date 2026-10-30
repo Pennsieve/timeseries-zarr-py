@@ -1858,6 +1858,22 @@ def test_write_bundle_rejects_runs_that_start_after_start_us_before_writing(
     assert not output.exists()
 
 
+def test_write_bundle_rejects_a_run_whose_last_sample_passes_the_time_limit(
+    tmp_path: Path, runs_source: Any, continuous_source: Any
+) -> None:
+    anchor = continuous_source(_clean(1, 1), start_us=0, rate_hz=1.0)
+    source = runs_source(
+        [(640_992, _clean(1, 2)), (2**53 - 700_000, _clean(2, 3))],
+        rate_hz=1.0,
+        id="late",
+        name="late",
+    )
+    output = tmp_path / "bundle"
+    with pytest.raises(ValueError, match="channel 1 .*last sample of run 1"):
+        write_bundle([anchor, source], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
 def test_write_bundle_rejects_runs_that_arrive_faster_than_the_sample_rate(
     tmp_path: Path, runs_source: Any
 ) -> None:

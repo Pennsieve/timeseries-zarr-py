@@ -194,18 +194,17 @@ def test_a_memory_store_and_a_store_path_validate(mixed_bundle):
 
 
 class _NoListing(WrapperStore):
-    """A store that cannot list a prefix, like a web server."""
+    """A store that cannot list its keys, like a web server."""
 
-    async def list_dir(self, prefix):
-        raise NotImplementedError
-        yield
+    @property
+    def supports_listing(self):
+        return False
 
 
-def test_a_store_that_cannot_list_validates_from_the_consolidated_metadata(
-    full_bundle,
-):
+def test_a_store_that_cannot_list_raises(full_bundle):
     store = _NoListing(memory_store(full_bundle))
-    assert validate_bundle(store, full=True) == []
+    with pytest.raises(ValueError, match="needs a store that lists its keys"):
+        validate_bundle(store)
 
 
 def test_a_file_url_validates(full_bundle):
@@ -266,6 +265,35 @@ def test_a_zarr_json_with_a_bare_nan_is_a_finding(bundle):
     assert_contains(validate_bundle(bundle), "0/2/mean", "7.1", "NaN")
 
 
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_a_bare_non_finite_token_in_a_zarr_json_is_a_finding(bundle, token):
+    file = _node_file(bundle, "0/1/mean")
+    file.write_text(
+        file.read_text().replace(
+            '"zarr_format"', f'"x": {token}, "zarr_format"'
+        )
+    )
+    assert_contains(validate_bundle(bundle), "0/1/mean", "7.1", token)
+
+
+def test_a_bare_infinity_in_the_consolidated_metadata_is_a_finding(bundle):
+    file = _node_file(bundle, "")
+    file.write_text(
+        file.read_text().replace(
+            '"zarr_format"', '"x": Infinity, "zarr_format"'
+        )
+    )
+    assert_contains(validate_bundle(bundle), "", "7.1", "Infinity")
+
+
+@pytest.mark.parametrize("token", ["NaN", "Infinity", "-Infinity"])
+def test_a_bare_non_finite_token_in_recording_json_is_a_finding(bundle, token):
+    (bundle / "recording.json").write_text(
+        f'{{"subject": {{"weight": {token}}}}}'
+    )
+    assert_contains(validate_bundle(bundle), "recording.json", "6.6", token)
+
+
 def test_a_group_with_zarr_format_2_is_a_finding(bundle):
     edit(bundle, "0/2", top(zarr_format=2))
     assert_findings(validate_bundle(bundle), ("0/2", "7.1", "zarr_format"))
@@ -289,6 +317,14 @@ def test_a_root_with_zarr_format_2_is_a_finding(bundle):
 def test_the_root_version_is_checked(bundle, version, section, fragment):
     edit_root(bundle, tsz(version=version))
     assert_findings(validate_bundle(bundle), ("", section, fragment))
+
+
+def test_an_unsupported_minor_version_does_not_stop_the_other_checks(bundle):
+    edit_root(bundle, tsz(version="1.1"))
+    edit(bundle, "0", tsz(unit=5))
+    findings = validate_bundle(bundle)
+    assert [f.section for f in findings if f.path == ""] == ["9"]
+    assert_contains(findings, "0", "6.3", "unit")
 
 
 def test_a_root_without_tsz_is_a_finding(bundle):
@@ -769,6 +805,21 @@ def test_other_attributes_beside_tsz_are_accepted(bundle):
     assert validate_bundle(bundle) == []
 
 
+# Section 8.3, integer-named children.
+
+
+def test_an_array_with_a_level_name_under_a_continuous_channel_is_a_finding(
+    bundle,
+):
+    copy_node(bundle, "0/raw", "0/3")
+    assert_findings(validate_bundle(bundle), ("0/3", "3.3", "must be a group"))
+
+
+def test_an_array_with_a_level_name_under_an_event_channel_is_a_finding(bundle):
+    copy_node(bundle, "2/events", "2/3")
+    assert_findings(validate_bundle(bundle), ("2/3", "3.3", "must be a group"))
+
+
 # Section 8.3, runs.
 
 
@@ -780,6 +831,16 @@ def test_a_runs_table_that_breaks_section_4_2_is_a_finding(bundle):
 def test_a_run_time_beyond_the_range_is_a_finding(bundle):
     write_array(bundle, "0/runs", (1, 2), HUGE)
     assert_findings(validate_bundle(bundle), ("0/runs", "2.3", "column 2"))
+
+
+def test_a_run_whose_last_sample_passes_the_time_limit_is_a_finding(tmp_path):
+    bundle = write_runs_bundle(tmp_path / "runs")
+    start = HUGE - 12_000_000
+    edit(bundle, "0", tsz(offset_us=start))
+    write_array(bundle, "0/runs", (0, 2), start)
+    write_array(bundle, "0/runs", (1, 2), start + 9_500_700)
+    findings = validate_bundle(bundle)
+    assert_contains(findings, "0/runs", "2.3", "last sample of run 1")
 
 
 def test_a_run_that_ends_before_the_last_sample_is_a_finding(bundle):
@@ -842,8 +903,16 @@ def test_durations_without_a_bound_are_a_finding(bundle):
     assert_findings(validate_bundle(bundle), ("2", "5.2", "required"))
 
 
-def test_a_bound_without_durations_is_accepted(bundle):
+def test_a_bound_without_durations_is_a_finding(bundle):
     remove(bundle, "2/durations")
+    assert_findings(
+        validate_bundle(bundle), ("2", "5.2", "must not exist without")
+    )
+
+
+def test_label_names_without_a_labels_column_is_accepted(bundle):
+    remove(bundle, "2/labels")
+    remove(bundle, "2/waveform_mean")
     assert validate_bundle(bundle) == []
 
 

@@ -50,7 +50,7 @@ from timeseries_zarr.constants import (
     ZARR_METADATA_FILE,
 )
 from timeseries_zarr.recording import RECORDING_FILE
-from timeseries_zarr.runs import check_runs_table
+from timeseries_zarr.runs import check_runs_table, first_run_end_out_of_range
 from timeseries_zarr.types import Finding
 from timeseries_zarr.validate_arrays import (
     ArrayLayout,
@@ -223,35 +223,13 @@ class _Validation:
         return document
 
     def list_names(self, path: str) -> list[str]:
-        """Return the names of the entries of a group.
-
-        A store that cannot list a prefix, such as a web server, gives the
-        names that the consolidated metadata of the root lists.
-        """
+        """Return the names of the entries of a group."""
         target = self.root / path if path else self.root
 
         async def names() -> list[str]:
             return [name async for name in target.store.list_dir(target.path)]
 
-        try:
-            return sorted(sync(names()))
-        except Exception:  # noqa: BLE001
-            return self.listed_names(path)
-
-    def listed_names(self, path: str) -> list[str]:
-        """Return the names of the children of a group in the consolidated metadata."""
-        block = self.nodes[""].get("consolidated_metadata")
-        listed = block.get("metadata") if isinstance(block, dict) else None
-        if not isinstance(listed, dict):
-            return []
-        prefix = f"{path}/" if path else ""
-        return sorted(
-            {
-                key[len(prefix) :].partition("/")[0]
-                for key in listed
-                if key.startswith(prefix)
-            }
-        )
+        return sorted(sync(names()))
 
     def walk(self) -> None:
         """Load every node below the root, descending through groups.
@@ -626,6 +604,15 @@ class _Validation:
         except ValueError as error:
             self.add(path, "4.2", str(error).removeprefix(f"{path}: "))
             return False
+        failure = first_run_end_out_of_range(table, rate)
+        if failure is not None:
+            self.add(
+                path,
+                "2.3",
+                f"the last sample of run {failure[0]} is at {failure[1]} us, "
+                "outside (-2^53, 2^53)",
+            )
+            return False
         return True
 
     def check_levels(
@@ -654,7 +641,11 @@ class _Validation:
         for name in names:
             level_path = f"{path}/{name}"
             if self.children[path][name]["node_type"] != "group":
-                self.add(level_path, "4.3", "a level must be a group")
+                self.add(
+                    level_path,
+                    "3.3",
+                    f"the child {name} has a level name, so it must be a group",
+                )
                 previous = None
                 continue
             width = self.check_level_attributes(level_path, rate, previous)
@@ -951,6 +942,12 @@ class _Validation:
                     "tsz.max_duration_us is required when durations exists",
                 )
             return None
+        if not has_durations:
+            self.add(
+                path,
+                "5.2",
+                "tsz.max_duration_us must not exist without durations",
+            )
         value = fields["max_duration_us"]
         if _is_time(value) and value >= 0:
             return int(value)
@@ -1151,7 +1148,11 @@ class _Validation:
         for name in names:
             level_path = f"{path}/{name}"
             if self.children[path][name]["node_type"] != "group":
-                self.add(level_path, "5.7", "a count level must be a group")
+                self.add(
+                    level_path,
+                    "3.3",
+                    f"the child {name} has a level name, so it must be a group",
+                )
                 previous = None
                 continue
             period, offset = self.count_level_attributes(
@@ -1337,9 +1338,16 @@ def validate_bundle(
         The findings in the order the validator found them. An empty list
         means the bundle conforms. A local path that does not exist gives
         one finding.
+
+    Raises:
+        ValueError: If the store cannot list its keys.
     """
     try:
         root = open_store_path(location)
     except FileNotFoundError as error:
         return [Finding("", "3.1", f"the bundle does not exist: {error}")]
+    if not root.store.supports_listing:
+        raise ValueError(
+            "structural validation needs a store that lists its keys"
+        )
     return _Validation(root, full=full).run()
