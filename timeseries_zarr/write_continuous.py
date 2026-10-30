@@ -33,6 +33,7 @@ from timeseries_zarr.constants import (
     COUNT_KEY,
     ENVELOPE_PAIR_SIZE,
     FLOAT32_BYTES,
+    INT64_BYTES,
     MEAN_KEY,
     MINMAX_KEY,
     RAW_KEY,
@@ -55,7 +56,12 @@ from timeseries_zarr.protocols import (
 )
 from timeseries_zarr.runs import Placement, check_source_runs, place_runs
 from timeseries_zarr.shards import AppendBudget, ArrayWriter, ShardLayout
-from timeseries_zarr.sizing import level_sizing, member_sizing, raw_sizing
+from timeseries_zarr.sizing import (
+    chunk_and_shard,
+    level_sizing,
+    member_sizing,
+    raw_sizing,
+)
 from timeseries_zarr.streaming import iter_raw_blocks, scale_block
 from timeseries_zarr.types import (
     ChunkShard,
@@ -581,11 +587,12 @@ def _add_channel_nodes(
         opts.zstd_level,
     )
     if placement.table.shape[0] >= _MIN_RUNS_FOR_TABLE:
+        runs_sizing = _runs_sizing(placement, opts)
         nodes[f"{index}/{RUNS_KEY}"] = array_metadata(
             placement.table.shape,
             np.int64,
-            placement.table.shape,
-            placement.table.shape,
+            runs_sizing.chunk_shape,
+            runs_sizing.shard_shape,
             opts.zstd_level,
             {},
             dimension_names=(RUN_DIMENSION, None),
@@ -605,6 +612,16 @@ def _add_channel_nodes(
     return plans, placement
 
 
+def _runs_sizing(placement: Placement, opts: WriteOpts) -> ChunkShard:
+    """Return the chunk and shard shapes of the runs array of placement."""
+    return chunk_and_shard(
+        placement.table.shape,
+        INT64_BYTES,
+        opts.inner_len,
+        opts.target_shard_bytes,
+    )
+
+
 def _channel_writer(
     handles: dict[str, ZarrGroup | ZarrArray],
     index: int,
@@ -617,11 +634,17 @@ def _channel_writer(
 ) -> ChannelWriter:
     """Return the writer of a channel whose nodes handles holds.
 
-    A channel with a runs array gets its table written here, as one shard.
+    A channel with a runs array gets its table written here, in blocks of one
+    shard of rows.
     """
     runs_key = f"{index}/{RUNS_KEY}"
     if runs_key in handles:
-        write_region(cast("ZarrArray", handles[runs_key]), 0, placement.table)
+        runs = cast("ZarrArray", handles[runs_key])
+        block_rows = _runs_sizing(placement, opts).shard_shape[0]
+        for start in range(0, placement.table.shape[0], block_rows):
+            write_region(
+                runs, start, placement.table[start : start + block_rows]
+            )
     levels = []
     for plan in plans:
         members = _level_members(handles, plan, opts.write_var, f"{index}/")

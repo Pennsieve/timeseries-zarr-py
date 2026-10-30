@@ -13,9 +13,18 @@ _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 
 def _require_offset(instant: datetime, name: str) -> None:
-    """Raise ValueError if instant, called name, has no UTC offset."""
-    if instant.utcoffset() is None:
+    """Raise ValueError if instant, called name, lacks a valid UTC offset.
+
+    RFC 3339 writes an offset as hours and minutes, so the offset must be a
+    whole number of minutes.
+    """
+    offset = instant.utcoffset()
+    if offset is None:
         raise ValueError(f"{name} must carry a UTC offset")
+    if offset % timedelta(minutes=1):
+        raise ValueError(
+            f"{name} must carry a UTC offset of whole minutes, got {offset}"
+        )
 
 
 def epoch_us(instant: datetime) -> int:
@@ -30,7 +39,8 @@ def epoch_us(instant: datetime) -> int:
         Whole microseconds since 1970-01-01T00:00:00Z.
 
     Raises:
-        ValueError: If instant has no UTC offset.
+        ValueError: If instant has no UTC offset or an offset that is not a
+            whole number of minutes.
     """
     _require_offset(instant, "instant")
     return (instant - _EPOCH) // timedelta(microseconds=1)
@@ -46,7 +56,8 @@ def session_start_us(meta: RecordingMeta) -> int | None:
         The microseconds, or None when meta.session_start_time is None.
 
     Raises:
-        ValueError: If meta.session_start_time has no UTC offset.
+        ValueError: If meta.session_start_time has no UTC offset or an offset
+            that is not a whole number of minutes.
     """
     if meta.session_start_time is None:
         return None

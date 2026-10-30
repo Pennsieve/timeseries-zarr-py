@@ -22,6 +22,7 @@ from timeseries_zarr.shards import ArrayWriter, FileShardSink
 from timeseries_zarr.sizing import level_sizing
 from timeseries_zarr.streaming import scale_block
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
+from timeseries_zarr.validator import validate_bundle
 from timeseries_zarr.write_continuous import (
     ChannelWriter,
     create_channel_group,
@@ -1835,6 +1836,50 @@ def test_write_continuous_channel_records_a_pause_shorter_than_a_period_without_
     assert group[RAW_KEY].shape == (70,)
     assert not np.isnan(group[RAW_KEY][:]).any()
     assert group["runs"][:].tolist() == [[0, 40, 0], [40, 30, 40_300]]
+
+
+def test_write_continuous_channel_sizes_a_long_runs_table_by_inner_chunk(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    count = 9000
+    source = runs_source(
+        [
+            (index * 2_000_000, np.full(1, index, dtype=np.float32))
+            for index in range(count)
+        ],
+        rate_hz=1.0,
+    )
+    output = tmp_path / "bundle"
+    write_bundle([source], [], output_path=output, opts=WriteOpts(max_levels=1))
+    runs = open_group(output)["0"]["runs"]
+    assert runs.shape == (count, 3)
+    assert runs.chunks == (8192, 3)
+    assert runs.shards is not None
+    assert runs.shards[0] % runs.chunks[0] == 0
+    expected = np.array(
+        [[2 * index, 1, index * 2_000_000] for index in range(count)]
+    )
+    assert np.array_equal(runs[:], expected)
+    assert validate_bundle(output, full=True) == []
+
+
+def test_write_continuous_channel_writes_the_runs_table_in_shard_blocks(
+    tmp_path: Path, runs_source: Any
+) -> None:
+    count = 30
+    source = runs_source(
+        [
+            (index * 2_000_000, np.full(1, index, dtype=np.float32))
+            for index in range(count)
+        ],
+        rate_hz=1.0,
+    )
+    runs = _write(tmp_path, source, _OPTS)["runs"]
+    assert runs.shards == (8, 3)
+    expected = np.array(
+        [[2 * index, 1, index * 2_000_000] for index in range(count)]
+    )
+    assert np.array_equal(runs[:], expected)
 
 
 def test_write_continuous_channel_rejects_runs_that_do_not_total_num_samples(

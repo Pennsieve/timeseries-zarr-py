@@ -854,6 +854,8 @@ def _check_dimension_names(nodes):
         name = key.rpartition("/")[2]
         if node["node_type"] == "array" and name in _FIRST_DIMENSION:
             trailing = [None] * (len(node["shape"]) - 1)
+            if key.endswith("/count") and len(node["shape"]) == 2:
+                trailing = ["label"]
             assert node["dimension_names"] == [
                 _FIRST_DIMENSION[name],
                 *trailing,
@@ -1138,6 +1140,25 @@ def test_write_bundle_keeps_identity_and_the_date_out_of_every_zarr_node(
         document["reference_time"][:10]
         not in (output / "zarr.json").read_text()
     )
+
+
+def test_write_bundle_rejects_an_offset_with_seconds_before_writing(
+    tmp_path, continuous_source
+):
+    odd = dt.timezone(dt.timedelta(hours=1, seconds=30))
+    recording = RecordingMeta(
+        session_start_time=dt.datetime(2024, 3, 14, 9, 15, tzinfo=odd),
+        subject={},
+        session={},
+        source={},
+    )
+    output = tmp_path / "bundle"
+    cont = continuous_source(np.zeros(8, np.float32), id="c0")
+    with pytest.raises(ValueError, match="whole minutes"):
+        write_bundle(
+            [cont], [], output_path=output, opts=_OPTS, recording=recording
+        )
+    assert not output.exists()
 
 
 def test_write_bundle_rejects_a_session_start_without_an_offset_before_writing(

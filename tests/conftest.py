@@ -600,7 +600,7 @@ def _write_marks(root):
     level = create_group_with_attrs(
         channel, "1", {TSZ_KEY: {"period_us": ODD_COUNT_PERIOD_US}}
     )
-    _write_rows(level, COUNT_KEY, counts, (TIME_DIMENSION, None))
+    _write_rows(level, COUNT_KEY, counts, (TIME_DIMENSION, LABEL_DIMENSION))
     create_group_with_attrs(channel, "notes", {})
 
 
@@ -804,7 +804,7 @@ def _full_events(root):
             (int(events[-1]) // period + 1, FULL_LABELS), dtype=np.uint32
         )
         np.add.at(counts, (events // period, labels), 1)
-        _write_rows(group, COUNT_KEY, counts, (TIME_DIMENSION, None))
+        _write_rows(group, COUNT_KEY, counts, (TIME_DIMENSION, LABEL_DIMENSION))
 
 
 def write_full_bundle(path):

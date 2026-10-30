@@ -291,7 +291,7 @@ def test_odd_bundle_names_the_axes_of_every_channel_array(odd_bundle):
         "9/channels": ("event", None),
         "9/waveforms": ("event", None),
         "9/waveform_mean": ("label", None),
-        "9/1/count": ("time", None),
+        "9/1/count": ("time", "label"),
         "12/events": ("event",),
         "12/durations": ("event",),
     }

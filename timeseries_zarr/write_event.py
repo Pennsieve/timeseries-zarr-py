@@ -667,7 +667,7 @@ def write_count_levels(
             sizing.shard_shape,
             {},
             opts.zstd_level,
-            dimension_names=(TIME_DIMENSION, None),
+            dimension_names=(TIME_DIMENSION, LABEL_DIMENSION),
         )
         shard_rows = sizing.shard_shape[0]
         counts: Iterator[npt.NDArray[np.uint32]]

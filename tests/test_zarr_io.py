@@ -141,6 +141,37 @@ def test_create_array_uses_zstd_at_level(tmp_path):
     )
 
 
+def _inner_bytes_codec(document):
+    sharding = document["codecs"][0]
+    assert sharding["name"] == "sharding_indexed"
+    codec = sharding["configuration"]["codecs"][0]
+    assert codec["name"] == "bytes"
+    return codec
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.int64, np.uint16, np.uint32])
+def test_multi_byte_arrays_declare_little_endian_bytes(tmp_path, dtype):
+    path = tmp_path / "bundle"
+    create_array(open_group(path), "a", (10,), dtype, (5,), (10,), {}, 3)
+    created = json.loads((path / "a" / "zarr.json").read_text())
+    declared = array_metadata((10,), dtype, (5,), (10,), 3, {}).to_dict()
+    for document in (created, declared):
+        assert _inner_bytes_codec(document)["configuration"] == {
+            "endian": "little"
+        }
+
+
+def test_one_byte_arrays_declare_no_big_endian_bytes(tmp_path):
+    path = tmp_path / "bundle"
+    create_array(open_group(path), "a", (10,), np.uint8, (5,), (10,), {}, 3)
+    created = json.loads((path / "a" / "zarr.json").read_text())
+    declared = array_metadata((10,), np.uint8, (5,), (10,), 3, {}).to_dict()
+    for document in (created, declared):
+        configuration = _inner_bytes_codec(document).get("configuration", {})
+        assert configuration.get("endian", "little") == "little"
+    assert _inner_bytes_codec(created) == _inner_bytes_codec(declared)
+
+
 def test_create_array_sets_attrs_verbatim(tmp_path):
     path = tmp_path / "bundle"
     attrs = {"period_us": 31.25}
