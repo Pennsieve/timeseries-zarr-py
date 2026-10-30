@@ -2,7 +2,7 @@
 
 Python library that reads and writes Zarr bundles of neurophysiology time series.
 
-It servers as a reference writer and reader implementation for the
+It serves as a reference writer and reader implementation for the
 [TS-Zarr specification](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md).
 
 ## Installation
@@ -18,7 +18,9 @@ pip install timeseries-zarr
 ### Writing
 
 `write_bundle` reads channel sources, computes per-bin statistics up to the specified
-maximum number of levels of time resolution, and writes the bundle to disk.
+maximum number of levels of time resolution, and writes the bundle to disk. Each level
+holds the minimum, maximum, and count of the finite samples in each bin, and optionally
+their mean and variance.
 
 Each source implements `ContinuousChannelSource` or `EventChannelSource`, which
 [`timeseries_zarr.protocols`](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/timeseries_zarr/protocols.py)
@@ -127,6 +129,10 @@ with status 1 when it finds any.
 ```bash
 python -m timeseries_zarr.validate sine.zarr --full
 ```
+
+`conformance/manifest.json` lists the values a reader can assert and the findings a
+validator reports for a set of small test bundles. `make fixtures` writes the bundles
+into `conformance/`, where git ignores them.
 
 ## Development
 

@@ -241,10 +241,10 @@ with open_bundle("example.zarr") as bundle:
     print(bundle.recording.subject["id"])
 ```
 
-`bundle.channels` maps each channel key to its channel in key order.
+`bundle.channels` maps each channel index to its channel in index order.
 
-`bundle.continuous` and `bundle.events` map the key of each channel of one kind
-to its channel, in key order.
+`bundle.continuous` and `bundle.events` map the index of each channel of one kind
+to its channel, in index order.
 
 `bundle.channel` finds a channel by name, or by id when no name matches.
 It raises `KeyError` when neither matches and `ValueError` when several
@@ -286,7 +286,9 @@ channel that has [runs](#runs) gives the exact time of each recorded sample inst
 `time_us` is float64. A sample period of `1e6 / rate_hz` microseconds
 is rarely a whole number, and at 256 Hz it is 3906.25 microseconds.
 
-Event times are int64 microseconds, as stored.
+Event times are int64 microseconds, as stored. Every stored time, duration, and
+interval end lies in the open interval (-2^53, 2^53) microseconds. The reader raises
+`ValueError` for a channel or level attribute outside it.
 
 ```python
 from timeseries_zarr import open_bundle
@@ -315,7 +317,7 @@ with open_bundle("example.zarr") as bundle:
 ## Continuous channels
 
 A `ContinuousChannel` carries `name`, `id`, `unit`, `rate_hz`, `offset_us`, and
-`provenance` from its group attributes. Its `key` is the number that names its group.
+`provenance` from its group attributes. Its `index` is the channel index that names its group.
 
 `provenance` is a read-only mapping, or `None` when the group has none.
 `num_samples` is the length of `raw`, which counts the NaN samples of every pause.
@@ -330,9 +332,17 @@ from `start_us` to `end_us` holds every sample.
 The [levels](./spec.md#43-levels) section of the
 specification defines the samples each bin covers.
 
-A `Level` holds the zarr arrays `minmax`, `mean`, `var`, and `count`, with
-`None` for a member the level lacks. Slicing a zarr array, for example
-`channel.raw[1000:2000]`, reads that slice from the store.
+A `Level` holds the zarr arrays `minmax`, `count`, `mean`, and `var`, with
+`None` for a member the level lacks. The specification requires `minmax` and
+`count` at every level and makes `mean` and `var` optional. The reader accepts a level
+without `count`. Slicing a zarr array, for example `channel.raw[1000:2000]`, reads
+that slice from the store.
+
+The reader checks the `period_us` of each level against the sample rate. It raises
+`ValueError` when `period_us` is not within `1e-12` relative of
+`samples_per_bin * 1e6 / rate_hz` for a whole `samples_per_bin` from 2 to 2^32 - 1.
+It also raises when `samples_per_bin` is not a multiple of at least 2 of the
+`samples_per_bin` of the level below.
 
 `read(start_us=None, end_us=None, *, level=None, members=None)` returns `Samples`
 for level `None` or 0, and `Bins` for a level number. The window is half-open,
@@ -393,9 +403,11 @@ with open_bundle("example.zarr") as bundle:
     print(len(channel.read(300_000_000, 400_000_000)))
 ```
 
-A NaN sample is a gap. The [statistics](./spec.md#44-statistics)
-section of the specification defines how a gap folds into each level, and the
-reader passes the statistics through unchanged. A raw read of a channel with runs
+A NaN or infinite sample is a gap. Every statistic of a bin covers the finite samples
+of the bin, `count` is their number, and a bin with no finite sample has `count` 0
+and NaN in `minmax`, `mean`, and `var`. The [statistics](./spec.md#44-statistics) section of
+the specification defines each statistic, and the reader passes the stored values
+through unchanged. A raw read of a channel with runs
 checks that every sample outside a run is NaN and raises `ValueError` otherwise.
 
 `spans(start_us=None, end_us=None, *, level=None, gap_us=0)` returns the
@@ -471,8 +483,8 @@ with open_bundle("example.zarr") as bundle:
 ## Event channels
 
 An `EventChannel` carries `name`, `id`, `unit`, `label_names`, `max_duration_us`,
-and `provenance` from its group attributes. Its `key` is the number that names
-its group. Each attribute except `name` is `None` when the group omits it, and
+and `provenance` from its group attributes. Its `index` is the channel index that
+names its group. Each attribute except `name` is `None` when the group omits it, and
 `provenance` is a read-only mapping.
 
 `events` is the zarr array of event times. `durations`, `labels`, `values`, `text`,
@@ -483,18 +495,19 @@ and `channels` are zarr arrays, or `None` when the channel lacks them.
 
 `read(start_us=None, end_us=None, *, columns=None)` returns an `EventTable` with one row
 per event. `time_us` holds the event times. `duration_us`, `label`, `label_name`,
-`value`, `text`, `channel_keys`, and `waveform` hold the other columns. Each is `None`
+`value`, `text`, `channel_indices`, and `waveform` hold the other columns. Each is `None`
 when the channel lacks it or the read left it out. `columns` names the stored columns to
 read, and `None` reads every one. A name the channel lacks raises `ValueError`.
 
 A point event, with no duration or a duration of 0, is in the window when
-`start_us <= time < end_us`. An interval is in the window when it starts before
-`end_us` and ends after `start_us`. To find the events that begin before the window,
+`start_us <= time < end_us`. An interval covers the half-open span
+`[time, time + duration)`. It is in the window when it starts before `end_us` and
+ends after `start_us`. To find the events that begin before the window,
 the read searches from `max_duration_us` before `start_us`. On a channel with
 `durations` and no `max_duration_us`, it searches from the first event.
 
-`text` holds the decoded UTF-8 string of each event. `channel_keys` holds the channel
-keys each event applies to, and an empty list means the event applies to no channel. `label_name`
+`text` holds the decoded UTF-8 string of each event. `channel_indices` holds the channel
+indices each event applies to, and an empty list means the event applies to no channel. `label_name`
 holds the name of each label when the channel has `label_names`. A label at or above the
 length of `label_names` raises `ValueError`.
 
@@ -502,8 +515,8 @@ length of `label_names` raises `ValueError`.
 `decode_channels_rows(channel.channels[0:10])` decode rows sliced from the `text` and
 `channels` arrays, as `read` does.
 
-`applies_to(key)` returns a boolean mask of the events that apply to channel `key`. An
-event applies when its `channel_keys` names `key`. On a channel without a `channels`
+`applies_to(index)` returns a boolean mask of the events that apply to channel `index`. An
+event applies when its `channel_indices` names `index`. On a channel without a `channels`
 column, `applies_to` returns `True` for every event. A table read from such a
 channel has `whole_recording` set to `True`. On a table read
 without `channels` from a channel that has the column, `applies_to` raises `ValueError`.
@@ -519,7 +532,7 @@ with open_bundle("example.zarr") as bundle:
     print(table.duration_us)
     print(table.label_name)
     print(table.text[-1])
-    print(table.channel_keys)
+    print(table.channel_indices)
     print(table.applies_to(2))
     print(len(marks.read(259_999_999, 270_000_000)))
     print(len(marks.read(260_000_000, 270_000_000)))
@@ -543,7 +556,7 @@ snippets of a table and `label` for `waveform_mean`. `write_bundle` writes
 has no `waveform` column.
 
 `count_levels` maps each count level number, from 1, to a `CountLevel` with
-`period_us` and `offset_us`. `offset_us` is the time of its bin 0. The
+`period_us` and `offset_us`, both integers. `offset_us` is the time of its bin 0. The
 [count levels](./spec.md#57-count-levels) section of the specification defines
 the bins of a count level. `read_counts(start_us=None, end_us=None, *, level)`
 returns the bins that overlap the window as `Counts`. The bins widen the window,
@@ -577,17 +590,17 @@ with open_bundle("example.zarr") as bundle:
 
 ## Stacking channels
 
-`bundle.stack(keys, start_us=None, end_us=None, *, level=0, member="mean", max_workers=1)`
+`bundle.stack(indices, start_us=None, end_us=None, *, level=0, member="mean", max_workers=1)`
 reads one window of several continuous channels into one array. The channels must
 share `rate_hz` and `offset_us`. Level 0 reads the raw samples, and the `member`
 of the result is `None`. A level of at least 1 reads `member`, which is
 `min`, `max`, `mean`, `var`, or `count`. Every channel must hold that member
 at that level.
 
-`Stack.values` has one row per key, in the order of `keys`. The rows span every
+`Stack.values` has one row per channel index, in the order of `indices`. The rows span every
 entry that overlaps the window on any channel. A row holds NaN past the end of
 its channel, or 0 when `member` is `count`. `names` and `units` follow the order
-of `keys`.
+of `indices`.
 
 A stack reads one array per channel. At level 0 it reads `raw`, and at a level of
 at least 1 it reads the array that holds `member`. `max_workers` is the number of
@@ -602,7 +615,7 @@ from timeseries_zarr import open_bundle
 
 with open_bundle("example.zarr") as bundle:
     stack = bundle.stack([0, 1], 0, 10_000_000, level=1, member="mean")
-    print(stack.keys, stack.names, stack.values.shape, stack.period_us)
+    print(stack.indices, stack.names, stack.values.shape, stack.period_us)
     raw = bundle.stack([0, 1], 0, 3_000, max_workers=2)
     print(raw.level, raw.member)
     print(raw.values)
@@ -625,13 +638,13 @@ it raises `ImportError` with a message that names the extra:
 |---|---|---|
 | `Samples` | `to_series(*, name=None)`: Series of the values indexed by `time_us` | `to_xarray(*, name=None, unit=None)`: DataArray along `time_us`, with attributes `period_us`, `offset_us`, `units` when `unit` is given, and `long_name` when `name` is given |
 | `Bins` | `to_dataframe()`: indexed by `time_us`, with columns `min`, `max`, then `mean`, `var`, and `count` when present | `to_xarray()`: Dataset of the same variables along `time_us`, with attributes `level` and `period_us` |
-| `EventTable` | `to_dataframe()`: one row per event under a numbered index, with columns `time_us`, then `duration_us`, `label`, `label_name`, `value`, `text`, and `channel_keys` when present | none |
+| `EventTable` | `to_dataframe()`: one row per event under a numbered index, with columns `time_us`, then `duration_us`, `label`, `label_name`, `value`, `text`, and `channel_indices` when present | none |
 | `Counts` | `to_dataframe()`: indexed by `time_us`, with one column per label named by `label_names` or by the label index | `to_xarray()`: DataArray with dimensions `time_us` and `label` |
 | `Waveform` | `to_dataframe()`: indexed by `time_us` from the event time, with one column per row named by the row index | `to_xarray()`: DataArray with dimensions `event` and `time_us`, or `label` and `time_us` for `waveform_mean`, with attributes `period_us` and `event_sample` |
-| `Stack` | `to_dataframe()`: indexed by `time_us`, with one column per channel key, and `attrs` that hold `names`, `units`, `level`, and `member` | `to_xarray()`: DataArray with dimensions `channel` and `time_us`, coordinates `name` and `unit` along `channel`, and attributes `level`, `member` above level 0, `period_us`, `offset_us`, and `units` when the channels share one unit |
+| `Stack` | `to_dataframe()`: indexed by `time_us`, with one column per channel index, and `attrs` that hold `names`, `units`, `level`, and `member` | `to_xarray()`: DataArray with dimensions `channel` and `time_us`, coordinates `name` and `unit` along `channel`, and attributes `level`, `member` above level 0, `period_us`, `offset_us`, and `units` when the channels share one unit |
 
 The `EventTable` frame leaves out `waveform`. Its `label_name` and `text` columns hold
-strings, and `channel_keys` holds a Python list per event. The xarray attribute that
+strings, and `channel_indices` holds a Python list per event. The xarray attribute that
 holds a unit is `units`, which xarray plotting puts in the axis label.
 
 ```python
@@ -649,9 +662,9 @@ with open_bundle("example.zarr") as bundle:
 
 ## Rewriting a bundle
 
-`bundle_sources(bundle, keys=None, *, epoch_us=None, drop_columns=frozenset())` wraps
+`bundle_sources(bundle, indices=None, *, epoch_us=None, drop_columns=frozenset())` wraps
 channels of an open bundle as writer sources. It returns the lists of continuous and
-event sources that `write_bundle` takes. `keys` names the channels to keep, and `None`
+event sources that `write_bundle` takes. `indices` names the channels to keep, and `None`
 keeps every channel. `recording_meta(bundle)` returns the `RecordingMeta` that rewrites
 `recording.json`, or `None` when the bundle has no `recording.json`.
 
@@ -675,11 +688,11 @@ writer puts it back. A bundle without `reference_time` gives a `RecordingMeta` w
 then has no `reference_time` either.
 
 The writer numbers the kept channels from 0, continuous channels first. A channel
-without an id takes its key, as a decimal string, as its id. `bundle_sources` raises
+without an id takes its index, as a decimal string, as its id. `bundle_sources` raises
 `ValueError` when two kept channels share an id.
 
-An event source names the channels of each event by id, and it maps the key of every
-kept channel to an id. A kept event that names a channel left out of `keys` makes
+An event source names the channels of each event by id, and it maps the index of every
+kept channel to an id. A kept event that names a channel left out of `indices` makes
 `read_channel_ids` raise `ValueError` during `write_bundle`. Pass
 `drop_columns={"channels"}` to leave the column out. The new channel then has no
 `channels` column.
@@ -720,6 +733,38 @@ with open_bundle("subset.zarr") as subset:
     print(subset.describe())
     print(subset.continuous[0].offset_us)
     print(subset.events[1].columns)
+```
+
+## Validating a bundle
+
+`validate_bundle` checks a bundle against the [conformance
+rules](./spec.md#8-conformance) of the specification and returns a list of `Finding`
+records, one for each violation. Structural validation reads every `zarr.json`,
+`recording.json`, `runs`, and the per-event columns other than `waveforms`. With
+`full=True` it also reads `raw`, every level member, and the waveforms, and recomputes
+the statistics from the samples. The validator reports every violation it finds and
+does not stop at the first.
+
+A `Finding` has a `path`, the node or file the violation lies in relative to the bundle
+root, with the empty string for the root group, a `section` of the specification, and a
+`message` that says what is wrong and what is valid. An empty list means the bundle
+conforms. `validate_bundle` takes the locations that `open_bundle` takes, and a path
+that does not exist gives one finding.
+
+```python
+from timeseries_zarr import validate_bundle
+
+findings = validate_bundle("example.zarr", full=True)
+for finding in findings:
+    print(finding.path or ".", finding.section, finding.message)
+print(len(findings), "findings")
+```
+
+The same check runs from the command line. It prints one finding per line and exits
+with status 1 when it finds any.
+
+```bash
+python -m timeseries_zarr.validate example.zarr --full
 ```
 
 ## Remote stores
