@@ -20,7 +20,7 @@ from timeseries_zarr.zarr_io import ZarrArray
 
 _BLOCK_ELEMENTS = 2**22
 _TOLERANCE = 2.0**-20
-_FLOAT32_MAXIMUM = float(np.finfo(np.float32).max)
+_SUBNORMAL_FLOOR = 2.0**-149
 
 type _Floats = npt.NDArray[np.float64]
 
@@ -165,13 +165,15 @@ def _within_tolerance(
         if variance:
             bound = _TOLERANCE * np.maximum(reference, _TOLERANCE * max_abs**2)
         else:
-            bound = _TOLERANCE * np.maximum(np.abs(reference), max_abs)
-        close = np.abs(values - reference) <= bound
-        too_large = reference > _FLOAT32_MAXIMUM
+            bound = _TOLERANCE * max_abs
+        close = np.isfinite(values) & (
+            np.abs(values - reference) <= bound + _SUBNORMAL_FLOOR
+        )
+        overflows = np.isposinf(reference.astype(np.float32))
     return np.where(
         np.isnan(reference),
         np.isnan(values),
-        np.where(too_large, values == np.inf, close),
+        np.where(overflows, values == np.inf, close),
     )
 
 
