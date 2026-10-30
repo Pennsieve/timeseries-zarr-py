@@ -24,7 +24,8 @@ Everything downstream depends on the protocols. An adapter for an input format l
 its own package and implements them. The NWB adapter is
 [timeseries-zarr-nwb](https://github.com/Pennsieve/timeseries-zarr-nwb). The writer
 scales a voltage channel to microvolts and keeps any other unit, so every channel
-carries the unit its group attribute names. The writer is tested against the in-memory
+carries the unit its group attribute names. For an event channel the scale applies to
+`waveform_mean`. The writer is tested against the in-memory
 sources in `tests/conftest.py`.
 
 ## Decision layer
@@ -40,7 +41,8 @@ it spans `decimation_factor` times the time. Every count level carries an `offse
 that is a multiple of its period.
 `columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows. An
 event that names no channel gets a row of zero bytes.
-`units.py` resolves the factor and stored unit of a continuous channel.
+`units.py` resolves the factor and stored unit of a channel. It matches `V`, `mV`, `uV`, and
+`nV` exactly and the spelled-out names in any case.
 `runs.py` holds `Run`, the span of samples that a source states, and `place_runs`, which
 puts the runs of a channel on its sample grid. It picks the grid index of each run in exact
 fractions and checks every bound of the table in binary64. It returns the offset,
@@ -74,8 +76,9 @@ state of one channel. Each block of samples is scaled to the stored unit, append
 `raw`, and folded into every level. Each chunk that the folder emits is appended to its
 member array. Nothing is read back from the store. A channel with several runs also gets the NaN
 samples of each pause, pushed through the same path before the first sample of the next
-run. `_channel_writer` writes the `runs` array of a channel with two or more runs as one shard
-through `zarr_io.write_region`. `write_var` decides only whether the
+run. `_channel_writer` writes the `runs` array of a channel with two or more runs through
+`zarr_io.write_region`, in blocks of one shard of rows. The array is sized like the event
+columns, with an inner chunk of `inner_len` rows. `write_var` decides only whether the
 `var` member is stored, because every level folds from float64 statistics and the variance
 stays exact on a channel with a large DC offset.
 
@@ -107,11 +110,15 @@ The module imports `numcodecs` and `google_crc32c` and never zarr, and its shard
 the bytes that zarr writes for the same array. `zarr_io.shard_layout` reads the layout and
 the shard sinks of an existing array from its metadata. It raises `ValueError` for any
 codec chain other than the one `shards.py` encodes. zarr creates the nodes of a
-continuous channel and reads them back. It does not encode a chunk of one.
+continuous channel and reads them back. It does not encode a chunk of one. Every array
+declares the bytes codec with `endian` set to `little`, and zarr omits the setting for a
+one-byte dtype.
 
 `write_event.py` writes one event channel: the `events` array, each optional column the
 source names, and the count levels of a dense channel. Event times are stored from the
-reference time. Every write covers a whole shard. A narrower write makes the sharding
+reference time. The `waveform_mean` array is sized by its row width like `text`, and the
+`count` array of a count level names its axes `time` and `label`. Every write covers a
+whole shard. A narrower write makes the sharding
 codec read the shard back, re-encode every inner chunk, and rewrite it. That costs about
 10x the store traffic on a 16-chunk shard.
 

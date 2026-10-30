@@ -39,7 +39,13 @@ windows until they hold 262,144 rows of a channel or 64 MiB, so a batch holds at
 64 MiB plus one window.
 
 `voltage_policy="convert"` scales a voltage channel to microvolts and labels it `uV`.
-`"require_uv"` raises `ValueError` for a voltage channel in any other unit.
+A voltage unit is exactly `V`, `mV`, `uV`, or `nV`, which scale by `1e6`, `1e3`, `1`,
+and `1e-3`, or one of the names `volts`, `millivolts`, `microvolts`, and `nanovolts` in
+any case. `MV` and `Mv` are not voltage units. The policy applies to the `unit` of a
+continuous channel, which scales `raw`, and to the `unit` of an event channel, which
+scales `waveform_mean`. An event channel with no `unit` stays without one.
+`"require_uv"` raises `ValueError` for a voltage channel in any other unit, including
+`nV`, before `write_bundle` clears `output_path`.
 `timeseries_zarr.UNIT_TO_UV` maps each voltage unit name to its factor to microvolts.
 The writer keeps every other unit as given.
 
@@ -57,7 +63,7 @@ An interval covers the half-open span `[time, time + duration)`. An event channe
 enough events also gets count levels. The `period_us` of a count level is an integer
 and a multiple of at least 2 of the `period_us` of the level below it. Its `offset_us`
 is a multiple of its `period_us`. A count level counts an interval in the bin of its
-start only.
+start only. The `count` array of a count level names its axes `time` and `label`.
 
 ## Pauses and runs
 
@@ -72,7 +78,9 @@ blocks of a `MultiChannelSource` hold recorded samples only. A source without `r
 is one run. A NaN sample inside a run is an ordinary gap, and the source delivers it.
 
 The writer places each run on the sample grid of the channel and fills each pause with
-NaN samples. It stores the runs in a `runs` array when the channel has two or more. The
+NaN samples. It stores the runs in a `runs` array when the channel has two or more. The array takes
+the inner chunk length `inner_len`, and the writer stores a long table in several
+shards. The
 [sample times](./spec.md#42-sample-times) section of the specification
 defines the array and its rules. The `raw` array and every level cover the grid,
 so `raw` is longer than `num_samples()` by the NaN samples of the pauses.

@@ -76,6 +76,10 @@ Sources must provide times in microseconds since the Unix epoch. The writer stor
 each time as an offset from the reference time, the earlier of the session start you
 declare and the first sample. A channel or event before it has a negative time.
 
+A channel whose source declares its unit as `V`, `mV`, `uV`, or `nV` is stored in
+microvolts under the unit `uV`. The writer scales `raw` of a continuous channel and
+`waveform_mean` of an event channel. Any other unit is stored as given.
+
 A recording that pauses and resumes is a list of runs, which a source states with
 `runs()`. The bundle stores a pause as NaN samples on the sample grid and keeps the exact
 time that each run resumes in a `runs` array.
@@ -86,7 +90,7 @@ Passing a `RecordingMeta` as `recording` adds a `recording.json`. It holds
 `reference_time` as a datetime and the subject, session, and source details
 you give. `session_start_time` is the acquisition time, written as
 `session.start_time`; it places no data. Pass `reference_time` to keep a bundle's own
-t = 0 when you write it again. Both must be timezone-aware `datetime` values. Set
+t = 0 when you write it again. Both must be timezone-aware `datetime` values whose UTC offset is a whole number of minutes. Set
 `wall_clock=False` when your times do not count from the Unix epoch, and leave
 `reference_time` unset; `recording.json` then holds no `reference_time`. The
 [recording metadata](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/spec.md#66-recording-metadata)
