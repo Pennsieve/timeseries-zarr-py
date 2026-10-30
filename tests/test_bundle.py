@@ -3,7 +3,6 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
-import math
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -24,6 +23,7 @@ from timeseries_zarr.bundle import (
 )
 from timeseries_zarr.recording import RECORDING_FILE, epoch_us
 from timeseries_zarr.types import RecordingMeta, WriteOpts
+from timeseries_zarr.validator import validate_bundle
 from timeseries_zarr.zarr_io import open_group
 
 if TYPE_CHECKING:
@@ -771,17 +771,6 @@ def _read_nodes(path):
     }
 
 
-def _array_ok(node, shape, dtype, names):
-    fill = "NaN" if dtype.startswith("float") else 0
-    return (
-        node["node_type"] == "array"
-        and tuple(node["shape"]) == tuple(shape)
-        and node["data_type"] == dtype
-        and node["fill_value"] == fill
-        and node.get("dimension_names") == names
-    )
-
-
 def _children(nodes, key):
     prefix = key + "/"
     return {
@@ -789,172 +778,6 @@ def _children(nodes, key):
         for p in nodes
         if p.startswith(prefix) and "/" not in p[len(prefix) :]
     }
-
-
-def _check_root(path, nodes):
-    root = nodes[""]
-    assert root["attributes"] == {"tsz": {"version": "1.0"}}
-    assert not any(
-        "version" in n["attributes"].get("tsz", {})
-        for p, n in nodes.items()
-        if p
-    )
-    consolidated = root["consolidated_metadata"]
-    assert consolidated["kind"] == "inline"
-    assert consolidated["must_understand"] is False
-    assert set(consolidated["metadata"]) == set(nodes) - {""}
-    for p, entry in consolidated["metadata"].items():
-        stored = {
-            k: v for k, v in nodes[p].items() if k != "consolidated_metadata"
-        }
-        listed = {
-            k: v for k, v in entry.items() if k != "consolidated_metadata"
-        }
-        assert listed == stored, p
-    assert all(
-        isinstance(n["attributes"].get("tsz"), dict)
-        for n in nodes.values()
-        if n.get("attributes")
-    )
-    texts = [(path / p / "zarr.json").read_text() for p in nodes]
-    assert not any(re.search(r"\d{4}-\d{2}-\d{2}", text) for text in texts)
-    assert not any("sub-0931" in text for text in texts)
-
-
-def _check_continuous(nodes, key, attrs):
-    rate = attrs["rate_hz"]
-    assert rate > 0
-    assert isinstance(attrs["offset_us"], int)
-    samples = nodes[f"{key}/raw"]["shape"][0]
-    assert _array_ok(nodes[f"{key}/raw"], (samples,), "float32", ["time"])
-    levels = sorted(int(c) for c in _children(nodes, key) if c.isdigit())
-    assert levels == list(range(1, len(levels) + 1))
-    for k in levels:
-        level_attrs = nodes[f"{key}/{k}"]["attributes"]["tsz"]
-        period = level_attrs["period_us"]
-        assert "offset_us" not in level_attrs
-        assert math.isclose(period, 4**k * 1e6 / rate, rel_tol=1e-12)
-        members = _children(nodes, f"{key}/{k}")
-        assert (
-            {"minmax", "mean", "count"}
-            <= members
-            <= {
-                "minmax",
-                "mean",
-                "var",
-                "count",
-            }
-        )
-        bins = math.ceil(samples / 4**k)
-        expected = {
-            "minmax": ((bins, 2), "float32", ["time", None]),
-            "mean": ((bins,), "float32", ["time"]),
-            "var": ((bins,), "float32", ["time"]),
-            "count": ((bins,), "uint32", ["time"]),
-        }
-        for member in members:
-            assert _array_ok(nodes[f"{key}/{k}/{member}"], *expected[member])
-
-
-def _check_count_levels(nodes, key, events, labels, categories):
-    levels = sorted(int(c) for c in _children(nodes, key) if c.isdigit())
-    assert levels == list(range(1, len(levels) + 1))
-    data = open_group(PATH_HOLDER["path"])[key]
-    previous = None
-    for k in levels:
-        level_attrs = nodes[f"{key}/{k}"]["attributes"]["tsz"]
-        period = level_attrs["period_us"]
-        offset = level_attrs["offset_us"]
-        assert isinstance(offset, int) and offset % period == 0
-        assert _children(nodes, f"{key}/{k}") == {"count"}
-        node = nodes[f"{key}/{k}/count"]
-        bins = node["shape"][0]
-        assert _array_ok(node, (bins, categories), "uint32", ["time", None])
-        counts = data[str(k)]["count"][:]
-        assert offset <= events[0] and offset + bins * period > events[-1]
-        assert (
-            counts.sum(axis=0).tolist()
-            == np.bincount(labels, minlength=categories).tolist()
-        )
-        if previous is None:
-            rung = int(period)
-            while rung % 4 == 0 and rung > 1000:
-                rung //= 4
-            assert float(period).is_integer() and rung == 1000
-        else:
-            assert period == 4 * previous
-        previous = period
-
-
-PATH_HOLDER = {}
-
-
-def _check_text_and_channels(nodes, key, data, n, group_keys):
-    text = nodes.get(f"{key}/text")
-    if text is not None:
-        width = text["shape"][1]
-        assert _array_ok(text, (n, width), "uint8", ["event", None])
-        rows = [bytes(row).rstrip(b"\0") for row in data["text"][:]]
-        assert all(b"\0" not in row for row in rows)
-        assert max(len(row.decode("utf-8")) for row in rows) <= width
-        assert max(len(row) for row in rows) == width
-    channels = nodes.get(f"{key}/channels")
-    if channels is not None:
-        width = (max(group_keys) + 1 + 7) // 8
-        assert _array_ok(channels, (n, width), "uint8", ["event", None])
-        bits = np.unpackbits(data["channels"][:], axis=1, bitorder="little")
-        assert set(np.flatnonzero(bits.any(axis=0)).tolist()) <= set(group_keys)
-
-
-def _check_event(path, nodes, key, attrs, group_keys):
-    n = nodes[f"{key}/events"]["shape"][0]
-    assert _array_ok(nodes[f"{key}/events"], (n,), "int64", ["event"])
-    data = open_group(path)[key]
-    events = data["events"][:]
-    assert (np.diff(events) >= 0).all()
-    arrays = {c for c in _children(nodes, key) if not c.isdigit()}
-    assert arrays <= {
-        "events",
-        "durations",
-        "labels",
-        "text",
-        "channels",
-        "waveform_mean",
-    }
-    assert all(
-        nodes[f"{key}/{a}"]["shape"][0] == n for a in arrays - {"waveform_mean"}
-    )
-    labels = data["labels"][:] if "labels" in arrays else None
-    names = attrs.get("label_names")
-    categories = (
-        len(names)
-        if names
-        else (int(labels.max()) + 1 if labels is not None else 1)
-    )
-    if labels is not None:
-        assert _array_ok(nodes[f"{key}/labels"], (n,), "uint16", ["event"])
-        assert int(labels.max()) < categories
-    if "durations" in arrays:
-        durations = data["durations"][:]
-        assert _array_ok(nodes[f"{key}/durations"], (n,), "int64", ["event"])
-        assert (
-            durations.min() >= 0 and durations.max() <= attrs["max_duration_us"]
-        )
-    if "waveform_mean" in arrays:
-        node = nodes[f"{key}/waveform_mean"]
-        assert _array_ok(node, tuple(node["shape"]), "float32", ["label", None])
-        assert node["shape"][0] == categories and labels is not None
-        assert node["attributes"]["tsz"]["period_us"] > 0
-    _check_text_and_channels(nodes, key, data, n, group_keys)
-    if any(c.isdigit() for c in _children(nodes, key)):
-        PATH_HOLDER["path"] = path
-        _check_count_levels(
-            nodes,
-            key,
-            events,
-            labels if labels is not None else np.zeros(n, int),
-            categories,
-        )
 
 
 def _check_recording(path, nodes):
@@ -973,32 +796,70 @@ def _check_recording(path, nodes):
     return times
 
 
-def _check_provenance(nodes):
-    holders = [
-        path
-        for path, node in nodes.items()
-        if "provenance" in node.get("attributes", {}).get("tsz", {})
-    ]
-    assert all(path and "/" not in path for path in holders)
-    for path in holders:
-        assert isinstance(nodes[path]["attributes"]["tsz"]["provenance"], dict)
+def _check_privacy(path, nodes):
+    """Check that no zarr.json holds a datetime or the subject of the recording."""
+    texts = [(path / p / "zarr.json").read_text() for p in nodes]
+    assert not any(re.search(r"\d{4}-\d{2}-\d{2}", text) for text in texts)
+    assert not any("sub-0931" in text for text in texts)
+
+
+def _check_count_ladder(nodes):
+    """Check that each event channel has the recommended count level ladder."""
+    ladders = {}
+    for key, node in nodes.items():
+        channel, _, level = key.partition("/")
+        if (
+            level.isdigit()
+            and nodes[channel]["attributes"]["tsz"]["kind"] == "event"
+        ):
+            period = node["attributes"]["tsz"]["period_us"]
+            ladders.setdefault(channel, {})[int(level)] = period
+    for ladder in ladders.values():
+        periods = [ladder[level] for level in sorted(ladder)]
+        rung = periods[0]
+        while rung % 4 == 0 and rung > 1000:
+            rung //= 4
+        assert rung == 1000
+        assert all(b == 4 * a for a, b in zip(periods, periods[1:]))
+
+
+_FIRST_DIMENSION = {
+    "raw": "time",
+    "minmax": "time",
+    "mean": "time",
+    "var": "time",
+    "count": "time",
+    "runs": "run",
+    "events": "event",
+    "durations": "event",
+    "labels": "event",
+    "values": "event",
+    "text": "event",
+    "channels": "event",
+    "waveforms": "event",
+    "waveform_mean": "label",
+}
+
+
+def _check_dimension_names(nodes):
+    """Check the dimension names of every array (section 7.5)."""
+    for key, node in nodes.items():
+        name = key.rpartition("/")[2]
+        if node["node_type"] == "array" and name in _FIRST_DIMENSION:
+            trailing = [None] * (len(node["shape"]) - 1)
+            assert node["dimension_names"] == [
+                _FIRST_DIMENSION[name],
+                *trailing,
+            ]
 
 
 def _validate_bundle(path):
-    """Check a bundle against the specification's validation list."""
+    """Validate the bundle fully and return the zarr.json of each node."""
+    assert validate_bundle(path, full=True) == []
     nodes = _read_nodes(path)
-    _check_root(path, nodes)
-    _check_provenance(nodes)
-    group_keys = sorted(int(p) for p in nodes if p and "/" not in p)
-    for key in map(str, group_keys):
-        assert key == str(int(key))
-        attrs = nodes[key]["attributes"]["tsz"]
-        assert isinstance(attrs["name"], str)
-        if attrs["kind"] == "continuous":
-            _check_continuous(nodes, key, attrs)
-        else:
-            assert attrs["kind"] == "event"
-            _check_event(path, nodes, key, attrs, group_keys)
+    _check_privacy(path, nodes)
+    _check_count_ladder(nodes)
+    _check_dimension_names(nodes)
     return nodes
 
 

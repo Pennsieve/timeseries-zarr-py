@@ -117,6 +117,17 @@ extra, and a remote URL requires the `remote` extra.
 [Reading bundles](https://github.com/Pennsieve/timeseries-zarr-py/blob/main/docs/reading.md)
 covers windows, levels, event channels, stacking, remote stores, and rewriting a bundle.
 
+### Validating
+
+`validate_bundle` checks a bundle against the specification and returns one `Finding`
+for each violation. Pass `full=True` to also recompute the statistics from the samples.
+The same check runs from the command line, which prints one finding per line and exits
+with status 1 when it finds any.
+
+```bash
+python -m timeseries_zarr.validate sine.zarr --full
+```
+
 ## Development
 
 ```bash

@@ -226,3 +226,21 @@ class WriteOpts:
                 "write_var adds var to every level and max_levels 0 writes no "
                 "level; set max_levels to 1 or more, or write_var to False"
             )
+
+
+@dataclass(frozen=True, slots=True)
+class Finding:
+    """One requirement of docs/spec.md that a bundle violates.
+
+    Attributes:
+        path: The node or file the violation lies in, relative to the bundle
+            root, such as "0/1/mean" or "recording.json". The empty string
+            names the root group.
+        section: The section of docs/spec.md that states the violated
+            requirement, such as "4.2".
+        message: What is wrong and what is valid, on one line.
+    """
+
+    path: str
+    section: str
+    message: str

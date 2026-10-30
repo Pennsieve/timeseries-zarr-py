@@ -43,10 +43,12 @@ from timeseries_zarr.sources import bundle_sources, recording_meta
 from timeseries_zarr.stack import BinMember, Stack
 from timeseries_zarr.types import (
     EventColumn,
+    Finding,
     RecordingMeta,
     VoltagePolicy,
     WriteOpts,
 )
+from timeseries_zarr.validator import validate_bundle
 
 try:
     from timeseries_zarr._version import version as __version__
@@ -71,6 +73,7 @@ __all__ = [
     "EventChannelSource",
     "EventColumn",
     "EventTable",
+    "Finding",
     "Level",
     "MultiChannelSource",
     "Recording",
@@ -93,5 +96,6 @@ __all__ = [
     "open_bundle",
     "recording_meta",
     "text_width",
+    "validate_bundle",
     "write_bundle",
 ]

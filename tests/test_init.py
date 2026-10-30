@@ -23,6 +23,7 @@ PUBLIC_NAMES = {
     "EventChannelSource",
     "EventColumn",
     "EventTable",
+    "Finding",
     "Level",
     "MultiChannelSource",
     "Recording",
@@ -45,6 +46,7 @@ PUBLIC_NAMES = {
     "open_bundle",
     "recording_meta",
     "text_width",
+    "validate_bundle",
     "write_bundle",
 }
 
