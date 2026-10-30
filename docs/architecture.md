@@ -34,10 +34,12 @@ with no I/O. `planning.py` decides how many levels a continuous channel gets, nu
 level's bin count and `period_us`. `sizing.py` decides the inner chunk and outer shard
 shapes for one array. Every member of a level takes the row counts of its `minmax` array.
 
-`counts.py` plans the count levels of a dense event channel. Level 1 takes its period
-from a ladder of `1000 * decimation_factor^j` microseconds, and each level above it spans
-`decimation_factor` times the time.
-`columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows.
+`counts.py` plans the count levels of a dense event channel. Level 1 takes an integer
+period from a ladder of `1000 * decimation_factor^j` microseconds, and each level above
+it spans `decimation_factor` times the time. Every count level carries an `offset_us`
+that is a multiple of its period.
+`columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows. An
+event that names no channel gets a row of zero bytes.
 `units.py` resolves the factor and stored unit of a continuous channel.
 `runs.py` holds `Run`, the span of samples that a source states, and `place_runs`, which
 puts the runs of a channel on its sample grid. It picks the grid index of each run in exact
@@ -52,14 +54,15 @@ without touching a store.
 ## Numeric core
 
 `fold.py` reduces one level to the next over disjoint blocks of `decimation_factor` rows.
-`Statistics` holds the minimum, maximum, mean, population variance, and count of finite
-samples of consecutive bins, as one float64 array each. `fold_raw` and
+`Statistics` holds the minimum, maximum, mean, population variance, and count of the
+finite samples of consecutive bins, as one float64 array each. A bin with no finite
+sample has a count of 0 and NaN in the other four. `fold_raw` and
 `fold_statistics` fold it on column views, and `Statistics.members` converts it to the
 member arrays a level stores. A `LevelFolder` holds the state of one channel's pyramid.
 It folds raw samples into every level as they arrive and emits one chunk of every member
 each time a level fills `inner_len` rows. A level never holds more than one chunk of
-pending rows. See
-[the format spec](./spec.md) for the exact rules and the NaN behavior.
+pending rows. A level folds from the children
+with a count above 0. See [the format spec](./spec.md#44-statistics) for the exact rules.
 
 `streaming.py` reads a source in blocks and re-cuts block streams. The count levels of an
 event channel use it.
@@ -121,9 +124,9 @@ datetimes.
 
 ## Orchestration
 
-`bundle.py` runs the whole job. It assigns each channel a key. It finds the reference
+`bundle.py` runs the whole job. It assigns each channel an index. It finds the reference
 time, the earlier of the session start and the first sample, and maps channel ids to
-keys. Event channels use that map to name the channels they apply to. It checks each
+channel indices. Event channels use that map to name the channels they apply to. It checks each
 channel's unit and provenance before it clears `output_path`. It then writes each
 channel, consolidates the metadata, and writes `recording.json`.
 
@@ -142,8 +145,9 @@ the window reads of that kind. `windows.py` maps a time window to a range of sam
 or bins in exact fractions and computes the float64 time axis of a result. For a channel
 with a `runs` table it maps windows and indices through the exact times of the runs. The parsers
 also read channel and level numbers from group names through it. `attrs.py` parses the
-`tsz` attributes beside its builders, and `columns.py` decodes the `text` and
-`channels` rows.
+`tsz` attributes beside its builders and applies the time bound `TIME_LIMIT_US`.
+`read_continuous.py` checks the period of each level against the sample rate within
+`LEVEL_PERIOD_TOLERANCE`. `columns.py` decodes the `text` and `channels` rows.
 
 `convert.py` turns read results into pandas and xarray objects. `extras.py` imports
 each package when a conversion runs and raises `ImportError` naming the extra when the
@@ -164,3 +168,10 @@ recomputes the statistics from `raw`, the events, and the waveforms in blocks. I
 only when `full` is set. `validate.py` is the entry point of `python -m
 timeseries_zarr.validate`. It stays out of `__init__.py` so that running it as a module
 does not import it twice.
+
+`scripts/build_fixtures.py` writes the conformance fixtures into `conformance/`, with a
+`manifest.json` that lists what each fixture exercises, the values a reader can assert,
+and the findings that full validation reports. `make fixtures` runs it, and
+Git tracks only the manifest and ignores the bundles. `tests/test_conformance.py` builds
+the bundles in a temporary directory, checks that two runs write the same bytes, and
+checks that the committed manifest is what the script writes.

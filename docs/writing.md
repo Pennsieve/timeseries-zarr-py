@@ -43,6 +43,22 @@ windows until they hold 262,144 rows of a channel or 64 MiB, so a batch holds at
 `timeseries_zarr.UNIT_TO_UV` maps each voltage unit name to its factor to microvolts.
 The writer keeps every other unit as given.
 
+## Times
+
+A source gives every time in microseconds since the Unix epoch. The writer stores each
+time as an offset from the reference time, the earlier of the session start and the
+first sample, so a time before it is negative. Every stored time, duration, interval
+end, and channel offset must lie in the open interval (-2^53, 2^53) microseconds, and
+an event channel must hold fewer than 2^32 events. `write_bundle` raises `ValueError`
+for a value outside these bounds. It checks what it can before it clears
+`output_path`, and it checks each event time and interval end as it writes the arrays.
+
+An interval covers the half-open span `[time, time + duration)`. An event channel with
+enough events also gets count levels. The `period_us` of a count level is an integer
+and a multiple of at least 2 of the `period_us` of the level below it. Its `offset_us`
+is a multiple of its `period_us`. A count level counts an interval in the bin of its
+start only.
+
 ## Pauses and runs
 
 A recording that pauses and resumes is a list of runs. A run is a span of samples one
@@ -236,11 +252,14 @@ write_bundle(
 )
 ```
 
-Each channel has a key that names its group in the bundle. Keys count up from 0 through
-the continuous sources in list order and then the event sources. A multi-channel source
-takes one key for each channel, in channel order. A list of one single-channel source and
-one three-channel source, with one event source, uses the keys 0 through 3 for the
-continuous channels and the key 4 for the event channel.
+Each channel has a channel index that names its group in the bundle. Indices count up
+from 0 through the continuous sources in list order and then the event sources. A
+multi-channel source takes one index for each channel, in channel order. A list of one
+single-channel source and one three-channel source, with one event source, uses the
+indices 0 through 3 for the continuous channels and the index 4 for the event channel.
+An event source names the channels of each event by id, and the writer sets the bit of
+each channel index in the `channels` column. An event that names no channel gets a row
+of zero bytes, which means it applies to no channel.
 
 While it sweeps, the writer holds `channel_writer_bytes(opts)` for each channel, plus two
 batches of windows. At the defaults, 256 channels hold about 1.4 GiB of channel state.
