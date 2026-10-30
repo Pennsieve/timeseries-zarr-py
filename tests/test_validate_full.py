@@ -3,6 +3,8 @@ import pytest
 import zarr
 from zarr.storage import MemoryStore
 
+from tests.conftest import ArrayContinuousSource
+from timeseries_zarr import WriteOpts, validate_bundle, write_bundle
 from timeseries_zarr.validate_full import (
     LevelArrays,
     _bin_statistics,
@@ -129,13 +131,37 @@ def test_infinity_fails_against_a_finite_reference():
     assert not _passes(np.inf, 1.0, 1.0, variance=True)
 
 
-def test_the_mean_tolerance_scales_with_the_larger_of_the_mean_and_max_abs():
+def test_the_mean_tolerance_scales_with_max_abs():
     limit = 2.0**-20
     assert _passes(1000.0 + 0.9 * limit * 5000, 1000.0, 5000.0)
     assert not _passes(1000.0 + 1.5 * limit * 5000, 1000.0, 5000.0)
     # A mean near 0 of samples of large magnitude gets the max_abs scale.
     assert _passes(0.9 * limit * 5000, 0.0, 5000.0)
     assert not _passes(1.5 * limit * 5000, 0.0, 5000.0)
+
+
+def test_a_reference_that_rounds_to_the_float32_maximum_passes_the_maximum():
+    reference = 3.4028234703623886e38
+    assert reference > FLOAT32_MAXIMUM
+    assert _passes(FLOAT32_MAXIMUM, reference, 2e19, variance=True)
+    assert not _passes(np.inf, reference, 2e19, variance=True)
+
+
+def test_an_infinite_stored_value_fails_even_within_the_bound():
+    assert not _passes(np.inf, 3.0e38, 3.0e38)
+    assert not _passes(np.inf, 3.0e38, 3.0e38, variance=True)
+
+
+def test_the_subnormal_floor_lets_a_denormal_mean_pass():
+    tiny = float(np.float32(1e-40))
+    assert _passes(tiny, 1.000001e-40, 1e-40)
+    assert _passes(0.0, 2.0**-150, 2.0**-150)
+    assert not _passes(0.0, 2.0**-148, 2.0**-148)
+
+
+def test_a_stored_nan_fails_against_a_finite_reference():
+    assert not _passes(NAN, 1.0, 1.0)
+    assert not _passes(NAN, 1.0, 1.0, variance=True)
 
 
 def test_the_variance_tolerance_has_a_floor_from_max_abs():
@@ -392,3 +418,29 @@ def test_a_label_at_or_above_the_label_count_is_ignored_by_waveform_mean():
         check_waveform_mean("w", _array(waveforms), _array(mean), labels, 3)
         == []
     )
+
+
+# Bundles.
+
+
+def _write_channel(tmp_path, samples):
+    path = tmp_path / "bundle"
+    write_bundle(
+        [ArrayContinuousSource(samples, rate_hz=1000.0)],
+        [],
+        output_path=path,
+        opts=WriteOpts(write_var=True, min_bins=1, max_levels=1),
+    )
+    return path
+
+
+def test_a_variance_that_rounds_to_the_float32_maximum_validates(tmp_path):
+    samples = [1.7119847e19, -1.7119847e19, 1.9684398e19, -1.9684398e19]
+    path = _write_channel(tmp_path, samples)
+    assert validate_bundle(path, full=True) == []
+
+
+def test_subnormal_statistics_validate(tmp_path):
+    samples = [1.0e-40, 1.2e-40, 0.9e-40, 1.1e-40]
+    path = _write_channel(tmp_path, samples)
+    assert validate_bundle(path, full=True) == []
