@@ -133,20 +133,26 @@ def test_count_level_constants_follow_the_spec():
     assert COUNT_LADDER_BASE_US == 1000
 
 
-def test_unit_to_uv_factors():
-    assert UNIT_TO_UV["volts"] == 1e6
-    assert UNIT_TO_UV["v"] == 1e6
-    assert UNIT_TO_UV["millivolts"] == 1e3
-    assert UNIT_TO_UV["mv"] == 1e3
-    assert UNIT_TO_UV["microvolts"] == 1.0
-    assert UNIT_TO_UV["uv"] == 1.0
+def test_unit_to_uv_pins_the_mapping():
+    assert UNIT_TO_UV == {
+        "V": 1e6,
+        "mV": 1e3,
+        "uV": 1.0,
+        "nV": 1e-3,
+        "volts": 1e6,
+        "millivolts": 1e3,
+        "microvolts": 1.0,
+        "nanovolts": 1e-3,
+    }
 
 
-def test_unit_to_uv_aliases_agree():
-    assert UNIT_TO_UV["v"] == UNIT_TO_UV["volts"]
-    assert UNIT_TO_UV["mv"] == UNIT_TO_UV["millivolts"]
-    assert UNIT_TO_UV["uv"] == UNIT_TO_UV["microvolts"]
+def test_unit_to_uv_spelled_names_agree_with_symbols():
+    assert UNIT_TO_UV["V"] == UNIT_TO_UV["volts"]
+    assert UNIT_TO_UV["mV"] == UNIT_TO_UV["millivolts"]
+    assert UNIT_TO_UV["uV"] == UNIT_TO_UV["microvolts"]
+    assert UNIT_TO_UV["nV"] == UNIT_TO_UV["nanovolts"]
 
 
-def test_unit_to_uv_keys_lowercase():
-    assert all(k == k.lower() for k in UNIT_TO_UV)
+def test_unit_to_uv_has_no_megavolt_key():
+    assert "MV" not in UNIT_TO_UV
+    assert "Mv" not in UNIT_TO_UV

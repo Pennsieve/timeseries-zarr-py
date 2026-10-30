@@ -59,6 +59,7 @@ from timeseries_zarr.streaming import (
     regroup,
 )
 from timeseries_zarr.types import ChunkShard, LevelPlan, WriteOpts
+from timeseries_zarr.units import resolve_unit
 from timeseries_zarr.zarr_io import (
     ZarrArray,
     ZarrGroup,
@@ -469,7 +470,8 @@ def _labels_in_use(
 def write_waveform_mean_array(
     group: ZarrGroup,
     source: EventChannelSource,
-    zstd_level: int,
+    opts: WriteOpts,
+    factor: float = 1.0,
 ) -> ZarrArray:
     """Create the waveform_mean array under group and write the source's means.
 
@@ -479,13 +481,15 @@ def write_waveform_mean_array(
     and event_sample, the snippet sample at the event time, when the source
     defines waveform_event_sample as WaveformEventSampleSource declares it and
     the index is above 0. A label that has no events has a row of NaN whatever
-    the source holds for it. The array has one row per label, so it is sized with the default chunk and
-    shard targets and written whole.
+    the source holds for it. A wide row shrinks the chunk so that one chunk
+    stays within opts.target_shard_bytes. The array is written whole.
 
     Args:
         group: Channel group to create the array in.
         source: Source of the means, the sample period, and the labels.
-        zstd_level: Zstandard compression level.
+        opts: Chunk and shard targets and compression level.
+        factor: Scale from the unit of the source to the stored unit. The
+            means are multiplied by it in float64 and cast to float32 once.
 
     Returns:
         The created array.
@@ -496,7 +500,7 @@ def write_waveform_mean_array(
             if the period is not finite and positive or the event sample is
             outside the samples.
     """
-    means = np.asarray(source.waveform_mean(), dtype=np.float32)
+    means = np.asarray(source.waveform_mean())
     if len(means.shape) != WAVEFORM_MEAN_RANK:
         raise ValueError(
             f"waveform_mean has shape (labels, samples), got {means.shape}"
@@ -510,13 +514,13 @@ def write_waveform_mean_array(
             f"{source.num_labels()} label categories"
         )
     in_use = _labels_in_use(source, labels)
-    means = means.copy()
+    means = (means.astype(np.float64) * factor).astype(np.float32)
     means[~in_use] = np.nan
     event_sample = source_waveform_event_sample(source)
     attrs = waveform_array_attrs(
         source.waveform_period_us(), event_sample or None, samples=samples
     )
-    sizing = chunk_and_shard(means.shape, FLOAT32_BYTES)
+    sizing = _row_sizing(labels, samples, FLOAT32_BYTES, opts)
     array = create_array(
         group,
         WAVEFORM_MEAN_KEY,
@@ -525,7 +529,7 @@ def write_waveform_mean_array(
         sizing.chunk_shape,
         sizing.shard_shape,
         attrs,
-        zstd_level,
+        opts.zstd_level,
         dimension_names=(LABEL_DIMENSION, None),
     )
     write_region(array, 0, means)
@@ -794,7 +798,8 @@ def write_event_channel(
     the source's provenance, and, when the source provides the column,
     label_names and the duration bound max_duration_us. The events array
     comes first, then each optional column the source names in columns(),
-    then the count levels of a dense channel.
+    then the count levels of a dense channel. A source unit resolves through
+    resolve_unit, which scales waveform_mean to microvolts for a voltage unit.
 
     Args:
         parent: Group to create the channel group in.
@@ -809,7 +814,8 @@ def write_event_channel(
 
     Raises:
         ValueError: If the source offers waveform_mean without labels, its
-            provenance is not a JSON object of finite values, or
+            unit is a voltage unit other than "uV" under voltage_policy
+            require_uv, its provenance is not a JSON object of finite values, or
             check_event_channel rejects it, and whatever the column writers
             raise for data that breaks the format.
     """
@@ -817,13 +823,18 @@ def write_event_channel(
     columns = source.columns()
     if "waveform_mean" in columns and "labels" not in columns:
         raise ValueError("waveform_mean requires a labels column")
+    resolved = (
+        None
+        if source.unit is None
+        else resolve_unit(source.unit, opts.voltage_policy)
+    )
     group = create_group_with_attrs(
         parent,
         str(index),
         event_channel_attrs(
             source.name,
             source.id,
-            source.unit,
+            None if resolved is None else resolved.unit,
             source.label_names() if "labels" in columns else None,
             source.max_duration_us() if "durations" in columns else None,
             source_provenance(source),
@@ -866,5 +877,7 @@ def write_event_channel(
             opts.zstd_level,
         )
     if "waveform_mean" in columns:
-        write_waveform_mean_array(group, source, opts.zstd_level)
+        write_waveform_mean_array(
+            group, source, opts, 1.0 if resolved is None else resolved.factor
+        )
     write_count_levels(group, source, reference_us, opts)

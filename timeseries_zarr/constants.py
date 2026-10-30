@@ -163,14 +163,20 @@ EVENTS_SEARCH_LIMIT_BYTES: Final = 2**20
 """Largest events array in bytes (1 MiB) that a window search reads whole."""
 
 UNIT_TO_UV: Final = {
+    "V": 1e6,
+    "mV": 1e3,
+    "uV": 1.0,
+    "nV": 1e-3,
     "volts": 1e6,
-    "v": 1e6,
     "millivolts": 1e3,
-    "mv": 1e3,
     "microvolts": 1.0,
-    "uv": 1.0,
+    "nanovolts": 1e-3,
 }
-"""Conversion factors from a volts-family unit name to microvolts."""
+"""Conversion factors from a voltage unit to microvolts.
+
+The symbols V, mV, uV, and nV match exactly, so "MV" and "Mv" are not voltage
+units. The spelled-out names are lowercase and match without regard to case.
+"""
 
 
 def max_levels_for(decimation_factor: int) -> int:
