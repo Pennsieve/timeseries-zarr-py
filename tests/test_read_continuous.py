@@ -824,19 +824,48 @@ def test_parse_accepts_dtypes_of_the_right_kind_at_any_width():
 
 def test_parse_accepts_a_period_within_the_tolerance():
     nodes = _hand_nodes(levels=1)
-    stated = level_period_us(_HAND_RATE_HZ, 4) * (1 + 1e-12)
+    stated = level_period_us(_HAND_RATE_HZ, 4) * (1 + 5e-13)
     nodes["1"] = level_group_attrs(stated)
     assert _hand_parse(nodes).levels[1].period_us == stated
 
 
-def test_parse_rejects_a_period_outside_the_tolerance():
+@pytest.mark.parametrize("excess", [2e-12, 1e-9, 1e-8])
+def test_parse_rejects_a_period_outside_the_tolerance(excess):
     nodes = _hand_nodes(levels=1)
     nodes["1"] = level_group_attrs(
-        level_period_us(_HAND_RATE_HZ, 4) * (1 + 1e-8)
+        level_period_us(_HAND_RATE_HZ, 4) * (1 + excess)
     )
     with pytest.raises(
         ValueError, match=r"channel 0 level 1: tsz\.period_us must be"
     ):
+        _hand_parse(nodes)
+
+
+def _hand_parse_30_khz(stated_us):
+    nodes = _hand_nodes(levels=0)
+    nodes["1"] = level_group_attrs(stated_us)
+    attributes = continuous_channel_attrs(
+        "hand", "hand-0", 30_000.0, 0, "uV", None
+    )
+    nodes["1/minmax"] = np.zeros((level_bins(_HAND_SAMPLES, 4), 2), np.float32)
+    return _hand_parse(nodes, attributes)
+
+
+def test_parse_accepts_a_30_khz_period_rounded_to_13_digits():
+    channel = _hand_parse_30_khz(133.3333333333333)
+    assert channel.levels[1].samples_per_bin == 4
+
+
+def test_parse_rejects_a_30_khz_period_off_by_a_part_in_a_billion():
+    with pytest.raises(ValueError, match=r"level 1: tsz\.period_us must be"):
+        _hand_parse_30_khz(133.3333333333333 * (1 + 1e-9))
+
+
+def test_parse_rejects_a_level_as_wide_as_2_to_the_32_samples():
+    nodes = _hand_nodes(levels=0)
+    nodes["1"] = level_group_attrs(level_period_us(_HAND_RATE_HZ, 2**32))
+    nodes["1/minmax"] = np.zeros((1, 2), np.float32)
+    with pytest.raises(ValueError, match="from 2 to 4294967295"):
         _hand_parse(nodes)
 
 
@@ -861,7 +890,8 @@ def test_parse_rejects_a_period_that_is_not_a_whole_number_of_samples():
     nodes["1"] = level_group_attrs(2.5e6 / _HAND_RATE_HZ)
     message = (
         "channel 0 level 1: tsz.period_us must be a whole number of "
-        "samples, at least 2, at rate_hz 512.0, got 4882.8125"
+        "samples, from 2 to 4294967295, at rate_hz 512.0, within 1e-12 "
+        "relative, got 4882.8125"
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         _hand_parse(nodes)
@@ -872,7 +902,8 @@ def test_parse_rejects_a_level_one_sample_wide():
     nodes["1"] = level_group_attrs(1e6 / _HAND_RATE_HZ)
     message = (
         "channel 0 level 1: tsz.period_us must be a whole number of "
-        "samples, at least 2, at rate_hz 512.0, got 1953.125"
+        "samples, from 2 to 4294967295, at rate_hz 512.0, within 1e-12 "
+        "relative, got 1953.125"
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         _hand_parse(nodes)
@@ -986,7 +1017,8 @@ def test_parse_rejects_a_period_that_does_not_match_the_rate():
     nodes["2"] = level_group_attrs(31_281.25)
     message = (
         "channel 0 level 2: tsz.period_us must be a whole number of "
-        "samples, at least 2, at rate_hz 512.0, got 31281.25"
+        "samples, from 2 to 4294967295, at rate_hz 512.0, within 1e-12 "
+        "relative, got 31281.25"
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         _hand_parse(nodes)

@@ -5,6 +5,7 @@ import pytest
 
 from timeseries_zarr.recording import (
     RECORDING_FILE,
+    check_recording_document,
     epoch_us,
     recording_document,
     reference_time_us,
@@ -202,6 +203,36 @@ def test_write_recording_json_requires_an_existing_directory(tmp_path):
 def test_write_recording_json_rejects_a_value_that_is_not_json(tmp_path):
     with pytest.raises(TypeError):
         write_recording_json(tmp_path, {"subject": {"tags": {1, 2}}})
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_write_recording_json_rejects_a_number_that_is_not_finite(
+    tmp_path, value
+):
+    with pytest.raises(
+        ValueError, match=r"recording\.json must hold only finite"
+    ):
+        write_recording_json(tmp_path, {"subject": {"weight_kg": value}})
+    assert not (tmp_path / RECORDING_FILE).exists()
+
+
+def test_check_recording_document_accepts_a_document_of_finite_numbers():
+    check_recording_document({"subject": {"weight_kg": 71.5}, "source": {}})
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_check_recording_document_rejects_a_number_that_is_not_finite(value):
+    with pytest.raises(
+        ValueError, match=r"recording\.json must hold only finite"
+    ):
+        check_recording_document({"session": {"gains": [1.0, value]}})
+
+
+def test_check_recording_document_rejects_a_value_that_is_not_json():
+    with pytest.raises(
+        ValueError, match=r"recording\.json must hold only JSON"
+    ):
+        check_recording_document({"subject": {"tags": {1, 2}}})
 
 
 def test_epoch_us_is_exact_microseconds_since_the_epoch():

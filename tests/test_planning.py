@@ -119,6 +119,16 @@ def test_level_bins_exact_for_huge_num_samples():
     assert level_bins(2**53 + 1, 4) == 2**51 + 1
 
 
+@pytest.mark.parametrize("rate_hz", [float("nan"), float("inf"), 0.0, -1.0])
+def test_plan_levels_rejects_a_rate_that_is_not_finite_and_positive(rate_hz):
+    with pytest.raises(ValueError, match="rate_hz must be finite and positive"):
+        plan_levels(0, rate_hz)
+    with pytest.raises(ValueError, match="rate_hz must be finite and positive"):
+        level_period_us(rate_hz, 4)
+    with pytest.raises(ValueError, match="rate_hz must be finite and positive"):
+        sample_period_us(rate_hz)
+
+
 @pytest.mark.parametrize("samples_per_bin", [1, 0, -4])
 def test_level_bins_rejects_a_width_below_2(samples_per_bin):
     with pytest.raises(ValueError, match="samples_per_bin"):

@@ -481,7 +481,11 @@ def test_odd_bundle_channel_9_count_level_counts_each_label_per_bin(
     events = channel["events"][:]
     labels = channel["labels"][:]
     counts = channel["1"]["count"][:]
-    assert _tsz(channel["1"]) == {"period_us": float(ODD_COUNT_PERIOD_US)}
+    assert _tsz(channel["1"]) == {"period_us": ODD_COUNT_PERIOD_US}
+    assert type(_tsz(channel["1"])["period_us"]) is int
+    stored = json.loads((odd_bundle / "9" / "1" / "zarr.json").read_text())
+    assert stored["attributes"]["tsz"]["period_us"] == ODD_COUNT_PERIOD_US
+    assert isinstance(stored["attributes"]["tsz"]["period_us"], int)
     assert counts.shape[0] == events[-1] // ODD_COUNT_PERIOD_US + 1
     for label in range(ODD_LABELS):
         bins = events[labels == label] // ODD_COUNT_PERIOD_US

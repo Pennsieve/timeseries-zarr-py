@@ -26,7 +26,7 @@ from timeseries_zarr.attrs import (
     tsz_fields,
     waveform_array_attrs,
 )
-from timeseries_zarr.constants import FORMAT_VERSION
+from timeseries_zarr.constants import FORMAT_VERSION, TIME_LIMIT_US
 from timeseries_zarr.zarr_io import (
     consolidate,
     create_array,
@@ -60,10 +60,26 @@ def test_continuous_channel_attrs_keeps_a_positive_offset():
     assert attrs["tsz"]["offset_us"] == 500_000
 
 
-@pytest.mark.parametrize("rate_hz", [0.0, -1.0])
-def test_continuous_channel_attrs_rejects_a_non_positive_rate(rate_hz):
+@pytest.mark.parametrize("rate_hz", [0.0, -1.0, float("nan"), float("inf")])
+def test_continuous_channel_attrs_rejects_a_rate_that_is_not_finite_and_positive(
+    rate_hz,
+):
     with pytest.raises(ValueError, match="rate_hz"):
         continuous_channel_attrs("c", "i", rate_hz, 0, "uV", None)
+
+
+@pytest.mark.parametrize("offset_us", [2**53, -(2**53)])
+def test_continuous_channel_attrs_rejects_an_offset_at_the_time_limit(
+    offset_us,
+):
+    with pytest.raises(ValueError, match=r"offset_us.*\(-2\^53, 2\^53\)"):
+        continuous_channel_attrs("c", "i", 512.0, offset_us, "uV", None)
+
+
+def test_continuous_channel_attrs_accepts_the_offsets_next_to_the_time_limit():
+    for offset_us in (2**53 - 1, 1 - 2**53):
+        attrs = continuous_channel_attrs("c", "i", 512.0, offset_us, "uV", None)
+        assert attrs["tsz"]["offset_us"] == offset_us
 
 
 def test_continuous_channel_attrs_keeps_a_negative_offset():
@@ -131,6 +147,11 @@ def test_event_channel_attrs_rejects_a_negative_duration_bound():
         event_channel_attrs("m", None, None, None, -1, None)
 
 
+def test_event_channel_attrs_rejects_a_duration_bound_at_the_time_limit():
+    with pytest.raises(ValueError, match=r"max_duration_us.*\(-2\^53, 2\^53\)"):
+        event_channel_attrs("m", None, None, None, 2**53, None)
+
+
 @pytest.mark.parametrize("period_us", [31.25, 125.0, 512000.0])
 def test_level_group_attrs_nests_period_under_tsz(period_us):
     assert level_group_attrs(period_us) == {"tsz": {"period_us": period_us}}
@@ -144,14 +165,44 @@ def test_level_group_attrs_rejects_a_non_positive_period(period_us):
 
 @pytest.mark.parametrize("offset_us", [0, 16_000, -32_000])
 def test_level_group_attrs_writes_a_count_level_offset_on_the_grid(offset_us):
-    assert level_group_attrs(16_000.0, offset_us) == {
-        "tsz": {"period_us": 16_000.0, "offset_us": offset_us}
+    assert level_group_attrs(16_000, offset_us) == {
+        "tsz": {"period_us": 16_000, "offset_us": offset_us}
     }
+
+
+def test_level_group_attrs_writes_a_count_level_period_as_a_json_integer():
+    text = json.dumps(level_group_attrs(64_000, 0))
+    assert text == '{"tsz": {"period_us": 64000, "offset_us": 0}}'
 
 
 def test_level_group_attrs_rejects_an_offset_off_the_grid():
     with pytest.raises(ValueError, match="multiple of period_us"):
-        level_group_attrs(16_000.0, -31_999)
+        level_group_attrs(16_000, -31_999)
+
+
+@pytest.mark.parametrize("period_us", [16_000.0, 1000.5, True])
+def test_level_group_attrs_rejects_a_count_level_period_that_is_not_an_int(
+    period_us,
+):
+    with pytest.raises(ValueError, match="period_us of a count level"):
+        level_group_attrs(period_us, 0)
+
+
+@pytest.mark.parametrize("period_us", [float("nan"), float("inf")])
+def test_level_group_attrs_rejects_a_period_that_is_not_finite(period_us):
+    with pytest.raises(ValueError, match="finite"):
+        level_group_attrs(period_us)
+
+
+@pytest.mark.parametrize(
+    ("period_us", "offset_us"),
+    [(TIME_LIMIT_US, 0), (1000, TIME_LIMIT_US), (1000, -TIME_LIMIT_US)],
+)
+def test_level_group_attrs_rejects_a_count_level_time_at_the_limit(
+    period_us, offset_us
+):
+    with pytest.raises(ValueError, match=r"\(-2\^53, 2\^53\)"):
+        level_group_attrs(period_us, offset_us)
 
 
 @pytest.mark.parametrize("period_us", [31.25, 125.0])
@@ -177,6 +228,25 @@ def test_waveform_array_attrs_rejects_a_non_positive_period():
 def test_waveform_array_attrs_rejects_a_negative_event_sample():
     with pytest.raises(ValueError, match="event_sample"):
         waveform_array_attrs(31.25, -1)
+
+
+@pytest.mark.parametrize("period_us", [float("nan"), float("inf")])
+def test_waveform_array_attrs_rejects_a_period_that_is_not_finite(period_us):
+    with pytest.raises(ValueError, match="finite"):
+        waveform_array_attrs(period_us)
+
+
+@pytest.mark.parametrize("event_sample", [32, 33])
+def test_waveform_array_attrs_rejects_an_event_sample_not_below_the_samples(
+    event_sample,
+):
+    with pytest.raises(ValueError, match="below the 32 samples"):
+        waveform_array_attrs(31.25, event_sample, samples=32)
+
+
+def test_waveform_array_attrs_accepts_the_last_sample_as_the_event_sample():
+    attrs = waveform_array_attrs(31.25, 31, samples=32)
+    assert attrs["tsz"]["event_sample"] == 31
 
 
 def _continuous(provenance):
@@ -287,7 +357,9 @@ _EVENT = {"kind": "event", "name": "marks"}
 _HUGE = 10**400
 _INT64_MAX = 2**63 - 1
 _INTEGER = "an integer from 0 to 2^63 - 1"
-_ANY_INTEGER = "an integer from -2^63 to 2^63 - 1"
+_ANY_INTEGER = "an integer from -(2^53 - 1) to 2^53 - 1"
+_NONNEGATIVE_TIME = "an integer from 0 to 2^53 - 1"
+_POSITIVE_TIME = "an integer from 1 to 2^53 - 1"
 
 
 def test_tsz_fields_returns_the_tsz_object():
@@ -519,6 +591,8 @@ def test_parse_continuous_attrs_rejects_a_missing_required_key(
         ("offset_us", True, _ANY_INTEGER),
         ("offset_us", False, _ANY_INTEGER),
         ("offset_us", None, _ANY_INTEGER),
+        ("offset_us", TIME_LIMIT_US, _ANY_INTEGER),
+        ("offset_us", -TIME_LIMIT_US, _ANY_INTEGER),
         ("offset_us", _INT64_MAX + 1, _ANY_INTEGER),
         ("offset_us", -_INT64_MAX - 2, _ANY_INTEGER),
         ("offset_us", float(_INT64_MAX + 1), _ANY_INTEGER),
@@ -543,11 +617,15 @@ def test_parse_continuous_attrs_rejects_a_group_without_tsz():
         parse_continuous_attrs({}, "channel 0")
 
 
-def test_parse_continuous_attrs_accepts_the_largest_int64_offset():
-    parsed = parse_continuous_attrs(
-        {"tsz": {**_CONTINUOUS, "offset_us": _INT64_MAX}}, "channel 0"
+def test_parse_continuous_attrs_accepts_the_offsets_next_to_the_time_limit():
+    highest = parse_continuous_attrs(
+        {"tsz": {**_CONTINUOUS, "offset_us": TIME_LIMIT_US - 1}}, "channel 0"
     )
-    assert parsed.offset_us == _INT64_MAX
+    assert highest.offset_us == TIME_LIMIT_US - 1
+    lowest = parse_continuous_attrs(
+        {"tsz": {**_CONTINUOUS, "offset_us": 1 - TIME_LIMIT_US}}, "channel 0"
+    )
+    assert lowest.offset_us == 1 - TIME_LIMIT_US
 
 
 def test_parse_continuous_attrs_accepts_a_negative_offset():
@@ -555,35 +633,66 @@ def test_parse_continuous_attrs_accepts_a_negative_offset():
         {"tsz": {**_CONTINUOUS, "offset_us": -32_000}}, "channel 0"
     )
     assert parsed.offset_us == -32_000
-    lowest = parse_continuous_attrs(
-        {"tsz": {**_CONTINUOUS, "offset_us": -_INT64_MAX - 1}}, "channel 0"
-    )
-    assert lowest.offset_us == -_INT64_MAX - 1
 
 
-def test_parse_continuous_attrs_rejects_an_offset_below_int64():
+def test_parse_continuous_attrs_rejects_an_offset_below_the_time_limit():
     with pytest.raises(
         ValueError,
-        match=r"channel 0: tsz.offset_us must be an integer from -2\^63 to",
+        match=r"channel 0: tsz.offset_us must be an integer from -\(2\^53 - 1\)",
     ):
         parse_continuous_attrs(
-            {"tsz": {**_CONTINUOUS, "offset_us": -_INT64_MAX - 2}}, "channel 0"
+            {"tsz": {**_CONTINUOUS, "offset_us": -TIME_LIMIT_US}}, "channel 0"
         )
 
 
 @pytest.mark.parametrize("offset_us", [0, 16_000, -32_000])
 def test_parse_count_level_attrs_reads_back_what_the_builder_writes(offset_us):
-    attributes = _stored(level_group_attrs(16_000.0, offset_us))
+    attributes = _stored(level_group_attrs(16_000, offset_us))
     parsed = parse_count_level_attrs(attributes, "channel 4 count level 1")
-    assert parsed == CountLevelAttrs(period_us=16_000.0, offset_us=offset_us)
+    assert parsed == CountLevelAttrs(period_us=16_000, offset_us=offset_us)
+    assert type(parsed.period_us) is int
 
 
 def test_parse_count_level_attrs_defaults_the_offset_to_0():
     parsed = parse_count_level_attrs(
         {"tsz": {"period_us": 1000}}, "channel 4 count level 1"
     )
-    assert parsed == CountLevelAttrs(period_us=1000.0, offset_us=0)
-    assert type(parsed.period_us) is float
+    assert parsed == CountLevelAttrs(period_us=1000, offset_us=0)
+    assert type(parsed.period_us) is int
+
+
+def test_parse_count_level_attrs_accepts_an_integral_float_period():
+    parsed = parse_count_level_attrs(
+        {"tsz": {"period_us": 64000.0}}, "channel 4 count level 1"
+    )
+    assert parsed.period_us == 64_000
+    assert type(parsed.period_us) is int
+
+
+@pytest.mark.parametrize(
+    "period_us",
+    [1000.5, 0, -1000, True, "1000", None, float("nan"), float("inf"), 2**53],
+)
+def test_parse_count_level_attrs_rejects_a_period_that_is_not_a_time_integer(
+    period_us,
+):
+    with pytest.raises(
+        ValueError,
+        match=_invalid(
+            "channel 4 count level 1", "period_us", _POSITIVE_TIME, period_us
+        ),
+    ):
+        parse_count_level_attrs(
+            {"tsz": {"period_us": period_us}}, "channel 4 count level 1"
+        )
+
+
+def test_parse_count_level_attrs_rejects_a_missing_period():
+    with pytest.raises(
+        ValueError,
+        match=_missing("channel 4 count level 1", "period_us", _POSITIVE_TIME),
+    ):
+        parse_count_level_attrs({"tsz": {}}, "channel 4 count level 1")
 
 
 def test_parse_count_level_attrs_rejects_an_offset_off_the_grid():
@@ -591,7 +700,7 @@ def test_parse_count_level_attrs_rejects_an_offset_off_the_grid():
         ValueError,
         match=(
             "^channel 4 count level 1: tsz.offset_us must be a multiple of "
-            "period_us 1000.0, got 500$"
+            "period_us 1000, got 500$"
         ),
     ):
         parse_count_level_attrs(
@@ -688,12 +797,13 @@ def test_parse_event_attrs_rejects_a_group_without_a_name():
         ("label_names", ["onset", None], "a non-empty list of strings"),
         ("label_names", {"0": "onset"}, "a non-empty list of strings"),
         ("label_names", True, "a non-empty list of strings"),
-        ("max_duration_us", -1, _INTEGER),
-        ("max_duration_us", 2.5, _INTEGER),
-        ("max_duration_us", "10", _INTEGER),
-        ("max_duration_us", True, _INTEGER),
-        ("max_duration_us", None, _INTEGER),
-        ("max_duration_us", _INT64_MAX + 1, _INTEGER),
+        ("max_duration_us", -1, _NONNEGATIVE_TIME),
+        ("max_duration_us", 2.5, _NONNEGATIVE_TIME),
+        ("max_duration_us", "10", _NONNEGATIVE_TIME),
+        ("max_duration_us", True, _NONNEGATIVE_TIME),
+        ("max_duration_us", None, _NONNEGATIVE_TIME),
+        ("max_duration_us", TIME_LIMIT_US, _NONNEGATIVE_TIME),
+        ("max_duration_us", _INT64_MAX + 1, _NONNEGATIVE_TIME),
         ("provenance", [1], "an object"),
         ("provenance", None, "an object"),
     ],

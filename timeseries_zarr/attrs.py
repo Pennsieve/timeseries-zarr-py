@@ -19,6 +19,7 @@ from timeseries_zarr.constants import (
     CHANNEL_KINDS,
     FORMAT_VERSION,
     MAJOR_VERSION,
+    TIME_LIMIT_US,
     TSZ_KEY,
 )
 from timeseries_zarr.types import ChannelKind
@@ -29,8 +30,10 @@ _STRING = "a string"
 _VERSION = "a string of the form major.minor"
 _POSITIVE_NUMBER = "a finite number above 0"
 _NONNEGATIVE_INTEGER = "an integer from 0 to 2^63 - 1"
-_INTEGER = "an integer from -2^63 to 2^63 - 1"
 _INT64_MAX = 2**63 - 1
+_TIME = "an integer from -(2^53 - 1) to 2^53 - 1"
+_NONNEGATIVE_TIME = "an integer from 0 to 2^53 - 1"
+_POSITIVE_TIME = "an integer from 1 to 2^53 - 1"
 _STRING_LIST = "a non-empty list of strings"
 _OBJECT = "an object"
 
@@ -86,12 +89,12 @@ class CountLevelAttrs:
     """Parsed tsz fields of a count level group.
 
     Attributes:
-        period_us: Bin width in microseconds.
+        period_us: Bin width in microseconds, at least 1.
         offset_us: Time of bin 0 in microseconds from the reference time. A
             multiple of period_us, and may be negative.
     """
 
-    period_us: float
+    period_us: int
     offset_us: int
 
 
@@ -111,6 +114,22 @@ class WaveformAttrs:
 def _tsz(fields: dict[str, object]) -> dict[str, object]:
     """Return fields as the value of the tsz attribute key."""
     return {TSZ_KEY: fields}
+
+
+def check_time_us(value: float, name: str) -> None:
+    """Raise ValueError unless value lies in the open interval (-2^53, 2^53).
+
+    Args:
+        value: A time or a duration in microseconds.
+        name: What value is, for the error message.
+
+    Raises:
+        ValueError: If value is outside the interval.
+    """
+    if not -TIME_LIMIT_US < value < TIME_LIMIT_US:
+        raise ValueError(
+            f"{name} must lie in (-2^53, 2^53) microseconds, got {value!r}"
+        )
 
 
 def check_provenance(provenance: object) -> None:
@@ -166,11 +185,15 @@ def continuous_channel_attrs(
         provenance: JSON object written under provenance, or None to omit it.
 
     Raises:
-        ValueError: If rate_hz is not positive or provenance is not a JSON
-            object of finite values.
+        ValueError: If rate_hz is not finite and above 0, offset_us is outside
+            (-2^53, 2^53), or provenance is not a JSON object of finite
+            values.
     """
-    if rate_hz <= 0:
-        raise ValueError(f"rate_hz must be positive, got {rate_hz!r}")
+    if not math.isfinite(rate_hz) or rate_hz <= 0:
+        raise ValueError(
+            f"rate_hz must be finite and positive, got {rate_hz!r}"
+        )
+    check_time_us(offset_us, "offset_us")
     check_provenance(provenance)
     fields: dict[str, object] = {
         "kind": "continuous",
@@ -207,15 +230,18 @@ def event_channel_attrs(
         provenance: JSON object written under provenance.
 
     Raises:
-        ValueError: If label_names is empty, max_duration_us is negative, or
-            provenance is not a JSON object of finite values.
+        ValueError: If label_names is empty, max_duration_us is negative or
+            at least 2^53, or provenance is not a JSON object of finite
+            values.
     """
     if label_names is not None and not label_names:
         raise ValueError("label_names must name at least one category")
-    if max_duration_us is not None and max_duration_us < 0:
-        raise ValueError(
-            f"max_duration_us must be at least 0, got {max_duration_us!r}"
-        )
+    if max_duration_us is not None:
+        if max_duration_us < 0:
+            raise ValueError(
+                f"max_duration_us must be at least 0, got {max_duration_us!r}"
+            )
+        check_time_us(max_duration_us, "max_duration_us")
     check_provenance(provenance)
     fields: dict[str, object] = {"kind": "event", "name": name}
     optional: dict[str, object | None] = {
@@ -237,19 +263,30 @@ def level_group_attrs(
     """Return the level-group attributes.
 
     Args:
-        period_us: Microseconds one bin spans at this level.
+        period_us: Microseconds one bin spans at this level. A count level
+            takes an integer.
         offset_us: Time of bin 0 from the reference time, for a count level.
             Must be a multiple of period_us. A level of a continuous channel
             passes None.
 
     Raises:
-        ValueError: If period_us is not positive or offset_us is not a
-            multiple of it.
+        ValueError: If period_us is not finite and positive, a count level
+            period_us is not an integer below 2^53, or offset_us is not a
+            multiple of it or lies outside (-2^53, 2^53).
     """
-    if period_us <= 0:
-        raise ValueError(f"period_us must be positive, got {period_us!r}")
+    if not math.isfinite(period_us) or period_us <= 0:
+        raise ValueError(
+            f"period_us must be finite and positive, got {period_us!r}"
+        )
     fields: dict[str, object] = {"period_us": period_us}
     if offset_us is not None:
+        if isinstance(period_us, bool) or not isinstance(period_us, int):
+            raise ValueError(
+                f"period_us of a count level must be an integer, got "
+                f"{period_us!r}"
+            )
+        check_time_us(period_us, "period_us")
+        check_time_us(offset_us, "offset_us")
         if offset_us % period_us:
             raise ValueError(
                 f"offset_us must be a multiple of period_us, got {offset_us!r}"
@@ -260,7 +297,9 @@ def level_group_attrs(
 
 
 def waveform_array_attrs(
-    period_us: float, event_sample: int | None = None
+    period_us: float,
+    event_sample: int | None = None,
+    samples: int | None = None,
 ) -> dict[str, object]:
     """Return the attributes of a waveforms or waveform_mean array.
 
@@ -268,15 +307,29 @@ def waveform_array_attrs(
         period_us: Sample period within a snippet, in microseconds.
         event_sample: Snippet index recorded at the event time. Written only
             when given.
+        samples: Number of samples in a snippet. When given, event_sample
+            must be below it.
 
     Raises:
-        ValueError: If period_us is not positive or event_sample is negative.
+        ValueError: If period_us is not finite and positive, event_sample is
+            negative, or event_sample is not below samples.
     """
-    if period_us <= 0:
-        raise ValueError(f"period_us must be positive, got {period_us!r}")
+    if not math.isfinite(period_us) or period_us <= 0:
+        raise ValueError(
+            f"period_us must be finite and positive, got {period_us!r}"
+        )
     if event_sample is not None and event_sample < 0:
         raise ValueError(
             f"event_sample must be at least 0, got {event_sample!r}"
+        )
+    if (
+        event_sample is not None
+        and samples is not None
+        and event_sample >= samples
+    ):
+        raise ValueError(
+            f"event_sample must be below the {samples} samples of a snippet, "
+            f"got {event_sample!r}"
         )
     fields: dict[str, object] = {"period_us": period_us}
     if event_sample is not None:
@@ -331,7 +384,8 @@ def _as_finite_float(value: object) -> float | None:
 def _as_integer(value: object) -> int | None:
     """Return value as an int if it is an integer, else None.
 
-    An integral float such as 500000.0 counts as an integer. A bool does not.
+    The reader accepts an integral float such as 500000.0 as an integer. A
+    bool is not an integer.
     """
     if isinstance(value, bool):
         return None
@@ -399,6 +453,23 @@ def _optional_nonnegative_integer(
     return integer
 
 
+def _optional_nonnegative_time(
+    fields: Mapping[str, object], key: str, where: str
+) -> int | None:
+    """Return the integer from 0 to 2^53 - 1 under key, or None when absent.
+
+    Raises:
+        ValueError: If the value is not such an integer.
+    """
+    if key not in fields:
+        return None
+    value = fields[key]
+    integer = _as_integer(value)
+    if integer is None or not 0 <= integer < TIME_LIMIT_US:
+        raise _invalid(where, key, _NONNEGATIVE_TIME, value)
+    return integer
+
+
 def _nonnegative_integer(
     fields: Mapping[str, object], key: str, where: str, default: int
 ) -> int:
@@ -411,20 +482,33 @@ def _nonnegative_integer(
     return default if integer is None else integer
 
 
-def _integer(
+def _time(
     fields: Mapping[str, object], key: str, where: str, default: int
 ) -> int:
-    """Return the int64 under key, or default if absent.
+    """Return the time under key, or default if absent.
 
     Raises:
-        ValueError: If the value is not an integer within the int64 range.
+        ValueError: If the value is not an integer in (-2^53, 2^53).
     """
     if key not in fields:
         return default
     value = fields[key]
     integer = _as_integer(value)
-    if integer is None or integer < -_INT64_MAX - 1 or integer > _INT64_MAX:
-        raise _invalid(where, key, _INTEGER, value)
+    if integer is None or not -TIME_LIMIT_US < integer < TIME_LIMIT_US:
+        raise _invalid(where, key, _TIME, value)
+    return integer
+
+
+def _positive_time(fields: Mapping[str, object], key: str, where: str) -> int:
+    """Return the integer from 1 to 2^53 - 1 a node must carry under key.
+
+    Raises:
+        ValueError: If the key is absent or its value is not such an integer.
+    """
+    value = _required(fields, key, where, _POSITIVE_TIME)
+    integer = _as_integer(value)
+    if integer is None or not 0 < integer < TIME_LIMIT_US:
+        raise _invalid(where, key, _POSITIVE_TIME, value)
     return integer
 
 
@@ -557,7 +641,7 @@ def parse_continuous_attrs(
         id=_optional_string(fields, "id", where),
         unit=_string(fields, "unit", where),
         rate_hz=_positive_number(fields, "rate_hz", where),
-        offset_us=_integer(fields, "offset_us", where, 0),
+        offset_us=_time(fields, "offset_us", where, 0),
         provenance=_optional_object(fields, "provenance", where),
     )
 
@@ -581,7 +665,7 @@ def parse_event_attrs(
         id=_optional_string(fields, "id", where),
         unit=_optional_string(fields, "unit", where),
         label_names=_optional_string_tuple(fields, "label_names", where),
-        max_duration_us=_optional_nonnegative_integer(
+        max_duration_us=_optional_nonnegative_time(
             fields, "max_duration_us", where
         ),
         provenance=_optional_object(fields, "provenance", where),
@@ -606,19 +690,20 @@ def parse_count_level_attrs(
 ) -> CountLevelAttrs:
     """Return the tsz fields of a count level group.
 
-    The offset_us field defaults to 0.
+    The offset_us field defaults to 0. An integral float such as 64000.0 is
+    accepted as an integer.
 
     Args:
         attributes: The zarr attributes of the level group.
         where: Node name for the error message.
 
     Raises:
-        ValueError: Unless tsz.period_us is a finite number above 0 and
-            tsz.offset_us is an integer multiple of it.
+        ValueError: Unless tsz.period_us is an integer from 1 to 2^53 - 1 and
+            tsz.offset_us is an integer multiple of it in (-2^53, 2^53).
     """
     fields = tsz_fields(attributes, where)
-    period_us = _positive_number(fields, "period_us", where)
-    offset_us = _integer(fields, "offset_us", where, 0)
+    period_us = _positive_time(fields, "period_us", where)
+    offset_us = _time(fields, "offset_us", where, 0)
     if offset_us % period_us:
         raise _invalid(
             where,

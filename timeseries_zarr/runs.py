@@ -4,7 +4,10 @@ A run is a span of recorded samples one sample period apart. A source states
 each run by its start time in microseconds since the Unix epoch. place_runs puts
 the runs on the grid of one channel and builds the table that the bundle stores
 as the runs array. The reader checks that table with check_runs_table and
-check_outside_runs. Index arithmetic is exact in Fraction.
+check_outside_runs. place_runs chooses the grid index of each run in exact
+Fraction arithmetic. Every bound on the table is evaluated in binary64, left
+to right as docs/spec.md writes it. The writer and the reader share that
+evaluation.
 """
 
 import math
@@ -16,6 +19,8 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
+from timeseries_zarr.attrs import check_time_us
+from timeseries_zarr.constants import MICROSECONDS_PER_SECOND
 from timeseries_zarr.windows import bin_period, integer_argument
 
 
@@ -53,10 +58,25 @@ class Placement:
     table: npt.NDArray[np.int64]
 
 
+def _sample_period_us(rate_hz: float) -> float:
+    """Return the sample period in microseconds, evaluated in binary64.
+
+    Raises:
+        ValueError: If rate_hz is not positive and finite.
+    """
+    if not (math.isfinite(rate_hz) and rate_hz > 0):
+        raise ValueError(
+            f"rate_hz must be positive and finite, got {rate_hz!r}"
+        )
+    return MICROSECONDS_PER_SECOND / rate_hz
+
+
 def check_run_bound(
     first: int, time_us: int, offset_us: int, rate_hz: float
 ) -> None:
     """Check that a run starts within one sample period of its grid sample.
+
+    The comparison is evaluated in binary64, left to right.
 
     Args:
         first: Grid index of the first sample of the run.
@@ -69,14 +89,13 @@ def check_run_bound(
         ValueError: If the time and the grid time of the sample differ by one
             sample period or more.
     """
-    period = bin_period(rate_hz, 1)
-    grid_us = offset_us + first * period
-    if abs(time_us - grid_us) >= period:
+    period_us = _sample_period_us(rate_hz)
+    grid_us = offset_us + first * MICROSECONDS_PER_SECOND / rate_hz
+    if abs(time_us - grid_us) >= period_us:
         raise ValueError(
             f"a run at grid sample {first} starts at {time_us} us, which is "
-            f"{float(time_us - grid_us)} us from the grid time {float(grid_us)} "
-            f"us. The difference must be under one sample period of "
-            f"{float(period)} us"
+            f"{time_us - grid_us} us from the grid time {grid_us} us. The "
+            f"difference must be under one sample period of {period_us} us"
         )
 
 
@@ -87,7 +106,9 @@ def place_runs(
 
     The first run starts at grid sample 0. Each later run starts at the grid
     sample nearest its start time, or at the sample after the previous run
-    when that is later. A tie between two samples goes to the later one.
+    when that is later. A tie between two samples goes to the later one. The
+    placed table satisfies the bounds of docs/spec.md section 4.2, evaluated
+    in binary64.
 
     Args:
         runs: The runs in time order.
@@ -100,9 +121,11 @@ def place_runs(
     Raises:
         TypeError: If a start time or a sample count is not an integer.
         ValueError: If runs is empty, rate_hz is not positive and finite, a
-            run has no samples, a run starts before an earlier run, or a run
-            starts before the samples of the previous run end. The last case
-            means samples arrive closer together than the sample period.
+            run has no samples, a run starts before an earlier run, a run
+            starts before the samples of the previous run end, or a run
+            time, the offset, or the grid time of the last sample lies
+            outside (-2^53, 2^53) microseconds. The third case means
+            samples arrive closer together than the sample period.
     """
     period = bin_period(rate_hz, 1)
     if len(runs) == 0:
@@ -110,6 +133,7 @@ def place_runs(
     offset_us = (
         integer_argument(runs[0].start_us, "run 0 start_us") - reference_us
     )
+    check_time_us(offset_us, "offset_us")
     table = np.zeros((len(runs), 3), dtype=np.int64)
     previous_end = 0
     previous_time_us = 0
@@ -122,6 +146,7 @@ def place_runs(
                 f"run {index} has {count} samples, which must be at least 1"
             )
         time_us = start - reference_us
+        check_time_us(time_us, f"the time of run {index}")
         if index > 0:
             if time_us < previous_time_us:
                 raise ValueError(
@@ -129,11 +154,14 @@ def place_runs(
                     f"{index - 1} at {previous_start} us. "
                     f"Runs must be in time order"
                 )
-            ends_us = previous_time_us + int(table[index - 1, 1]) * period
+            ends_us = (
+                previous_time_us
+                + int(table[index - 1, 1]) * MICROSECONDS_PER_SECOND / rate_hz
+            )
             if time_us < ends_us:
                 raise ValueError(
                     f"run {index} starts at {start} us, before the samples "
-                    f"of run {index - 1} end at {float(ends_us + reference_us)} "
+                    f"of run {index - 1} end at {ends_us + reference_us} "
                     f"us. Samples must be at least one sample period of "
                     f"{float(period)} us apart"
                 )
@@ -144,6 +172,10 @@ def place_runs(
         previous_end = first + count
         previous_time_us = time_us
         previous_start = start
+    check_time_us(
+        offset_us + (previous_end - 1) * MICROSECONDS_PER_SECOND / rate_hz,
+        "the grid time of the last sample",
+    )
     return Placement(offset_us, previous_end, table)
 
 
@@ -203,9 +235,11 @@ def check_runs_table(
             starts before the previous run ends, the last run does not end at
             num_samples, a run starts one sample period or more from its grid
             time, or a run starts in time before the samples of the previous
-            run end. The message names the first row at fault.
+            run end. The message names the first row at fault. The last two
+            bounds are evaluated in binary64, left to right as docs/spec.md
+            writes them.
     """
-    period = bin_period(rate_hz, 1)
+    period_us = _sample_period_us(rate_hz)
     firsts, counts, times = table[:, 0], table[:, 1], table[:, 2]
     head = table[0]
     if int(head[0]) != 0 or int(head[2]) != offset_us:
@@ -249,29 +283,34 @@ def check_runs_table(
             f"{int(ends[-1])}, but raw holds {num_samples} samples; the last "
             f"run must end at the end of raw"
         )
-    period_us = float(period)
-    deviation = np.abs(times - (offset_us + firsts * period_us))
-    for row in np.flatnonzero(deviation >= period_us * (1 - 1e-6)).tolist():
-        grid_us = offset_us + int(firsts[row]) * period
-        if abs(int(times[row]) - grid_us) >= period:
-            raise ValueError(
-                f"{where}: runs row {row} has time {int(times[row])} us, "
-                f"which is {float(int(times[row]) - grid_us)} us from the "
-                f"grid time {float(grid_us)} us of sample {int(firsts[row])}; "
-                f"the difference must be under one sample period of "
-                f"{float(period)} us"
-            )
-    slack = times[1:] - times[:-1] - counts[:-1] * period_us
-    tolerance = period_us * 1e-6 + np.abs(times[1:]) * 1e-12
-    for index in np.flatnonzero(slack < tolerance).tolist():
-        ends_us = int(times[index]) + int(counts[index]) * period
-        if int(times[index + 1]) < ends_us:
-            raise ValueError(
-                f"{where}: runs row {index + 1} has time "
-                f"{int(times[index + 1])} us, before the samples of run "
-                f"{index} end at {float(ends_us)} us; the time must be at "
-                f"least {math.ceil(ends_us)} us"
-            )
+    grid_us = (
+        offset_us
+        + firsts.astype(np.float64) * MICROSECONDS_PER_SECOND / rate_hz
+    )
+    deviation = np.abs(times.astype(np.float64) - grid_us)
+    late = np.flatnonzero(deviation >= period_us)
+    if late.size:
+        row = int(late[0])
+        raise ValueError(
+            f"{where}: runs row {row} has time {int(times[row])} us, "
+            f"which is {float(times[row]) - float(grid_us[row])} us from the "
+            f"grid time {float(grid_us[row])} us of sample "
+            f"{int(firsts[row])}; the difference must be under one sample "
+            f"period of {period_us} us"
+        )
+    ends_us = (
+        times[:-1].astype(np.float64)
+        + counts[:-1].astype(np.float64) * MICROSECONDS_PER_SECOND / rate_hz
+    )
+    early = np.flatnonzero(times[1:] < ends_us)
+    if early.size:
+        index = int(early[0])
+        raise ValueError(
+            f"{where}: runs row {index + 1} has time "
+            f"{int(times[index + 1])} us, before the samples of run "
+            f"{index} end at {float(ends_us[index])} us; the time must be at "
+            f"least {math.ceil(ends_us[index])} us"
+        )
 
 
 def check_outside_runs(

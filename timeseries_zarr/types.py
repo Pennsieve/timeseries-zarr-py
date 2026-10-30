@@ -50,6 +50,7 @@ class LevelPlan:
         bins: The number of entries along the level's time axis.
         period_us: The microseconds that one entry spans. It is a whole
             multiple of the period of the level below, at least 2 times it.
+            A count level holds an int.
         offset_us: The time of entry 0 from the reference time. It is 0 for a
             level of a continuous channel, whose entries count from the
             channel's own offset, and a multiple of period_us for a count

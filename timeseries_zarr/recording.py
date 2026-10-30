@@ -143,6 +143,41 @@ def recording_document(
     return document
 
 
+def _dumps(document: dict[str, object]) -> str:
+    """Return document as JSON text indented by one space.
+
+    Raises:
+        TypeError: If a value in document is not JSON serializable.
+        ValueError: If a number in document is NaN or infinite.
+    """
+    try:
+        return json.dumps(
+            document, indent=1, ensure_ascii=False, allow_nan=False
+        )
+    except ValueError as error:
+        raise ValueError(
+            f"{RECORDING_FILE} must hold only finite numbers: {error}"
+        ) from error
+
+
+def check_recording_document(document: dict[str, object]) -> None:
+    """Raise ValueError unless document can be written as recording.json.
+
+    Args:
+        document: The content of recording.json.
+
+    Raises:
+        ValueError: If document holds a value JSON cannot store, or a NaN or
+            infinite number, which is not a JSON value.
+    """
+    try:
+        _dumps(document)
+    except TypeError as error:
+        raise ValueError(
+            f"{RECORDING_FILE} must hold only JSON values: {error}"
+        ) from error
+
+
 def write_recording_json(bundle_dir: Path, document: dict[str, object]) -> None:
     """Write document as recording.json at the root of bundle_dir.
 
@@ -156,6 +191,7 @@ def write_recording_json(bundle_dir: Path, document: dict[str, object]) -> None:
 
     Raises:
         TypeError: If a value in document is not JSON serializable.
+        ValueError: If a number in document is NaN or infinite.
     """
-    text = json.dumps(document, indent=1, ensure_ascii=False)
+    text = _dumps(document)
     (bundle_dir / RECORDING_FILE).write_text(text + "\n", encoding="utf-8")

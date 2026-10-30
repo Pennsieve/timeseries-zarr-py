@@ -27,6 +27,7 @@ from timeseries_zarr.constants import (
     RAW_KEY,
     RUNS_COLUMNS,
     RUNS_KEY,
+    SAMPLES_PER_BIN_LIMIT,
     TSZ_KEY,
     VAR_KEY,
 )
@@ -55,6 +56,7 @@ from timeseries_zarr.windows import (
     index_range,
     integer_argument,
     merge_spans,
+    nearest_integer,
     run_index_range,
     run_time_axis,
     select_level,
@@ -796,22 +798,26 @@ def _parse_level(
     """Return one level of channel key, given the level below it or None.
 
     Raises:
-        ValueError: If period_us is not a whole number of samples of at least
-            2, if it is not an integer multiple of previous.period_us of at
-            least 2, if minmax is missing, or if a member has the wrong shape
-            or dtype kind.
+        ValueError: If period_us is not a whole number of samples from 2 to
+            2^32 - 1, if it is not an integer multiple of previous.period_us
+            of at least 2, if minmax is missing, or if a member has the wrong
+            shape or dtype kind.
     """
     where = f"channel {key} level {number}"
     period_us = parse_level_attrs(group.attrs, where)
     width = period_us * rate_hz / MICROSECONDS_PER_SECOND
-    samples_per_bin = round(width)
-    if samples_per_bin < MIN_DECIMATION_FACTOR or not math.isclose(
-        width, samples_per_bin, rel_tol=LEVEL_PERIOD_TOLERANCE
+    samples_per_bin = nearest_integer(width) if math.isfinite(width) else 0
+    expected_us = samples_per_bin * MICROSECONDS_PER_SECOND / rate_hz
+    if (
+        not MIN_DECIMATION_FACTOR <= samples_per_bin < SAMPLES_PER_BIN_LIMIT
+        or abs(period_us - expected_us)
+        > LEVEL_PERIOD_TOLERANCE * abs(expected_us)
     ):
         raise ValueError(
             f"{where}: {TSZ_KEY}.period_us must be a whole number of samples, "
-            f"at least {MIN_DECIMATION_FACTOR}, at rate_hz {rate_hz!r}, "
-            f"got {period_us!r}"
+            f"from {MIN_DECIMATION_FACTOR} to {SAMPLES_PER_BIN_LIMIT - 1}, at "
+            f"rate_hz {rate_hz!r}, within {LEVEL_PERIOD_TOLERANCE!r} "
+            f"relative, got {period_us!r}"
         )
     if previous is not None and (
         samples_per_bin % previous.samples_per_bin != 0

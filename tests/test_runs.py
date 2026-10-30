@@ -231,6 +231,48 @@ def test_the_bound_uses_the_offset():
         )
 
 
+# 0.3 Hz is a float a little below 3/10. In exact arithmetic 3 samples end
+# 3e-10 us after 10_000_000 us. In binary64, left to right, they end at it.
+_SLOW_RATE_HZ = 0.3
+
+
+def test_place_runs_evaluates_the_end_of_a_run_in_binary64():
+    placement = place_runs([Run(0, 3), Run(10_000_000, 2)], _SLOW_RATE_HZ, 0)
+    assert placement.table.tolist() == [[0, 3, 0], [3, 2, 10_000_000]]
+
+
+def test_place_runs_rejects_a_run_that_starts_before_the_binary64_end():
+    with pytest.raises(ValueError, match="before the samples of run 0 end"):
+        place_runs([Run(0, 3), Run(9_999_999, 2)], _SLOW_RATE_HZ, 0)
+
+
+def test_place_runs_accepts_the_largest_time_below_the_limit():
+    placement = place_runs([Run(2**53 - 1, 1)], 1.0, 0)
+    assert placement.offset_us == 2**53 - 1
+
+
+@pytest.mark.parametrize("start_us", [2**53, -(2**53)])
+def test_place_runs_rejects_an_offset_at_the_time_limit(start_us):
+    with pytest.raises(ValueError, match=r"offset_us.*\(-2\^53, 2\^53\)"):
+        place_runs([Run(start_us, 1)], RATE_HZ, 0)
+
+
+def test_place_runs_rejects_a_later_run_time_at_the_time_limit():
+    runs = [Run(0, 1), Run(2**53, 1)]
+    with pytest.raises(ValueError, match="the time of run 1"):
+        place_runs(runs, RATE_HZ, 0)
+
+
+def test_place_runs_rejects_a_reference_that_pushes_the_offset_out_of_range():
+    with pytest.raises(ValueError, match="offset_us"):
+        place_runs([Run(0, 1)], RATE_HZ, -(2**53))
+
+
+def test_place_runs_rejects_a_grid_whose_last_sample_passes_the_limit():
+    with pytest.raises(ValueError, match="grid time of the last sample"):
+        place_runs([Run(2**53 - 10, 100)], 1.0, 0)
+
+
 def test_source_runs_that_agree_with_the_channel_pass():
     check_source_runs([Run(100, 4), Run(9_000, 6)], 100, 10)
 
@@ -270,6 +312,41 @@ def _check(rows, num_samples=10, offset_us=0, rate_hz=RATE_HZ):
 def _fails(rows, message, **options):
     with pytest.raises(ValueError, match=message):
         _check(rows, **options)
+
+
+def test_the_table_check_evaluates_the_end_of_a_run_in_binary64():
+    _check(
+        [(0, 3, 0), (3, 2, 10_000_000)], num_samples=5, rate_hz=_SLOW_RATE_HZ
+    )
+
+
+def test_the_table_check_rejects_a_start_before_the_binary64_end():
+    _fails(
+        [(0, 3, 0), (3, 2, 9_999_999)],
+        "runs row 1 has time 9999999 us, before the samples of run 0 end at "
+        "10000000.0 us",
+        num_samples=5,
+        rate_hz=_SLOW_RATE_HZ,
+    )
+
+
+def test_the_table_check_evaluates_the_grid_bound_in_binary64():
+    _check(
+        [(0, 3, 0), (3, 2, 10_000_000)], num_samples=5, rate_hz=_SLOW_RATE_HZ
+    )
+    _fails(
+        [(0, 3, 0), (3, 2, 13_333_334)],
+        "runs row 1 has time 13333334 us",
+        num_samples=5,
+        rate_hz=_SLOW_RATE_HZ,
+    )
+
+
+@pytest.mark.parametrize("rate_hz", [0.0, -1.0, float("nan"), float("inf")])
+def test_the_table_check_rejects_a_rate_that_is_not_finite_and_positive(
+    rate_hz,
+):
+    _fails([(0, 10, 0)], "rate_hz must be positive and finite", rate_hz=rate_hz)
 
 
 def test_a_table_that_follows_the_spec_passes():

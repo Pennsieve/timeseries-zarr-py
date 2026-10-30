@@ -18,6 +18,7 @@ from timeseries_zarr.counts import plan_count_levels
 from timeseries_zarr.types import ChunkShard, WriteOpts
 from timeseries_zarr.write_event import (
     _row_sizing,
+    check_event_channel,
     write_channels_array,
     write_count_levels,
     write_durations_array,
@@ -145,10 +146,65 @@ def test_write_events_array_rejects_a_decrease_below_zero_in_a_later_block(
         _write(tmp_path, event_source(times), reference_us=1000)
 
 
-def _write_durations(tmp_path, source, sizing=None):
+def test_write_events_array_rejects_a_time_at_the_time_limit(
+    tmp_path, event_source
+):
+    with pytest.raises(ValueError, match=r"an event time.*\(-2\^53, 2\^53\)"):
+        _write(tmp_path, event_source([0, 2**53]))
+
+
+def test_write_events_array_rejects_a_time_the_reference_pushes_to_the_limit(
+    tmp_path, event_source
+):
+    with pytest.raises(ValueError, match="an event time"):
+        _write(tmp_path, event_source([0, 10]), reference_us=-(2**53))
+
+
+def test_write_events_array_accepts_the_times_next_to_the_time_limit(
+    tmp_path, event_source
+):
+    times = [1 - 2**53, 0, 2**53 - 1]
+    assert (
+        _write(tmp_path, event_source(times))[EVENTS_KEY][:].tolist() == times
+    )
+
+
+def _write_durations(tmp_path, source, sizing=None, reference_us=0):
     group = open_group(tmp_path / "bundle")
-    write_durations_array(group, source, sizing or _sizing(), 5)
+    write_durations_array(
+        group, source, sizing or _sizing(), 5, reference_us=reference_us
+    )
     return open_group(tmp_path / "bundle")
+
+
+def test_write_durations_array_rejects_an_interval_that_ends_at_the_limit(
+    tmp_path, event_source
+):
+    source = event_source(
+        [2**53 - 11, 2**53 - 10], durations=[10, 10], max_duration_us=10
+    )
+    with pytest.raises(ValueError, match="the end of an interval"):
+        _write_durations(tmp_path, source)
+
+
+def test_write_durations_array_accepts_an_interval_that_ends_below_the_limit(
+    tmp_path, event_source
+):
+    source = event_source(
+        [2**53 - 11, 2**53 - 10], durations=[10, 9], max_duration_us=10
+    )
+    stored = _write_durations(tmp_path, source)[DURATIONS_KEY][:]
+    assert stored.tolist() == [10, 9]
+
+
+def test_write_durations_array_counts_interval_ends_from_the_reference_time(
+    tmp_path, event_source
+):
+    source = event_source(
+        [2**53, 2**53 + 4], durations=[5, 5], max_duration_us=5
+    )
+    stored = _write_durations(tmp_path, source, reference_us=10)[DURATIONS_KEY]
+    assert stored[:].tolist() == [5, 5]
 
 
 def test_write_durations_array_round_trips_microseconds(tmp_path, event_source):
@@ -688,8 +744,8 @@ def test_write_waveform_mean_array_rejects_means_with_no_samples(
         _write_means(tmp_path, source)
 
 
-@pytest.mark.parametrize("period", [0.0, -1.0])
-def test_write_waveform_mean_array_rejects_a_non_positive_period(
+@pytest.mark.parametrize("period", [0.0, -1.0, float("nan"), float("inf")])
+def test_write_waveform_mean_array_rejects_a_period_that_is_not_finite_and_positive(
     tmp_path, event_source, period
 ):
     source = _means_source(event_source, period=period)
@@ -786,6 +842,20 @@ def test_write_count_levels_groups_carry_the_period_and_one_count_array(
             "tsz": {"period_us": plan.period_us, "offset_us": plan.offset_us}
         }
         assert list(level.array_keys()) == [COUNT_KEY]
+
+
+def test_write_count_levels_stores_each_period_as_a_json_integer(
+    tmp_path, event_source
+):
+    times, _, source = _dense(event_source)
+    _write_counts(tmp_path, source)
+    plans = _plans(times)
+    assert plans
+    for plan in plans:
+        text = (tmp_path / "bundle" / str(plan.level) / "zarr.json").read_text()
+        tsz = json.loads(text)["attributes"]["tsz"]
+        assert type(tsz["period_us"]) is int
+        assert tsz["period_us"] == plan.period_us
 
 
 def test_write_count_levels_array_shape_dtype_dimensions_and_fill(
@@ -1211,3 +1281,96 @@ def test_write_event_channel_returns_none(tmp_path, event_source):
         opts=_CHANNEL_OPTS,
     )
     assert result is None
+
+
+def _check_event_channel(source, reference_us=0, opts=_COUNT_OPTS):
+    check_event_channel(source, reference_us, opts)
+
+
+def test_check_event_channel_accepts_a_channel_next_to_the_limits(event_source):
+    source = event_source(
+        [1 - 2**53, 0, 2**53 - 1],
+        durations=[0, 0, 0],
+        max_duration_us=2**53 - 1,
+    )
+    _check_event_channel(source)
+
+
+def test_check_event_channel_accepts_an_empty_channel(event_source):
+    _check_event_channel(event_source([]))
+
+
+def test_check_event_channel_rejects_2_to_the_32_events(event_source):
+    class Huge(type(event_source([0]))):
+        def num_events(self):
+            return 2**32
+
+    with pytest.raises(
+        ValueError, match="fewer than 2.32 events, got 4294967296"
+    ):
+        _check_event_channel(Huge([0]))
+
+
+def test_check_event_channel_accepts_the_largest_event_count(event_source):
+    class Large(type(event_source([0]))):
+        def num_events(self):
+            return 2**32 - 1
+
+        def read_events(self, start, stop):
+            return np.zeros(stop - start, dtype=np.int64)
+
+    _check_event_channel(Large([0]))
+
+
+@pytest.mark.parametrize("times", [[0, 2**53], [-(2**53), 0]])
+def test_check_event_channel_rejects_a_time_at_either_end_at_the_limit(
+    event_source, times
+):
+    with pytest.raises(ValueError, match=r"an event time.*\(-2\^53, 2\^53\)"):
+        _check_event_channel(event_source(times))
+
+
+def test_check_event_channel_counts_times_from_the_reference(event_source):
+    with pytest.raises(ValueError, match="an event time"):
+        _check_event_channel(event_source([0, 10]), reference_us=-(2**53))
+
+
+def test_check_event_channel_rejects_a_duration_bound_at_the_limit(
+    event_source,
+):
+    source = event_source([1], durations=[0], max_duration_us=2**53)
+    with pytest.raises(ValueError, match="max_duration_us"):
+        _check_event_channel(source)
+
+
+def test_check_event_channel_rejects_a_count_level_that_ends_past_the_limit(
+    event_source,
+):
+    class Dense(type(event_source([0]))):
+        def num_events(self):
+            return 100_000
+
+        def read_events(self, start, stop):
+            time_us = 0 if start == 0 else 2**53 - 1
+            return np.full(stop - start, time_us, dtype=np.int64)
+
+    with pytest.raises(ValueError, match="end of the last bin of count level"):
+        _check_event_channel(Dense([0]))
+
+
+def test_write_event_channel_rejects_a_bad_time_before_it_creates_a_node(
+    tmp_path, event_source
+):
+    group = open_group(tmp_path / "bundle")
+    source = event_source([0, 2**53])
+    with pytest.raises(ValueError, match="an event time"):
+        write_event_channel(
+            group,
+            0,
+            source,
+            reference_us=0,
+            channel_keys={},
+            max_key=0,
+            opts=_COUNT_OPTS,
+        )
+    assert list(group.members()) == []

@@ -21,6 +21,7 @@ from timeseries_zarr.windows import (
     index_range,
     integer_argument,
     merge_spans,
+    nearest_integer,
     run_index_range,
     run_time_axis,
     select_level,
@@ -64,6 +65,23 @@ def _level_five_populated():
     populated = np.ones(300, dtype=bool)
     populated[[60, 61]] = False
     return populated
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (4.0, 4),
+        (4.4999999999999, 4),
+        (4.5, 5),
+        (5.5, 6),
+        (-4.5, -4),
+        (-4.5000001, -5),
+        (4.9999999999999, 5),
+        (2.0**51 + 0.5, 2**51 + 1),
+    ],
+)
+def test_nearest_integer_takes_the_larger_integer_on_a_tie(value, expected):
+    assert nearest_integer(value) == expected
 
 
 def test_bin_period_is_exact_at_512_hz():

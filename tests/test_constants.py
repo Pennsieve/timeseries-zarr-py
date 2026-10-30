@@ -8,6 +8,7 @@ from timeseries_zarr.constants import (
     COUNT_LADDER_BASE_US,
     DEFAULT_DECIMATION_FACTOR,
     DURATIONS_KEY,
+    EVENT_COUNT_LIMIT,
     EVENT_DIMENSION,
     EVENT_LEVEL_THRESHOLD,
     EVENTS_KEY,
@@ -28,8 +29,10 @@ from timeseries_zarr.constants import (
     RUN_DIMENSION,
     RUNS_COLUMNS,
     RUNS_KEY,
+    SAMPLES_PER_BIN_LIMIT,
     TEXT_KEY,
     TIME_DIMENSION,
+    TIME_LIMIT_US,
     UINT8_BYTES,
     UINT16_BYTES,
     UINT32_BYTES,
@@ -93,8 +96,17 @@ def test_events_search_limit_is_one_mebibyte_of_int64_events():
     assert EVENTS_SEARCH_LIMIT_BYTES // INT64_BYTES == 131_072
 
 
-def test_level_period_tolerance_is_one_part_in_a_billion():
-    assert LEVEL_PERIOD_TOLERANCE == 1e-9
+def test_level_period_tolerance_is_one_part_in_a_trillion():
+    assert LEVEL_PERIOD_TOLERANCE == 1e-12
+
+
+def test_time_limit_is_2_to_the_53_microseconds():
+    assert TIME_LIMIT_US == 2**53
+
+
+def test_event_count_and_level_width_limits_are_2_to_the_32():
+    assert EVENT_COUNT_LIMIT == 2**32
+    assert SAMPLES_PER_BIN_LIMIT == 2**32
 
 
 def test_default_decimation_factor_is_4_and_the_minimum_is_2():

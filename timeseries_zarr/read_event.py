@@ -4,7 +4,6 @@ Every time argument is an integer count of microseconds from the reference
 time, and a window is half-open.
 """
 
-import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
@@ -29,7 +28,6 @@ from timeseries_zarr.constants import (
     EVENTS_SEARCH_LIMIT_BYTES,
     LABEL_DIMENSION,
     LABELS_KEY,
-    LEVEL_PERIOD_TOLERANCE,
     MICROSECONDS_PER_SECOND,
     MIN_DECIMATION_FACTOR,
     TEXT_KEY,
@@ -228,7 +226,7 @@ class CountLevel:
     """
 
     number: int
-    period_us: float
+    period_us: int
     offset_us: int
     count: ZarrArray
 
@@ -915,12 +913,18 @@ def _parse_snippets(
 
     Raises:
         ValueError: The array is not a rank-2 floating-point array with rows
-            rows that carries tsz.period_us.
+            rows that carries tsz.period_us, or tsz.event_sample is not below
+            the number of columns.
     """
     array = _checked(arrays.get(name), where, name, _FLOATING_ROWS, rows)
     if array is None:
         return None
     timing = parse_waveform_attrs(array.attrs, f"{where} {name}")
+    if timing.event_sample >= array.shape[1]:
+        raise ValueError(
+            f"{where} {name}: {TSZ_KEY}.event_sample must be below the "
+            f"{array.shape[1]} samples of a snippet, got {timing.event_sample!r}"
+        )
     return Snippets(
         array=array,
         period_us=timing.period_us,
@@ -971,17 +975,18 @@ def _parse_count_levels(
     return MappingProxyType(levels)
 
 
-def _check_period(where: str, period_us: float, previous: CountLevel) -> None:
+def _check_period(where: str, period_us: int, previous: CountLevel) -> None:
     """Check that period_us follows the count level previous.
+
+    The test is exact integer arithmetic.
 
     Raises:
         ValueError: period_us is not an integer multiple of the period_us of
             previous, or the multiple is below 2.
     """
-    ratio = period_us / previous.period_us
-    multiple = round(ratio)
-    if multiple < MIN_DECIMATION_FACTOR or not math.isclose(
-        ratio, multiple, rel_tol=LEVEL_PERIOD_TOLERANCE
+    if (
+        period_us % previous.period_us
+        or period_us < MIN_DECIMATION_FACTOR * previous.period_us
     ):
         raise ValueError(
             f"{where}: {TSZ_KEY}.period_us must be an integer multiple of "
