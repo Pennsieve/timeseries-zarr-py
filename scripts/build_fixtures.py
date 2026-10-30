@@ -700,7 +700,7 @@ def _write_event_channel(
         level = create_group_with_attrs(
             channel, str(number), level_group_attrs(period, offset)
         )
-        _write_array(level, "count", counts, ("time", None))
+        _write_array(level, "count", counts, ("time", "label"))
         entry["count_levels"].append(
             {
                 "level": number,

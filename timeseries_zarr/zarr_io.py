@@ -97,6 +97,8 @@ def create_array(
     The ZEP2 sharding codec splits each outer shard into inner chunks. Every
     shard written to the array reaches disk, including a shard whose values
     all equal the fill value, so a reader never meets a missing shard key.
+    The bytes codec declares little-endian order. Zarr omits the setting for a
+    one-byte dtype.
 
     A float array declares NaN as its fill value and any other dtype 0. The
     fill is what Zarr serves for a chunk nobody wrote, and the format defines
@@ -127,6 +129,7 @@ def create_array(
         chunks=chunk_shape,
         shards=shard_shape,
         compressors=ZstdCodec(level=zstd_level),
+        serializer=BytesCodec(endian="little"),
         attributes=cast("dict[str, JSON]", attrs),
         fill_value=float("nan") if is_float else 0,
         dimension_names=dimension_names,
@@ -192,7 +195,10 @@ def array_metadata(
         codecs=[
             ShardingCodec(
                 chunk_shape=chunk_shape,
-                codecs=[BytesCodec(), ZstdCodec(level=zstd_level)],
+                codecs=[
+                    BytesCodec(endian="little"),
+                    ZstdCodec(level=zstd_level),
+                ],
             )
         ],
         attributes=cast("dict[str, JSON]", attrs),

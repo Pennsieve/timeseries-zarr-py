@@ -250,6 +250,33 @@ def test_epoch_us_rejects_an_instant_without_a_utc_offset():
         epoch_us(datetime(2024, 3, 14, 9, 15))
 
 
+_UTC_PLUS_1_30_SECONDS = timezone(timedelta(hours=1, seconds=30))
+
+
+def test_epoch_us_rejects_an_offset_that_is_not_whole_minutes():
+    instant = datetime(2024, 3, 14, 9, 15, tzinfo=_UTC_PLUS_1_30_SECONDS)
+    with pytest.raises(ValueError, match="whole minutes"):
+        epoch_us(instant)
+
+
+def test_recording_document_rejects_a_session_start_offset_with_seconds():
+    meta = _meta(
+        start=datetime(2024, 3, 14, 9, 15, tzinfo=_UTC_PLUS_1_30_SECONDS)
+    )
+    with pytest.raises(ValueError, match="session_start_time.*whole minutes"):
+        recording_document(meta, 0)
+
+
+def test_recording_document_rejects_a_reference_time_offset_with_seconds():
+    meta = _meta(
+        reference_time=datetime(
+            2024, 3, 14, 9, 15, tzinfo=_UTC_PLUS_1_30_SECONDS
+        )
+    )
+    with pytest.raises(ValueError, match="reference_time.*whole minutes"):
+        recording_document(meta, _NOON_UTC_US)
+
+
 def test_session_start_us_is_the_session_start_since_the_epoch():
     assert session_start_us(_meta()) == _NOON_UTC_US
     assert session_start_us(RecordingMeta()) is None

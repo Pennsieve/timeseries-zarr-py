@@ -1025,7 +1025,7 @@ def test_write_count_levels_array_shape_dtype_dimensions_and_fill(
     arr = group["1"][COUNT_KEY]
     assert arr.shape == (first.bins, 3)
     assert arr.dtype == np.uint32
-    assert arr.metadata.dimension_names == ("time", None)
+    assert arr.metadata.dimension_names == ("time", "label")
     assert arr.fill_value == 0
     assert dict(arr.attrs) == {}
 
