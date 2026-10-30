@@ -161,13 +161,11 @@ of it.
 `validator.py` holds `validate_bundle`, which checks a bundle against sections 8.3 and 8.4
 of the specification and returns a list of `Finding` records. It reads each `zarr.json`
 and `recording.json` as plain JSON and reports every violation it finds instead of
-raising on the first, so one malformed node does not hide the checks of its siblings.
-`validate_arrays.py` checks the shape, dtype, fill value, chunk grid, and codec chain of
+raising on the first. `validate_arrays.py` checks the shape, dtype, fill value, chunk grid, and codec chain of
 one array, and reads the shard indexes to find missing chunks. `validate_full.py`
 recomputes the statistics from `raw`, the events, and the waveforms in blocks. It runs
 only when `full` is set. `validate.py` is the entry point of `python -m
-timeseries_zarr.validate`. It stays out of `__init__.py` so that running it as a module
-does not import it twice.
+timeseries_zarr.validate`. It stays out of `__init__.py`.
 
 `scripts/build_fixtures.py` writes the conformance fixtures into `conformance/`, with a
 `manifest.json` that lists what each fixture exercises, the values a reader can assert,

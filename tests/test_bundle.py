@@ -2040,3 +2040,37 @@ def test_write_bundle_rejects_a_recording_value_that_is_not_json_before_writing(
             [first], [], output_path=output, opts=_OPTS, recording=recording
         )
     assert not output.exists()
+
+
+def test_write_bundle_writes_a_text_column_of_empty_texts(
+    tmp_path, event_source
+):
+    output = tmp_path / "bundle"
+    event = event_source(np.arange(5), text=[""] * 5)
+    write_bundle([], [event], output_path=output, opts=_OPTS)
+    assert open_group(output)["0"]["text"].shape == (5, 1)
+    assert validate_bundle(output, full=True) == []
+
+
+def test_write_bundle_writes_a_text_column_of_no_events(tmp_path, event_source):
+    output = tmp_path / "bundle"
+    event = event_source([], text=[])
+    write_bundle([], [event], output_path=output, opts=_OPTS)
+    assert open_group(output)["0"]["text"].shape == (0, 1)
+    assert validate_bundle(output, full=True) == []
+
+
+def test_write_bundle_validates_a_waveform_mean_without_spikes_for_a_label(
+    tmp_path, event_source
+):
+    output = tmp_path / "bundle"
+    event = event_source(
+        [1, 2],
+        labels=[0, 2],
+        label_names=["a", "b", "c"],
+        waveform_mean=np.ones((3, 5)),
+    )
+    write_bundle([], [event], output_path=output, opts=_OPTS)
+    stored = open_group(output)["0"]["waveform_mean"][:]
+    assert np.isnan(stored[1]).all()
+    assert validate_bundle(output, full=True) == []
