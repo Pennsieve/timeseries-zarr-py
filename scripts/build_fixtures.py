@@ -198,7 +198,7 @@ def _bin_statistics(
 
 
 def _continuous_entry(
-    key: int,
+    index: int,
     grid: npt.NDArray[np.float32],
     *,
     name: str,
@@ -211,7 +211,7 @@ def _continuous_entry(
     """Return the manifest entry of a continuous channel.
 
     Args:
-        key: The channel index.
+        index: The channel index.
         grid: The expected content of raw, NaN outside every run.
         name: The channel name and id.
         rate_hz: The sample rate.
@@ -249,7 +249,7 @@ def _continuous_entry(
             }
         )
     return {
-        "key": key,
+        "index": index,
         "kind": "continuous",
         "name": name,
         "id": name,
@@ -487,16 +487,18 @@ def _write_array(
 
 
 def _write_raw_channel(
-    root: ZarrGroup, key: int, grid: npt.NDArray[np.float32], name: str
+    root: ZarrGroup, index: int, grid: npt.NDArray[np.float32], name: str
 ) -> Entry:
     """Write a continuous channel that holds raw and no level, and describe it."""
     channel = create_group_with_attrs(
         root,
-        str(key),
+        str(index),
         continuous_channel_attrs(name, name, RATE_1KHZ, 0, "uV", None),
     )
     _write_array(channel, "raw", grid, ("time",))
-    return _continuous_entry(key, grid, name=name, rate_hz=RATE_1KHZ, widths=())
+    return _continuous_entry(
+        index, grid, name=name, rate_hz=RATE_1KHZ, widths=()
+    )
 
 
 def _encode_text(texts: Sequence[str], width: int) -> npt.NDArray[np.uint8]:
@@ -513,9 +515,9 @@ def _encode_channels(
 ) -> npt.NDArray[np.uint8]:
     """Return the bitmask rows of sets, least significant bit first."""
     rows = np.zeros((len(sets), width), dtype=np.uint8)
-    for index, keys in enumerate(sets):
-        for key in keys:
-            rows[index, key // 8] |= 1 << (key % 8)
+    for row, indices in enumerate(sets):
+        for index in indices:
+            rows[row, index // 8] |= 1 << (index % 8)
     return rows
 
 
@@ -600,7 +602,7 @@ def _count_level(
 
 def _write_event_channel(
     root: ZarrGroup,
-    key: int,
+    index: int,
     name: str,
     channel_count: int,
     columns: EventColumns,
@@ -609,7 +611,7 @@ def _write_event_channel(
 
     Args:
         root: The root group of the bundle.
-        key: The channel index.
+        index: The channel index.
         name: The channel name and id.
         channel_count: The channels in the bundle, which sets the width of the
             channels column.
@@ -626,9 +628,9 @@ def _write_event_channel(
         columns.max_duration_us,
         {"detector": "threshold", "version": "1"},
     )
-    channel = create_group_with_attrs(root, str(key), attrs)
+    channel = create_group_with_attrs(root, str(index), attrs)
     entry: Entry = {
-        "key": key,
+        "index": index,
         "kind": "event",
         "name": name,
         "id": name,
@@ -668,7 +670,7 @@ def _write_event_channel(
         rows = _encode_channels(columns.channel_sets, width)
         _write_array(channel, "channels", rows, ("event", None))
         entry["channel_bytes"] = width
-        entry["channels"] = [list(keys) for keys in columns.channel_sets]
+        entry["channels"] = [list(indices) for indices in columns.channel_sets]
         column_names.append("channels")
     if columns.waveforms is not None:
         assert columns.labels is not None
@@ -763,9 +765,12 @@ def _build_events(out: Path) -> Entry:
     root = open_group(out / name, root_attrs())
     entries = [
         _write_raw_channel(
-            root, key, _noise(f"{name}-{key}", 64, 0.0, 100.0), f"raw-{key}"
+            root,
+            index,
+            _noise(f"{name}-{index}", 64, 0.0, 100.0),
+            f"raw-{index}",
         )
-        for key in range(EVENT_CHANNELS - 1)
+        for index in range(EVENT_CHANNELS - 1)
     ]
     index = np.arange(EVENT_COUNT)
     events = (-40_000 + 16_000 * index + (index * index % 7) * 100).astype(

@@ -39,8 +39,8 @@ _EVENT_COLUMNS: tuple[EventColumn, ...] = get_args(EventColumn.__value__)
 
 
 def _channel_id(channel: ContinuousChannel | EventChannel) -> str:
-    """Return the id of channel, or its key as a decimal string without one."""
-    return str(channel.key) if channel.id is None else channel.id
+    """Return the id of channel, or its index as a decimal string without one."""
+    return str(channel.index) if channel.id is None else channel.id
 
 
 def _provenance(
@@ -120,7 +120,7 @@ class BundleContinuousSource:
 
     @property
     def id(self) -> str:
-        """Id of the channel, or its key as a decimal string without one."""
+        """Id of the channel, or its index as a decimal string without one."""
         return _channel_id(self._channel)
 
     @property
@@ -229,7 +229,7 @@ class BundleEventSource:
 
         Args:
             channel: The event channel to read.
-            ids: Id of each channel the writer receives, by channel key.
+            ids: Id of each channel the writer receives, by channel index.
             epoch_us: Reference time in microseconds since the Unix epoch.
             columns: Optional columns to carry. None names every one.
 
@@ -258,7 +258,7 @@ class BundleEventSource:
 
     @property
     def id(self) -> str:
-        """Id of the channel, or its key as a decimal string without one."""
+        """Id of the channel, or its index as a decimal string without one."""
         return _channel_id(self._channel)
 
     @property
@@ -361,7 +361,7 @@ class BundleEventSource:
                 or at least MAX_LABELS.
         """
         rows = read_rows(self._array(LABELS_KEY), start, stop)
-        check_label_range(f"channel {self._channel.key}", rows, MAX_LABELS)
+        check_label_range(f"channel {self._channel.index}", rows, MAX_LABELS)
         return np.asarray(rows, dtype=np.uint16)
 
     def read_text(self, start: int, stop: int) -> list[str]:
@@ -379,7 +379,7 @@ class BundleEventSource:
         return decode_event_text(
             rows,
             range(start, start + rows.shape[0]),
-            f"channel {self._channel.key}",
+            f"channel {self._channel.index}",
         )
 
     def read_channel_ids(self, start: int, stop: int) -> list[list[str]]:
@@ -393,19 +393,20 @@ class BundleEventSource:
 
         Raises:
             ValueError: If the channel has no channels column or an event
-                names a channel key that ids lacks.
+                names a channel index that ids lacks.
         """
         rows = read_rows(self._array(CHANNELS_KEY), start, stop)
         id_lists = []
-        for index, keys in enumerate(decode_channels_rows(rows), start=start):
-            for key in keys:
-                if key not in self._ids:
+        rows_indices = decode_channels_rows(rows)
+        for event, indices in enumerate(rows_indices, start=start):
+            for index in indices:
+                if index not in self._ids:
                     raise ValueError(
-                        f"channel {self._channel.key}: event {index} names "
-                        f"channel key {key}, and the source maps the channel "
-                        f"keys {sorted(self._ids)}"
+                        f"channel {self._channel.index}: event {event} names "
+                        f"channel index {index}, and the source maps the "
+                        f"channel indices {sorted(self._ids)}"
                     )
-            id_lists.append([self._ids[key] for key in keys])
+            id_lists.append([self._ids[index] for index in indices])
         return id_lists
 
     def waveform_mean(self) -> npt.NDArray[np.float32]:
@@ -441,7 +442,7 @@ class BundleEventSource:
         """
         array = self._arrays[name]
         if array is None:
-            raise ValueError(_missing_column(self._channel.key, name))
+            raise ValueError(_missing_column(self._channel.index, name))
         return array
 
     def _snippets(self) -> Snippets:
@@ -453,15 +454,15 @@ class BundleEventSource:
         snippets = self._channel.waveform_mean
         if snippets is None:
             raise ValueError(
-                _missing_column(self._channel.key, WAVEFORM_MEAN_KEY)
+                _missing_column(self._channel.index, WAVEFORM_MEAN_KEY)
             )
         return snippets
 
 
-def _missing_column(key: int, name: str) -> str:
-    """Return the error message for a column that channel key lacks."""
+def _missing_column(index: int, name: str) -> str:
+    """Return the error message for a column that channel index lacks."""
     return (
-        f"channel {key} has no {name} column; read only a column that "
+        f"channel {index} has no {name} column; read only a column that "
         "columns() names"
     )
 
@@ -513,82 +514,82 @@ def recording_meta(bundle: Bundle) -> RecordingMeta | None:
 
 
 def channel_ids(
-    bundle: Bundle, keys: Iterable[int] | None = None
+    bundle: Bundle, indices: Iterable[int] | None = None
 ) -> dict[int, str]:
-    """Return the id of each channel of bundle that keys names, in key order.
+    """Return the id of each channel of bundle that indices names, in index order.
 
-    A channel without an id gets its key as a decimal string.
+    A channel without an id gets its index as a decimal string.
 
     Args:
         bundle: The open bundle.
-        keys: Channel keys to include. None names every channel, and a key the
+        indices: Channel indices to include. None names every channel, and an index the
             bundle lacks is left out of the result.
 
     Raises:
         ValueError: If two of the included channels share an id.
     """
-    chosen = None if keys is None else set(keys)
+    chosen = None if indices is None else set(indices)
     ids: dict[int, str] = {}
     owners: dict[str, int] = {}
-    for key, channel in bundle.channels.items():
-        if chosen is not None and key not in chosen:
+    for index, channel in bundle.channels.items():
+        if chosen is not None and index not in chosen:
             continue
         channel_id = _channel_id(channel)
         if channel_id in owners:
             raise ValueError(
-                f"channels {owners[channel_id]} and {key} share the id "
-                f"{channel_id!r}; keys must name at most one of them"
+                f"channels {owners[channel_id]} and {index} share the id "
+                f"{channel_id!r}; indices must name at most one of them"
             )
-        owners[channel_id] = key
-        ids[key] = channel_id
+        owners[channel_id] = index
+        ids[index] = channel_id
     return ids
 
 
 def bundle_sources(
     bundle: Bundle,
-    keys: Iterable[int] | None = None,
+    indices: Iterable[int] | None = None,
     *,
     epoch_us: int | None = None,
     drop_columns: Iterable[str] = frozenset(),
 ) -> tuple[list[BundleContinuousSource], list[BundleEventSource]]:
-    """Return writer sources for channels of bundle, each list in key order.
+    """Return writer sources for channels of bundle, each list in index order.
 
-    Each event source maps the key of every kept channel to its id. A key
-    whose channel has no id maps to the key as a decimal string. An event that
-    names a channel outside keys then makes read_channel_ids raise ValueError
+    Each event source maps the index of every kept channel to its id. An index
+    whose channel has no id maps to the index as a decimal string. An event that
+    names a channel outside indices then makes read_channel_ids raise ValueError
     during write_bundle, unless drop_columns holds channels. The output_path
     of write_bundle must differ from the location of bundle.
 
     Args:
         bundle: The open bundle.
-        keys: Channel keys to keep. None keeps every channel.
+        indices: Channel indices to keep. None keeps every channel.
         epoch_us: Reference time in microseconds since the Unix epoch. None
             takes the reference_time of recording.json, or 0 without one.
         drop_columns: Event columns that no event source carries.
 
     Returns:
-        The continuous sources and the event sources, each list in key order.
+        The continuous sources and the event sources, each list in index order.
 
     Raises:
-        KeyError: If keys names a channel the bundle lacks.
+        KeyError: If indices names a channel the bundle lacks.
         TypeError: If epoch_us is not an integer or drop_columns is a string.
         ValueError: If drop_columns names a column outside EventColumn or two
             kept channels share an id.
     """
     wanted = set(_EVENT_COLUMNS) - _event_columns(drop_columns, "drop_columns")
     chosen = set(bundle.channels)
-    if keys is not None:
+    if indices is not None:
         chosen = set()
-        for key in keys:
-            if key not in bundle.channels:
+        for index in indices:
+            if index not in bundle.channels:
                 listed = (
                     ", ".join(str(known) for known in bundle.channels) or "none"
                 )
                 raise KeyError(
-                    f"the bundle has no channel {key!r}; its channel keys "
+                    f"the bundle has no channel {index!r}; its channel indices "
                     f"are {listed}"
                 )
-            chosen.add(key)
+            chosen.add(index)
     epoch = (
         bundle_epoch_us(bundle)
         if epoch_us is None
@@ -597,8 +598,8 @@ def bundle_sources(
     ids = channel_ids(bundle, chosen)
     continuous: list[BundleContinuousSource] = []
     events: list[BundleEventSource] = []
-    for key, channel in bundle.channels.items():
-        if key not in chosen:
+    for index, channel in bundle.channels.items():
+        if index not in chosen:
             continue
         if isinstance(channel, ContinuousChannel):
             continuous.append(BundleContinuousSource(channel, epoch_us=epoch))

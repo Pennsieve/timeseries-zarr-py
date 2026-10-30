@@ -58,7 +58,7 @@ def _below(nodes, prefix):
 
 
 def _channel(location, key):
-    """Return channel key of a bundle, parsed from descendants of its root."""
+    """Return channel index of a bundle, parsed from descendants of its root."""
     root = open_root(location)
     groups, arrays = descendants(root)
     prefix = f"{key}/"
@@ -122,7 +122,7 @@ def _hand_parse(nodes, attributes=None):
 
 def test_odd_channel_without_id_or_offset_parses_with_defaults(odd_bundle):
     channel = _channel(odd_bundle, 0)
-    assert channel.key == 0
+    assert channel.index == 0
     assert channel.kind == "continuous"
     assert channel.name == "short"
     assert channel.id is None
@@ -203,9 +203,9 @@ def test_records_have_no_instance_dict(odd_bundle):
         assert not hasattr(record, "__dict__"), type(record).__name__
 
 
-def test_repr_names_the_key_name_rate_samples_and_level_count(odd_bundle):
+def test_repr_names_the_index_name_rate_samples_and_level_count(odd_bundle):
     assert repr(_channel(odd_bundle, 0)) == (
-        "ContinuousChannel(key=0, name='short', rate_hz=512.0, "
+        "ContinuousChannel(index=0, name='short', rate_hz=512.0, "
         "num_samples=1001, levels=2)"
     )
 
@@ -786,7 +786,7 @@ def test_parse_accepts_a_hand_built_channel():
     assert channel.levels[2].bins == 4
 
 
-def test_parse_ignores_unknown_nodes_and_keys():
+def test_parse_ignores_unknown_nodes_and_indices():
     nodes = _hand_nodes()
     nodes["0"] = level_group_attrs(1.0)
     nodes["01"] = level_group_attrs(1.0)

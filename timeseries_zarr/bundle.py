@@ -131,51 +131,51 @@ def assign_indices(
     continuous: Sequence[ContinuousChannelSource | MultiChannelSource],
     events: Sequence[EventChannelSource],
 ) -> list[tuple[int, AnySource]]:
-    """Assign each source its first channel key, continuous first then event.
+    """Assign each source its first channel index, continuous first then event.
 
     Args:
-        continuous: The continuous sources, in key order.
-        events: The event sources, in key order.
+        continuous: The continuous sources, in index order.
+        events: The event sources, in index order.
 
     Returns:
-        Pairs of first channel key and source. A multi-channel source comes
-        back with its channels listed once and uses one key for each channel.
+        Pairs of first channel index and source. A multi-channel source comes
+        back with its channels listed once and uses one index for each channel.
     """
     indexed: list[tuple[int, AnySource]] = []
-    key = 0
+    index = 0
     for source in continuous:
         if isinstance(source, MultiChannelSource):
             listed = _ListedSource(source, list(source.channels()))
-            indexed.append((key, listed))
-            key += len(listed.listed)
+            indexed.append((index, listed))
+            index += len(listed.listed)
         else:
-            indexed.append((key, source))
-            key += 1
+            indexed.append((index, source))
+            index += 1
     for event_source in events:
-        indexed.append((key, event_source))
-        key += 1
+        indexed.append((index, event_source))
+        index += 1
     return indexed
 
 
 def indexed_channels(
     indexed: Sequence[tuple[int, AnySource]],
 ) -> list[tuple[int, AnyChannel]]:
-    """List every channel of the indexed sources at its own key.
+    """List every channel of the indexed sources at its own index.
 
     Args:
-        indexed: Pairs of first channel key and source.
+        indexed: Pairs of first channel index and source.
 
     Returns:
-        Pairs of channel key and channel. A multi-channel source gives one
-        pair for each of its channels, at consecutive keys from its entry's
-        key. Any other entry stays as it is.
+        Pairs of channel index and channel. A multi-channel source gives one
+        pair for each of its channels, at consecutive indices from its entry's
+        index. Any other entry stays as it is.
     """
     channels: list[tuple[int, AnyChannel]] = []
-    for key, source in indexed:
+    for index, source in indexed:
         if isinstance(source, MultiChannelSource):
-            channels.extend(enumerate(source.channels(), start=key))
+            channels.extend(enumerate(source.channels(), start=index))
         else:
-            channels.append((key, source))
+            channels.append((index, source))
     return channels
 
 
@@ -220,38 +220,38 @@ def reference_us(
     return min(first_events, default=None)
 
 
-def channel_keys(indexed: Sequence[tuple[int, AnySource]]) -> dict[str, int]:
-    """Return each channel's id mapped to its channel key.
+def channel_indices(indexed: Sequence[tuple[int, AnySource]]) -> dict[str, int]:
+    """Return each channel's id mapped to its channel index.
 
-    The key names the channel's group in the bundle, and each channel of a
+    The index names the channel's group in the bundle, and each channel of a
     multi-channel source has its own. An event channel names the channels it
     applies to by id, so this is the table a channels column resolves through.
 
     Args:
-        indexed: Pairs of first channel key and source.
+        indexed: Pairs of first channel index and source.
 
     Raises:
         ValueError: If two channels share an id.
     """
-    keys: dict[str, int] = {}
+    indices: dict[str, int] = {}
     for index, channel in indexed_channels(indexed):
-        if channel.id in keys:
+        if channel.id in indices:
             raise ValueError(
-                f"channels {keys[channel.id]} and {index} share the id "
+                f"channels {indices[channel.id]} and {index} share the id "
                 f"{channel.id!r}"
             )
-        keys[channel.id] = index
-    return keys
+        indices[channel.id] = index
+    return indices
 
 
-def max_key(indexed: Sequence[tuple[int, AnySource]]) -> int:
-    """Return the largest channel key, which sizes the channels bitmask.
+def max_index(indexed: Sequence[tuple[int, AnySource]]) -> int:
+    """Return the largest channel index, which sizes the channels bitmask.
 
     Every channel of a multi-channel source counts. A bundle with no channels
     returns 0.
 
     Args:
-        indexed: Pairs of first channel key and source.
+        indexed: Pairs of first channel index and source.
     """
     return max((index for index, _ in indexed_channels(indexed)), default=0)
 
@@ -315,20 +315,20 @@ def write_all_channels(
     root: ZarrGroup,
     indexed: Sequence[tuple[int, AnySource]],
     reference_us: int,
-    channel_keys: Mapping[str, int],
+    channel_indices: Mapping[str, int],
     opts: WriteOpts,
 ) -> None:
     """Write every indexed source under root, dispatching by source type.
 
     Args:
         root: The root group of the bundle.
-        indexed: Pairs of first channel key and source.
+        indexed: Pairs of first channel index and source.
         reference_us: The reference time that every group is placed against.
-        channel_keys: Channel ids mapped to keys, which the event channels
+        channel_indices: Channel ids mapped to indices, which the event channels
             use to resolve the channels they apply to.
         opts: Sizing and compression options for every group.
     """
-    largest_key = max_key(indexed)
+    largest_index = max_index(indexed)
     for index, source in indexed:
         if isinstance(source, EventChannelSource):
             write_event_channel(
@@ -336,8 +336,8 @@ def write_all_channels(
                 index,
                 source,
                 reference_us=reference_us,
-                channel_keys=channel_keys,
-                max_key=largest_key,
+                channel_indices=channel_indices,
+                max_index=largest_index,
                 opts=opts,
             )
         elif isinstance(source, MultiChannelSource):
@@ -373,9 +373,9 @@ def write_bundle(
     consolidated into the root, and then recording.json is written when
     recording is given, so identity and the datetimes never enter the
     root object. A bundle an earlier run left at output_path is replaced.
-    Each channel has a key that names its group. Keys count up from 0 through
+    Each channel has an index that names its group. Indices count up from 0 through
     the continuous sources in list order and then the event sources. A
-    multi-channel source takes one key for each channel, in channel order.
+    multi-channel source takes one index for each channel, in channel order.
     Every time counts from the reference time: recording.reference_time when
     it is given, else the earlier of the session start and the first sample,
     as reference_us resolves it. A channel or event before it has a negative
@@ -386,8 +386,8 @@ def write_bundle(
     no consolidated metadata.
 
     Args:
-        continuous: The continuous sources, in key order.
-        events: The event sources, in key order after the continuous ones.
+        continuous: The continuous sources, in index order.
+        events: The event sources, in index order after the continuous ones.
         output_path: The bundle directory. It must be absent, empty, or an
             existing bundle.
         opts: Sizing and compression options.
@@ -430,7 +430,7 @@ def write_bundle(
         )
         document = recording_document(recording, reference)
         check_recording_document(document)
-    keys = channel_keys(indexed)
+    indices = channel_indices(indexed)
     for index, channel in channels:
         try:
             if isinstance(channel, EventChannelSource):
@@ -450,7 +450,7 @@ def write_bundle(
     clear_output_path(output_path)
     root = open_group(output_path, root_attrs())
     write_all_channels(
-        root, indexed, 0 if reference is None else reference, keys, opts
+        root, indexed, 0 if reference is None else reference, indices, opts
     )
     consolidate(root)
     if document is not None:

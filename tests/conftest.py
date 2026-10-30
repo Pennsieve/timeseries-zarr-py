@@ -513,7 +513,7 @@ def _level_statistics(samples, samples_per_bin):
 
 
 def _write_continuous(root, key, attrs, samples, levels, widths=None):
-    """Write continuous channel key with raw and the named level members.
+    """Write continuous channel index with raw and the named level members.
 
     levels maps each level number to the names of the members it holds. widths
     lists the samples per bin of level 1, 2, and so on, and the default is
@@ -553,7 +553,7 @@ def _write_marks(root):
     labels = (np.arange(ODD_EVENTS) % ODD_LABELS).astype(np.uint16)
     texts = [f"e{row}" if row % 4 == 1 else "" for row in range(ODD_EVENTS)]
     texts[ODD_FULL_TEXT_ROW] = ODD_FULL_TEXT
-    key_lists = [
+    index_lists = [
         ODD_CHANNEL_SETS[row % len(ODD_CHANNEL_SETS)]
         for row in range(ODD_EVENTS)
     ]
@@ -584,7 +584,7 @@ def _write_marks(root):
     _write_rows(channel, VALUES_KEY, values, event_dimensions)
     text = text_rows(texts, ODD_TEXT_WIDTH)
     _write_rows(channel, TEXT_KEY, text, row_dimensions)
-    bitmasks = channels_rows(key_lists, max(ODD_KEYS))
+    bitmasks = channels_rows(index_lists, max(ODD_KEYS))
     _write_rows(channel, CHANNELS_KEY, bitmasks, row_dimensions)
     _write_rows(
         channel, WAVEFORMS_KEY, waveforms, row_dimensions, snippet_attrs

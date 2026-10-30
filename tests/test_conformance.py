@@ -137,9 +137,9 @@ def test_the_manifest_channels_match_the_reader(name, built):
         assert len(bundle.channels) == entry["channel_count"]
         for channel in entry["channels"]:
             if channel["kind"] == "continuous":
-                _check_continuous(bundle.continuous[channel["key"]], channel)
+                _check_continuous(bundle.continuous[channel["index"]], channel)
             else:
-                _check_event(bundle.events[channel["key"]], channel)
+                _check_event(bundle.events[channel["index"]], channel)
 
 
 @pytest.mark.parametrize("name", VALUED)
@@ -217,7 +217,7 @@ def _check_event(channel, expected):
         assert table.text == expected["text"]
     if "channels" in expected:
         assert channel.channels.shape[1] == expected["channel_bytes"]
-        assert table.channel_keys == expected["channels"]
+        assert table.channel_indices == expected["channels"]
     if "waveform" in expected:
         _check_waveforms(channel, table, expected["waveform"])
     assert list(channel.count_levels) == [

@@ -65,19 +65,19 @@ class Stack:
     NaN past the end of its channel, or 0 when member is count.
 
     Attributes:
-        keys: The channel keys, one for each row of values.
-        names: The channel names, in the order of keys.
-        units: The channel units, in the order of keys.
+        indices: The channel indices, one for each row of values.
+        names: The channel names, in the order of indices.
+        units: The channel units, in the order of indices.
         level: The level of the entries. Level 0 holds raw samples.
         member: The statistic each entry holds. None at level 0.
         offset_us: The time of sample or bin 0, in microseconds from the
             reference time.
         first: The index of the first entry of each row.
         period_us: The duration of one entry in microseconds.
-        values: One row for each channel, in the order of keys.
+        values: One row for each channel, in the order of indices.
     """
 
-    keys: tuple[int, ...]
+    indices: tuple[int, ...]
     names: tuple[str, ...]
     units: tuple[str, ...]
     level: int
@@ -104,11 +104,11 @@ class Stack:
     def columns(self) -> Columns:
         """Return time_us and one column per channel.
 
-        The name of each channel column is its channel key as a decimal string.
+        The name of each channel column is its channel index as a decimal string.
         """
         columns: Columns = {TIME_COLUMN: self.time_us}
-        for key, row in zip(self.keys, self.values, strict=True):
-            columns[str(key)] = row
+        for index, row in zip(self.indices, self.values, strict=True):
+            columns[str(index)] = row
         return columns
 
     def to_dataframe(self) -> "pd.DataFrame":
@@ -162,8 +162,8 @@ def _check_rate_and_offset(
         ):
             if value != expected:
                 raise ValueError(
-                    f"channel {channel.key} has {field} {value!r} and "
-                    f"channel {reference.key} has {expected!r}; stack needs "
+                    f"channel {channel.index} has {field} {value!r} and "
+                    f"channel {reference.index} has {expected!r}; stack needs "
                     f"channels that share {shared}"
                 )
 
@@ -203,37 +203,37 @@ def check_shared_grid(
         chosen = channel.levels.get(number)
         if chosen is None:
             raise ValueError(
-                f"channel {channel.key} has no level {number}; stack needs "
+                f"channel {channel.index} has no level {number}; stack needs "
                 "a level that every channel holds"
             )
         if first_width is None:
             first_width = chosen.samples_per_bin
         elif chosen.samples_per_bin != first_width:
             raise ValueError(
-                f"level {number} of channel {channel.key} holds "
+                f"level {number} of channel {channel.index} holds "
                 f"{chosen.samples_per_bin} samples per bin and channel "
-                f"{channels[0].key} holds {first_width}; stack needs "
+                f"{channels[0].index} holds {first_width}; stack needs "
                 "channels whose level has the same width in samples"
             )
         name, _ = _MEMBER_ARRAYS[member]
         if name not in member_arrays(chosen):
             raise ValueError(
-                f"level {number} of channel {channel.key} has no {member}; "
+                f"level {number} of channel {channel.index} has no {member}; "
                 "stack needs a member that every channel holds at level "
                 f"{number}"
             )
 
 
 def _check_distinct(channels: Sequence[ContinuousChannel]) -> None:
-    """Raise ValueError if two channels share a key."""
+    """Raise ValueError if two channels share an index."""
     seen: set[int] = set()
     for channel in channels:
-        if channel.key in seen:
+        if channel.index in seen:
             raise ValueError(
-                f"stack needs distinct channels, got channel {channel.key} "
+                f"stack needs distinct channels, got channel {channel.index} "
                 "more than once"
             )
-        seen.add(channel.key)
+        seen.add(channel.index)
 
 
 def _check_max_workers(max_workers: SupportsIndex) -> int:
@@ -276,7 +276,7 @@ def stack_channels(
             them in order on the calling thread.
 
     Raises:
-        ValueError: If two channels share a key, if check_shared_grid rejects
+        ValueError: If two channels share an index, if check_shared_grid rejects
             the channels, if end_us is before start_us, or if max_workers is
             below 1.
         TypeError: If a bound, level, or max_workers is not an integer.
@@ -315,7 +315,7 @@ def stack_channels(
     for index, row in enumerate(rows):
         values[index, : row.shape[0]] = row
     return Stack(
-        keys=tuple(channel.key for channel in channels),
+        indices=tuple(channel.index for channel in channels),
         names=tuple(channel.name for channel in channels),
         units=tuple(channel.unit for channel in channels),
         level=number,

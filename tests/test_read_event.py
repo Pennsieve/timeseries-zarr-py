@@ -40,7 +40,7 @@ _SNIPPET_ATTRS = {"tsz": {"period_us": 100.0, "event_sample": 1}}
 
 
 def _channel_nodes(root, key):
-    """Return the attributes of channel key and its nodes keyed below it."""
+    """Return the attributes of channel index and its nodes keyed below it."""
     groups, arrays = descendants(root)
     prefix = f"{key}/"
 
@@ -130,19 +130,19 @@ def test_read_without_label_names_gives_labels_and_no_label_name(odd):
     assert table.label_name is None
 
 
-def test_read_returns_values_text_and_channel_keys(odd):
+def test_read_returns_values_text_and_channel_indices(odd):
     table = odd[9].read()
     texts = [f"e{row}" if row % 4 == 1 else "" for row in range(ODD_EVENTS)]
     texts[ODD_FULL_TEXT_ROW] = ODD_FULL_TEXT
     assert table.value.tolist() == [row / 8 for row in range(ODD_EVENTS)]
     assert table.text == texts
-    assert table.channel_keys == [
+    assert table.channel_indices == [
         list(ODD_CHANNEL_SETS[row % len(ODD_CHANNEL_SETS)])
         for row in range(ODD_EVENTS)
     ]
 
 
-def test_applies_to_marks_events_naming_the_key(odd):
+def test_applies_to_marks_events_naming_the_index(odd):
     table = odd[9].read()
     rows = np.arange(ODD_EVENTS) % len(ODD_CHANNEL_SETS)
     np.testing.assert_array_equal(table.applies_to(0), rows == 0)
@@ -153,7 +153,7 @@ def test_applies_to_marks_events_naming_the_key(odd):
 def test_an_event_with_no_channel_applies_to_no_index(odd):
     table = odd[9].read()
     empty = [
-        index for index, keys in enumerate(table.channel_keys) if keys == []
+        index for index, keys in enumerate(table.channel_indices) if keys == []
     ]
     assert empty
     for key in range(13):
@@ -169,7 +169,7 @@ def test_applies_to_rejects_a_read_that_left_out_channels(odd):
     with pytest.raises(
         ValueError,
         match=(
-            "the table has no channel_keys; read with 'channels' among "
+            "the table has no channel_indices; read with 'channels' among "
             "columns to find the events that apply to a channel"
         ),
     ):
@@ -327,7 +327,7 @@ def test_odd_marks_channel_omits_id_and_label_names(odd):
         "waveforms",
     )
     assert repr(channel) == (
-        "EventChannel(key=9, name='marks', num_events=64, columns=('labels', "
+        "EventChannel(index=9, name='marks', num_events=64, columns=('labels', "
         "'values', 'text', 'channels', 'waveforms'))"
     )
 
@@ -354,7 +354,7 @@ def test_read_with_equal_bounds_on_point_events_is_empty(odd):
     assert table.label.shape == (0,)
     assert table.value.shape == (0,)
     assert table.text == []
-    assert table.channel_keys == []
+    assert table.channel_indices == []
     assert table.waveform.values.shape == (0, ODD_WAVEFORM_SAMPLES)
     assert table.label_name is None
 
@@ -402,7 +402,7 @@ def test_read_columns_returns_only_the_named_columns(odd):
     assert table.waveform is not None
     assert table.value is None
     assert table.text is None
-    assert table.channel_keys is None
+    assert table.channel_indices is None
     assert table.duration_us is None
     assert len(table) == ODD_EVENTS
 
@@ -729,7 +729,7 @@ def test_written_marks_read_back_with_their_columns(mixed):
         "seizure",
         "x",
     ]
-    assert table.channel_keys == [[0], [], [0, 1], [], [1], []]
+    assert table.channel_indices == [[0], [], [0, 1], [], [1], []]
 
 
 def test_written_interval_stays_in_windows_until_it_ends(mixed):
@@ -739,7 +739,7 @@ def test_written_interval_stays_in_windows_until_it_ends(mixed):
     assert table.duration_us.tolist() == [12_000_000]
     assert table.label_name == ["seizure"]
     assert table.text == ["seizure"]
-    assert table.channel_keys == [[1]]
+    assert table.channel_indices == [[1]]
     assert channel.read(33_999_999, 40_000_000).time_us.tolist() == [22_000_000]
     assert len(channel.read(34_000_000, 40_000_000)) == 0
 
@@ -1049,7 +1049,7 @@ def test_parse_accepts_dtypes_of_the_right_kind_at_any_width():
     assert channel.count_levels[1].count.dtype == np.int64
 
 
-def test_unknown_nodes_and_keys_are_ignored():
+def test_unknown_nodes_and_indices_are_ignored():
     channel = _built(
         {
             "events": _BUILT_EVENTS,
@@ -1684,7 +1684,7 @@ def test_read_rejects_a_channels_bit_at_or_above_the_channel_count():
     )
     with pytest.raises(ValueError, match="event 1 sets channel bit 2"):
         channel.read()
-    assert channel.read(0, 15).channel_keys == [[0]]
+    assert channel.read(0, 15).channel_indices == [[0]]
 
 
 def test_read_accepts_every_channels_bit_below_the_channel_count():
@@ -1692,7 +1692,7 @@ def test_read_accepts_every_channels_bit_below_the_channel_count():
     channel = _with_channel_count(
         {"events": _BUILT_EVENTS, "channels": rows}, 3
     )
-    assert channel.read().channel_keys == [[0, 1], [2], []]
+    assert channel.read().channel_indices == [[0, 1], [2], []]
 
 
 def test_records_built_by_hand_derive_their_time_axes_and_names():
@@ -1719,7 +1719,7 @@ def test_records_built_by_hand_derive_their_time_axes_and_names():
         label=np.array([1, 0], np.uint16),
         value=None,
         text=None,
-        channel_keys=[[], [3]],
+        channel_indices=[[], [3]],
         waveform=None,
         label_names=("a", "b"),
     )
@@ -1729,20 +1729,20 @@ def test_records_built_by_hand_derive_their_time_axes_and_names():
     assert table.whole_recording is False
 
 
-def test_applies_to_follows_whole_recording_without_channel_keys():
+def test_applies_to_follows_whole_recording_without_channel_indices():
     table = EventTable(
         time_us=np.array([5, 6], np.int64),
         duration_us=None,
         label=None,
         value=None,
         text=None,
-        channel_keys=None,
+        channel_indices=None,
         waveform=None,
         label_names=None,
         whole_recording=True,
     )
     assert table.applies_to(3).tolist() == [True, True]
-    with pytest.raises(ValueError, match="the table has no channel_keys"):
+    with pytest.raises(ValueError, match="the table has no channel_indices"):
         dataclasses.replace(table, whole_recording=False).applies_to(3)
 
 
@@ -1818,17 +1818,17 @@ def test_table_columns_hold_the_times_then_each_present_column(mixed):
         "label",
         "label_name",
         "text",
-        "channel_keys",
+        "channel_indices",
     ]
     assert columns["time_us"] is table.time_us
     assert columns["duration_us"] is table.duration_us
     assert columns["label"] is table.label
-    for name in ("label_name", "text", "channel_keys"):
+    for name in ("label_name", "text", "channel_indices"):
         assert columns[name].dtype == np.object_
         assert columns[name].shape == (len(table),)
     assert columns["label_name"].tolist() == table.label_name
     assert columns["text"].tolist() == table.text
-    assert columns["channel_keys"].tolist() == [[0], [], [0, 1], [], [1], []]
+    assert columns["channel_indices"].tolist() == [[0], [], [0, 1], [], [1], []]
 
 
 def test_table_columns_hold_values_and_leave_out_the_waveform(odd):
@@ -1840,7 +1840,7 @@ def test_table_columns_hold_values_and_leave_out_the_waveform(odd):
         "label",
         "value",
         "text",
-        "channel_keys",
+        "channel_indices",
     ]
     assert columns["value"] is table.value
 
@@ -1926,18 +1926,18 @@ def test_table_repr_has_the_same_length_for_a_short_and_a_long_read(odd):
     assert len(repr(short)) == len(repr(long))
 
 
-def test_table_columns_keep_equal_length_key_lists_as_lists():
+def test_table_columns_keep_equal_length_index_lists_as_lists():
     table = EventTable(
         time_us=np.array([5, 6], np.int64),
         duration_us=None,
         label=None,
         value=None,
         text=None,
-        channel_keys=[[0, 1], [2, 3]],
+        channel_indices=[[0, 1], [2, 3]],
         waveform=None,
         label_names=None,
     )
-    keys = table.columns()["channel_keys"]
+    keys = table.columns()["channel_indices"]
     assert keys.shape == (2,)
     assert keys.tolist() == [[0, 1], [2, 3]]
 

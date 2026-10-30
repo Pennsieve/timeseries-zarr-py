@@ -12,7 +12,7 @@ from timeseries_zarr.read_continuous import Bins, Samples
 from timeseries_zarr.read_event import Counts, EventTable, Waveform
 
 _TEXT = ["onset", "", "caf\N{LATIN SMALL LETTER E WITH ACUTE}"]
-_CHANNEL_KEYS = [[0], [], [1, 2]]
+_CHANNEL_INDICES = [[0], [], [1, 2]]
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ def _table():
         label=np.array([0, 1, 0], dtype=np.uint16),
         value=np.array([0.25, 0.5, 0.75], dtype=np.float32),
         text=list(_TEXT),
-        channel_keys=[list(keys) for keys in _CHANNEL_KEYS],
+        channel_indices=[list(indices) for indices in _CHANNEL_INDICES],
         waveform=_waveform(3),
         label_names=("seizure", "spike"),
     )
@@ -80,7 +80,7 @@ def _times_only_table():
         label=None,
         value=None,
         text=None,
-        channel_keys=None,
+        channel_indices=None,
         waveform=_waveform(),
         label_names=None,
         whole_recording=True,
@@ -215,7 +215,7 @@ def test_events_to_dataframe_holds_one_row_per_event_in_column_order(pd):
         "label_name",
         "value",
         "text",
-        "channel_keys",
+        "channel_indices",
     ]
     assert frame["time_us"].tolist() == [10, 20, 20]
     assert frame["time_us"].dtype == np.int64
@@ -224,7 +224,7 @@ def test_events_to_dataframe_holds_one_row_per_event_in_column_order(pd):
     assert frame["value"].dtype == np.float32
     assert frame["label_name"].tolist() == ["seizure", "spike", "seizure"]
     assert frame["text"].tolist() == _TEXT
-    assert frame["channel_keys"].tolist() == _CHANNEL_KEYS
+    assert frame["channel_indices"].tolist() == _CHANNEL_INDICES
 
 
 def test_events_to_dataframe_omits_absent_columns_and_the_waveform(pd):
@@ -422,7 +422,14 @@ def test_mixed_bundle_reads_convert_to_pandas_and_xarray(pd, xr, mixed_bundle):
             "seizure",
             "x",
         ]
-        assert marks["channel_keys"].tolist() == [[0], [], [0, 1], [], [1], []]
+        assert marks["channel_indices"].tolist() == [
+            [0],
+            [],
+            [0, 1],
+            [],
+            [1],
+            [],
+        ]
         counts = bundle.events[4].read_counts(level=4).to_xarray()
         assert counts["label"].values.tolist() == ["ripple", "fast-ripple"]
         assert int(counts.sum()) == bundle.events[4].num_events

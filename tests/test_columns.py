@@ -130,39 +130,39 @@ def test_text_rows_rejects_a_string_that_cannot_be_encoded():
         text_rows(["\ud800"], 8)
 
 
-def _reference_channels(key_sets, max_key):
+def _reference_channels(index_sets, max_index):
     """The reference generator's bitmask encoder."""
-    out = np.zeros((len(key_sets), (max_key + 1 + 7) // 8), np.uint8)
-    for i, keys in enumerate(key_sets):
-        for k in keys:
+    out = np.zeros((len(index_sets), (max_index + 1 + 7) // 8), np.uint8)
+    for i, indices in enumerate(index_sets):
+        for k in indices:
             out[i, k // 8] |= 1 << (k % 8)
     return out
 
 
 @pytest.mark.parametrize(
-    ("max_key", "expected"),
+    ("max_index", "expected"),
     [(0, 1), (1, 1), (7, 1), (8, 2), (15, 2), (16, 3), (255, 32), (256, 33)],
 )
-def test_channels_width_is_one_bit_per_key_rounded_up_to_bytes(
-    max_key, expected
+def test_channels_width_is_one_bit_per_index_rounded_up_to_bytes(
+    max_index, expected
 ):
-    assert channels_width(max_key) == expected
+    assert channels_width(max_index) == expected
 
 
-def test_channels_width_rejects_a_negative_max_key():
-    with pytest.raises(ValueError, match="max_key"):
+def test_channels_width_rejects_a_negative_max_index():
+    with pytest.raises(ValueError, match="max_index"):
         channels_width(-1)
 
 
 def test_channels_rows_equals_the_reference_encoder():
-    key_sets = [(0,), (), (1, 3), (0, 5, 9, 17), (4,), tuple(range(18))]
+    index_sets = [(0,), (), (1, 3), (0, 5, 9, 17), (4,), tuple(range(18))]
     assert np.array_equal(
-        channels_rows(key_sets, 17), _reference_channels(key_sets, 17)
+        channels_rows(index_sets, 17), _reference_channels(index_sets, 17)
     )
 
 
 @pytest.mark.parametrize(
-    ("keys", "expected"),
+    ("indices", "expected"),
     [
         ([0], [1, 0]),
         ([7], [128, 0]),
@@ -172,18 +172,18 @@ def test_channels_rows_equals_the_reference_encoder():
         ([], [0, 0]),
     ],
 )
-def test_channels_rows_places_key_k_at_bit_k_mod_8_of_byte_k_div_8(
-    keys, expected
+def test_channels_rows_places_index_k_at_bit_k_mod_8_of_byte_k_div_8(
+    indices, expected
 ):
-    assert channels_rows([keys], 15).tolist() == [expected]
+    assert channels_rows([indices], 15).tolist() == [expected]
 
 
-def test_channels_rows_unpacks_back_to_the_keys_least_significant_bit_first():
-    key_sets = [[0, 3, 12], [9], [], [1, 2]]
-    rows = channels_rows(key_sets, 12)
+def test_channels_rows_unpacks_back_to_the_indices_least_significant_bit_first():
+    index_sets = [[0, 3, 12], [9], [], [1, 2]]
+    rows = channels_rows(index_sets, 12)
     bits = np.unpackbits(rows, axis=1, bitorder="little")
-    keys = [np.flatnonzero(row).tolist() for row in bits]
-    assert keys == [[0, 3, 12], [9], [], [1, 2]]
+    indices = [np.flatnonzero(row).tolist() for row in bits]
+    assert indices == [[0, 3, 12], [9], [], [1, 2]]
 
 
 def test_channels_rows_empty_list_is_a_row_of_zeros_naming_no_channel():
@@ -191,11 +191,11 @@ def test_channels_rows_empty_list_is_a_row_of_zeros_naming_no_channel():
     assert rows.tolist() == [[0], [4], [0]]
 
 
-def test_channels_rows_repeated_and_unordered_keys_set_each_bit_once():
+def test_channels_rows_repeated_and_unordered_indices_set_each_bit_once():
     assert channels_rows([[5, 1, 5, 1, 1]], 7).tolist() == [[34]]
 
 
-def test_channels_rows_accepts_the_largest_key():
+def test_channels_rows_accepts_the_largest_index():
     rows = channels_rows([[16]], 16)
     assert rows.shape == (1, 3)
     assert rows.tolist() == [[0, 0, 1]]
@@ -211,30 +211,30 @@ def test_channels_rows_empty_sequence_yields_zero_rows():
     assert channels_rows([], 9).shape == (0, 2)
 
 
-def test_channels_rows_accepts_numpy_integer_keys_and_generators():
+def test_channels_rows_accepts_numpy_integer_indices_and_generators():
     rows = channels_rows([np.array([0, 9]), (k for k in (1, 2))], 9)
     assert rows.tolist() == [[1, 2], [6, 0]]
 
 
-def test_channels_rows_equals_the_reference_on_many_random_key_sets():
+def test_channels_rows_equals_the_reference_on_many_random_index_sets():
     rng = np.random.default_rng(1)
-    key_sets = [
+    index_sets = [
         tuple(rng.integers(0, 40, int(rng.integers(0, 6))).tolist())
         for _ in range(3000)
     ]
     assert np.array_equal(
-        channels_rows(key_sets, 39), _reference_channels(key_sets, 39)
+        channels_rows(index_sets, 39), _reference_channels(index_sets, 39)
     )
 
 
-@pytest.mark.parametrize("keys", [[-1], [0, 8], [5, 100]])
-def test_channels_rows_rejects_a_key_outside_zero_to_max_key(keys):
+@pytest.mark.parametrize("indices", [[-1], [0, 8], [5, 100]])
+def test_channels_rows_rejects_an_index_outside_zero_to_max_index(indices):
     with pytest.raises(ValueError, match="between 0 and 7"):
-        channels_rows([keys], 7)
+        channels_rows([indices], 7)
 
 
-def test_channels_rows_rejects_a_negative_max_key():
-    with pytest.raises(ValueError, match="max_key"):
+def test_channels_rows_rejects_a_negative_max_index():
+    with pytest.raises(ValueError, match="max_index"):
         channels_rows([[0]], -1)
 
 
@@ -343,13 +343,13 @@ def test_decode_text_rows_rejects_a_dtype_other_than_uint8(dtype):
         decode_text_rows(rows)
 
 
-def test_decode_channels_rows_inverts_channels_rows_on_many_random_key_sets():
+def test_decode_channels_rows_inverts_channels_rows_on_many_random_index_sets():
     rng = np.random.default_rng(3)
-    key_sets = [
+    index_sets = [
         sorted(set(rng.integers(0, 40, int(rng.integers(0, 8))).tolist()))
         for _ in range(3000)
     ]
-    assert decode_channels_rows(channels_rows(key_sets, 39)) == key_sets
+    assert decode_channels_rows(channels_rows(index_sets, 39)) == index_sets
 
 
 @pytest.mark.parametrize(
@@ -363,19 +363,19 @@ def test_decode_channels_rows_inverts_channels_rows_on_many_random_key_sets():
         ([255, 255], list(range(16))),
     ],
 )
-def test_decode_channels_rows_reads_key_k_from_bit_k_mod_8_of_byte_k_div_8(
+def test_decode_channels_rows_reads_index_k_from_bit_k_mod_8_of_byte_k_div_8(
     row, expected
 ):
     assert decode_channels_rows(_byte_rows(row)) == [expected]
 
 
-def test_decode_channels_rows_reads_keys_above_7_across_3_bytes():
+def test_decode_channels_rows_reads_indices_above_7_across_3_bytes():
     rows = channels_rows([[3, 8, 23], [16, 2]], 23)
     assert rows.shape == (2, 3)
     assert decode_channels_rows(rows) == [[3, 8, 23], [2, 16]]
 
 
-def test_decode_channels_rows_gives_each_repeated_key_once_in_ascending_order():
+def test_decode_channels_rows_gives_each_repeated_index_once_in_ascending_order():
     rows = channels_rows([[9, 5, 1, 9, 5, 1]], 15)
     assert decode_channels_rows(rows) == [[1, 5, 9]]
 
@@ -389,14 +389,14 @@ def test_decode_channels_rows_gives_an_empty_list_for_zero_rows():
     assert decode_channels_rows(np.zeros((0, 2), dtype=np.uint8)) == []
 
 
-def test_decode_channels_rows_gives_empty_key_lists_at_width_zero():
+def test_decode_channels_rows_gives_empty_index_lists_at_width_zero():
     rows = np.zeros((2, 0), dtype=np.uint8)
     assert decode_channels_rows(rows) == [[], []]
 
 
 def test_decode_channels_rows_returns_python_integers():
-    keys = decode_channels_rows(channels_rows([[0, 9]], 9))[0]
-    assert all(type(key) is int for key in keys)
+    indices = decode_channels_rows(channels_rows([[0, 9]], 9))[0]
+    assert all(type(index) is int for index in indices)
 
 
 @pytest.mark.parametrize("shape", [(4,), (2, 3, 4), ()])

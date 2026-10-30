@@ -132,13 +132,13 @@ def _channel_group_metadata(
 
 def create_channel_group(
     parent: ZarrGroup,
-    key: int,
+    index: int,
     channel: ContinuousChannelMetadata,
     *,
     reference_us: int,
     unit: str,
 ) -> ZarrGroup:
-    """Create the channel group named str(key) with the continuous attributes.
+    """Create the channel group named str(index) with the continuous attributes.
 
     The group stores unit as given, whatever unit the channel declares. Its
     offset_us is the distance in microseconds from reference_us to the first
@@ -147,7 +147,7 @@ def create_channel_group(
 
     Args:
         parent: The group that receives the channel group.
-        key: The channel number that names the group.
+        index: The channel index that names the group.
         channel: The channel metadata.
         reference_us: The reference time in microseconds.
         unit: The unit string to store.
@@ -159,7 +159,7 @@ def create_channel_group(
         ValueError: If the rate is not positive or the provenance is not a
             JSON object of finite values.
     """
-    name = str(key)
+    name = str(index)
     metadata = _channel_group_metadata(
         channel, reference_us=reference_us, unit=unit
     )
@@ -374,7 +374,7 @@ class ChannelWriter:
 
     def __init__(
         self,
-        key: int,
+        index: int,
         channel: ContinuousChannelMetadata,
         raw: ShardLayout,
         levels: Sequence[LevelMembers[ShardLayout]],
@@ -387,7 +387,7 @@ class ChannelWriter:
         """Start a channel.
 
         Args:
-            key: The channel number.
+            index: The channel index.
             channel: The channel metadata.
             raw: The layout of the raw array.
             levels: The layout of each level's members, in level order.
@@ -401,7 +401,7 @@ class ChannelWriter:
             placement: The runs of the channel on its grid. None means one run
                 of num_samples samples.
         """
-        self._key = key
+        self._index = index
         self._channel = channel
         self._factor = factor
         self._num_samples = channel.num_samples()
@@ -441,8 +441,8 @@ class ChannelWriter:
 
     @property
     def label(self) -> str:
-        """The channel key and id, as an error message names the channel."""
-        return f"channel {self._key} ({self._channel.id!r})"
+        """The channel index and id, as an error message names the channel."""
+        return f"channel {self._index} ({self._channel.id!r})"
 
     def push(self, block: npt.ArrayLike) -> None:
         """Write the samples of block and fold them into every level.
@@ -550,7 +550,7 @@ class ChannelWriter:
 
 def _add_channel_nodes(
     nodes: dict[str, NodeMetadata],
-    key: int,
+    index: int,
     channel: ContinuousChannelMetadata,
     resolved: ResolvedUnit,
     reference_us: int,
@@ -572,16 +572,16 @@ def _add_channel_nodes(
         opts.min_bins,
         decimation_factor=opts.decimation_factor,
     )
-    nodes[str(key)] = _channel_group_metadata(
+    nodes[str(index)] = _channel_group_metadata(
         channel, reference_us=reference_us, unit=resolved.unit
     )
-    nodes[f"{key}/{RAW_KEY}"] = _raw_metadata(
+    nodes[f"{index}/{RAW_KEY}"] = _raw_metadata(
         num_samples,
         raw_sizing(num_samples, opts.inner_len, opts.target_shard_bytes),
         opts.zstd_level,
     )
     if placement.table.shape[0] >= _MIN_RUNS_FOR_TABLE:
-        nodes[f"{key}/{RUNS_KEY}"] = array_metadata(
+        nodes[f"{index}/{RUNS_KEY}"] = array_metadata(
             placement.table.shape,
             np.int64,
             placement.table.shape,
@@ -599,7 +599,7 @@ def _add_channel_nodes(
                 ),
                 opts.zstd_level,
                 opts.write_var,
-                prefix=f"{key}/",
+                prefix=f"{index}/",
             )
         )
     return plans, placement
@@ -607,7 +607,7 @@ def _add_channel_nodes(
 
 def _channel_writer(
     handles: dict[str, ZarrGroup | ZarrArray],
-    key: int,
+    index: int,
     channel: ContinuousChannelMetadata,
     plans: Sequence[LevelPlan],
     placement: Placement,
@@ -619,12 +619,12 @@ def _channel_writer(
 
     A channel with a runs array gets its table written here, as one shard.
     """
-    runs_key = f"{key}/{RUNS_KEY}"
+    runs_key = f"{index}/{RUNS_KEY}"
     if runs_key in handles:
         write_region(cast("ZarrArray", handles[runs_key]), 0, placement.table)
     levels = []
     for plan in plans:
-        members = _level_members(handles, plan, opts.write_var, f"{key}/")
+        members = _level_members(handles, plan, opts.write_var, f"{index}/")
         levels.append(
             LevelMembers(
                 minmax=shard_layout(members.minmax),
@@ -634,9 +634,9 @@ def _channel_writer(
             )
         )
     return ChannelWriter(
-        key,
+        index,
         channel,
-        shard_layout(cast("ZarrArray", handles[f"{key}/{RAW_KEY}"])),
+        shard_layout(cast("ZarrArray", handles[f"{index}/{RAW_KEY}"])),
         levels,
         factor,
         opts.inner_len,
@@ -730,13 +730,13 @@ def _wait_for(jobs: Sequence[tuple[ChannelWriter, Future[None]]]) -> None:
 
 def write_continuous_channel(
     parent: ZarrGroup,
-    key: int,
+    index: int,
     source: ContinuousChannelSource,
     *,
     reference_us: int,
     opts: WriteOpts,
 ) -> None:
-    """Write one continuous channel as the subgroup named str(key).
+    """Write one continuous channel as the subgroup named str(index).
 
     A voltage unit resolves under opts.voltage_policy before the group is
     created, and the raw samples are scaled to match. The source is read in
@@ -746,7 +746,7 @@ def write_continuous_channel(
 
     Args:
         parent: The group that receives the channel group.
-        key: The channel number that names the group.
+        index: The channel index that names the group.
         source: The source of the channel.
         reference_us: The reference time in microseconds.
         opts: The write settings.
@@ -760,7 +760,7 @@ def write_continuous_channel(
     resolved = resolve_unit(source.unit, opts.voltage_policy)
     nodes: dict[str, NodeMetadata] = {}
     plans, placement = _add_channel_nodes(
-        nodes, key, source, resolved, reference_us, opts
+        nodes, index, source, resolved, reference_us, opts
     )
     handles = create_nodes(parent, nodes)
     block_samples = raw_sizing(
@@ -769,7 +769,14 @@ def write_continuous_channel(
     workers = opts.worker_count
     with _pool(workers) as pool:
         writer = _channel_writer(
-            handles, key, source, plans, placement, resolved.factor, opts, pool
+            handles,
+            index,
+            source,
+            plans,
+            placement,
+            resolved.factor,
+            opts,
+            pool,
         )
         for block in iter_raw_blocks(source, block_samples):
             writer.push(block)
@@ -778,13 +785,13 @@ def write_continuous_channel(
 
 def write_continuous_channels(
     parent: ZarrGroup,
-    first_key: int,
+    first_index: int,
     source: MultiChannelSource,
     *,
     reference_us: int,
     opts: WriteOpts,
 ) -> None:
-    """Write the channels of source as the subgroups named from str(first_key).
+    """Write the channels of source as the subgroups named from str(first_index).
 
     The channel groups, the raw arrays, and the level groups and members of
     every channel are created in one call, with the attributes and shapes that
@@ -802,7 +809,7 @@ def write_continuous_channels(
 
     Args:
         parent: The group that receives the channel groups.
-        first_key: The channel number of the first channel.
+        first_index: The channel index of the first channel.
         source: The multi-channel source.
         reference_us: The reference time in microseconds.
         opts: The write settings.
@@ -823,15 +830,15 @@ def write_continuous_channels(
     if not channels:
         return
     nodes: dict[str, NodeMetadata] = {}
-    plans_by_key: dict[int, list[LevelPlan]] = {}
+    plans_by_index: dict[int, list[LevelPlan]] = {}
     placements: dict[int, Placement] = {}
     factors: dict[int, float] = {}
-    for key, channel in enumerate(channels, start=first_key):
+    for index, channel in enumerate(channels, start=first_index):
         resolved = resolve_unit(channel.unit, opts.voltage_policy)
-        plans_by_key[key], placements[key] = _add_channel_nodes(
-            nodes, key, channel, resolved, reference_us, opts
+        plans_by_index[index], placements[index] = _add_channel_nodes(
+            nodes, index, channel, resolved, reference_us, opts
         )
-        factors[key] = resolved.factor
+        factors[index] = resolved.factor
     handles = create_nodes(parent, nodes)
     workers = opts.worker_count
     pool = ThreadPoolExecutor(workers, thread_name_prefix="timeseries-zarr")
@@ -841,15 +848,15 @@ def write_continuous_channels(
         writers = [
             _channel_writer(
                 handles,
-                key,
+                index,
                 channel,
-                plans_by_key[key],
-                placements[key],
-                factors[key],
+                plans_by_index[index],
+                placements[index],
+                factors[index],
                 opts,
                 encoder,
             )
-            for key, channel in enumerate(channels, start=first_key)
+            for index, channel in enumerate(channels, start=first_index)
         ]
         jobs: list[tuple[ChannelWriter, Future[None]]] = []
         batch: list[Window] = []

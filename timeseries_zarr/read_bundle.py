@@ -51,7 +51,7 @@ _DATETIME_BOUND = (
     f"2^{_DATETIME_LIMIT_EXPONENT} microseconds in magnitude"
 )
 _DESCRIBE_HEADER: tuple[str, ...] = (
-    "key",
+    "index",
     "kind",
     "name",
     "id",
@@ -80,7 +80,7 @@ def _describe_row(channel: Channel) -> tuple[str, ...]:
     """Return the cells of the describe table for one channel."""
     if isinstance(channel, ContinuousChannel):
         return (
-            str(channel.key),
+            str(channel.index),
             channel.kind,
             channel.name,
             _ABSENT if channel.id is None else channel.id,
@@ -90,7 +90,7 @@ def _describe_row(channel: Channel) -> tuple[str, ...]:
             _level_span(len(channel.levels)),
         )
     return (
-        str(channel.key),
+        str(channel.index),
         channel.kind,
         channel.name,
         _ABSENT if channel.id is None else channel.id,
@@ -167,7 +167,7 @@ class Bundle:
         version: The tsz.version of the root group.
         recording: The parsed recording.json, or None when the bundle has
             none.
-        channels: Each channel by key, in key order. A channel group whose
+        channels: Each channel by index, in index order. A channel group whose
             kind is unknown is absent.
     """
 
@@ -178,19 +178,19 @@ class Bundle:
 
     @property
     def continuous(self) -> dict[int, ContinuousChannel]:
-        """Continuous channels by key, in key order."""
+        """Continuous channels by index, in index order."""
         return {
-            key: channel
-            for key, channel in self.channels.items()
+            index: channel
+            for index, channel in self.channels.items()
             if isinstance(channel, ContinuousChannel)
         }
 
     @property
     def events(self) -> dict[int, EventChannel]:
-        """Event channels by key, in key order."""
+        """Event channels by index, in index order."""
         return {
-            key: channel
-            for key, channel in self.channels.items()
+            index: channel
+            for index, channel in self.channels.items()
             if isinstance(channel, EventChannel)
         }
 
@@ -223,23 +223,23 @@ class Bundle:
             KeyError: No channel has that name or id.
         """
         named = [
-            key
-            for key, channel in self.channels.items()
+            index
+            for index, channel in self.channels.items()
             if channel.name == name_or_id
         ]
         identified = [
-            key
-            for key, channel in self.channels.items()
+            index
+            for index, channel in self.channels.items()
             if channel.id == name_or_id
         ]
-        for noun, keys in (("name", named), ("id", identified)):
-            if len(keys) == 1:
-                return self.channels[keys[0]]
-            if keys:
-                listed = ", ".join(str(key) for key in keys)
+        for noun, indices in (("name", named), ("id", identified)):
+            if len(indices) == 1:
+                return self.channels[indices[0]]
+            if indices:
+                listed = ", ".join(str(index) for index in indices)
                 raise ValueError(
                     f"channels {listed} share the {noun} {name_or_id!r}; "
-                    "select one of them by key in channels"
+                    "select one of them by index in channels"
                 )
         raise KeyError(
             f"no channel has the name or id {name_or_id!r}; describe() lists "
@@ -298,7 +298,7 @@ class Bundle:
 
     def stack(
         self,
-        keys: Sequence[int],
+        indices: Sequence[int],
         start_us: SupportsIndex | None = None,
         end_us: SupportsIndex | None = None,
         *,
@@ -306,15 +306,15 @@ class Bundle:
         member: BinMember = "mean",
         max_workers: SupportsIndex = 1,
     ) -> Stack:
-        """Return the window of each continuous channel in keys as a Stack.
+        """Return the window of each continuous channel in indices as a Stack.
 
-        The rows follow the order of keys. The rows span every entry that
+        The rows follow the order of indices. The rows span every entry that
         overlaps the window on any channel. A row holds NaN past the end of
         its channel, or 0 when member is count. The result does not depend on
         max_workers.
 
         Args:
-            keys: Channel keys of the continuous channels to stack.
+            indices: Channel indices of the continuous channels to stack.
             start_us: Inclusive start of the window. None leaves it open.
             end_us: Exclusive end of the window. None leaves it open.
             level: Level 0 reads the raw samples, and the member of the Stack
@@ -328,15 +328,15 @@ class Bundle:
             The stacked window.
 
         Raises:
-            KeyError: No channel has a key.
-            ValueError: keys is empty, repeats a key, or names an event
+            KeyError: No channel has an index.
+            ValueError: indices is empty, repeats an index, or names an event
                 channel. Also raised when the channels differ in rate_hz or
                 offset_us, a channel lacks the level or member, member is not
                 a BinMember at a level of at least 1, end_us is before
                 start_us, or max_workers is below 1.
             TypeError: A bound, level, or max_workers is not an integer.
         """
-        channels = [self._continuous_channel(key) for key in keys]
+        channels = [self._continuous_channel(index) for index in indices]
         number = integer_argument(level, "level")
         start, end = window_bounds(start_us, end_us)
         return stack_channels(
@@ -348,24 +348,24 @@ class Bundle:
             max_workers=max_workers,
         )
 
-    def _continuous_channel(self, key: int) -> ContinuousChannel:
-        """Return the continuous channel with that key.
+    def _continuous_channel(self, index: int) -> ContinuousChannel:
+        """Return the continuous channel with that index.
 
         Raises:
-            KeyError: No channel has the key.
-            ValueError: The key names an event channel.
+            KeyError: No channel has the index.
+            ValueError: The index names an event channel.
         """
-        channel = self.channels.get(key)
+        channel = self.channels.get(index)
         if isinstance(channel, ContinuousChannel):
             return channel
         listed = ", ".join(str(known) for known in self.continuous) or "none"
         if channel is None:
             raise KeyError(
-                f"the bundle has no channel {key!r}; its continuous channel "
-                f"keys are {listed}"
+                f"the bundle has no channel {index!r}; its continuous channel "
+                f"indices are {listed}"
             )
         raise ValueError(
-            f"channel {key} is an event channel; the continuous channel keys "
+            f"channel {index} is an event channel; the continuous channel indices "
             f"are {listed}"
         )
 
@@ -415,18 +415,18 @@ def _by_top_name[T](nodes: Mapping[str, T]) -> dict[str, dict[str, T]]:
 
 
 def _parse_channel(
-    key: int,
+    index: int,
     attributes: Mapping[str, object],
     groups: Mapping[str, ZarrGroup],
     arrays: Mapping[str, ZarrArray],
     channel_count: int | None = None,
 ) -> Channel | None:
-    """Return the channel with that key, or None if its kind is unknown.
+    """Return the channel with that index, or None if its kind is unknown.
 
     An unknown kind issues a UserWarning.
 
     Args:
-        key: The channel key.
+        index: The channel index.
         attributes: The attributes of the channel group.
         groups: The groups below the channel group, by relative path.
         arrays: The arrays below the channel group, by relative path.
@@ -436,19 +436,19 @@ def _parse_channel(
     Raises:
         ValueError: The channel group does not parse.
     """
-    where = f"channel {key}"
+    where = f"channel {index}"
     kind = parse_channel_kind(attributes, where)
     if kind == "continuous":
-        return parse_continuous_channel(key, attributes, groups, arrays)
+        return parse_continuous_channel(index, attributes, groups, arrays)
     if kind == "event":
         return parse_event_channel(
-            key, attributes, groups, arrays, channel_count
+            index, attributes, groups, arrays, channel_count
         )
     unknown = tsz_fields(attributes, where)["kind"]
     known = " or ".join(repr(name) for name in CHANNEL_KINDS)
     # The warning names the first caller outside this package.
     warnings.warn(
-        f"skipped channel {key}: tsz.kind must be {known}, got {unknown!r}",
+        f"skipped channel {index}: tsz.kind must be {known}, got {unknown!r}",
         UserWarning,
         skip_file_prefixes=(_PACKAGE_DIRECTORY,),
     )
@@ -459,7 +459,7 @@ def parse_bundle(root: ZarrGroup) -> Bundle:
     """Return the bundle that an open root group holds.
 
     A channel group is a top-level group whose name is a decimal number
-    without a leading zero, and that number is its key. The parser ignores
+    without a leading zero, and that number is its index. The parser ignores
     every other top-level node. It skips a channel group of unknown kind
     with a UserWarning. It reads recording.json through the store of root.
 
@@ -481,19 +481,19 @@ def parse_bundle(root: ZarrGroup) -> Bundle:
         for name in groups
         if (number := canonical_number(name)) is not None
     )
-    # The channel keys of a conforming bundle are 0 through C - 1.
+    # The channel indices of a conforming bundle are 0 through C - 1.
     channel_count = max((number for number, _ in numbered), default=-1) + 1
     channels: dict[int, Channel] = {}
-    for key, name in numbered:
+    for index, name in numbered:
         channel = _parse_channel(
-            key,
+            index,
             dict(groups[name].attrs),
             groups_below.get(name, {}),
             arrays_below.get(name, {}),
             channel_count,
         )
         if channel is not None:
-            channels[key] = channel
+            channels[index] = channel
     try:
         text = read_store_text(root, RECORDING_FILE)
     except UnicodeDecodeError as error:
