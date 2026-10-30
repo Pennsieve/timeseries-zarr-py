@@ -208,6 +208,29 @@ def continuous_channel_attrs(
     return _tsz(fields)
 
 
+def label_count(num_names: int | None, largest_label: int | None) -> int:
+    """Return the number of label categories of an event channel.
+
+    The count is the number of label names when the channel has them. Without
+    names it is one more than the largest label. Without names or labels it is
+    1.
+
+    Args:
+        num_names: The length of label_names, or None when the channel has no
+            label_names.
+        largest_label: The largest value in labels, or None when the channel
+            has no labels column or no events.
+
+    Returns:
+        The number of label categories.
+    """
+    if num_names is not None:
+        return num_names
+    if largest_label is not None:
+        return largest_label + 1
+    return 1
+
+
 def event_channel_attrs(
     name: str,
     id: str | None,

@@ -142,12 +142,22 @@ def test_read_returns_values_text_and_channel_keys(odd):
     ]
 
 
-def test_applies_to_marks_events_naming_the_key_or_the_whole_recording(odd):
+def test_applies_to_marks_events_naming_the_key(odd):
     table = odd[9].read()
     rows = np.arange(ODD_EVENTS) % len(ODD_CHANNEL_SETS)
-    np.testing.assert_array_equal(table.applies_to(0), rows != 1)
-    np.testing.assert_array_equal(table.applies_to(5), rows != 0)
-    np.testing.assert_array_equal(table.applies_to(7), rows == 2)
+    np.testing.assert_array_equal(table.applies_to(0), rows == 0)
+    np.testing.assert_array_equal(table.applies_to(5), rows == 1)
+    np.testing.assert_array_equal(table.applies_to(7), np.zeros(64, bool))
+
+
+def test_an_event_with_no_channel_applies_to_no_index(odd):
+    table = odd[9].read()
+    empty = [
+        index for index, keys in enumerate(table.channel_keys) if keys == []
+    ]
+    assert empty
+    for key in range(13):
+        assert not table.applies_to(key)[empty].any()
 
 
 def test_applies_to_marks_every_event_of_a_channel_without_channels(odd):
@@ -326,7 +336,7 @@ def test_durations_without_max_duration_us_search_from_the_first_event(odd):
     channel = odd[12]
     assert channel.max_duration_us is None
     assert channel.columns == ("durations",)
-    first = channel.read(2_500_000, 3_000_000)
+    first = channel.read(2_499_999, 3_000_000)
     assert first.time_us.tolist() == [ODD_INTERVAL_EVENTS[0]]
     assert first.duration_us.tolist() == [ODD_INTERVAL_DURATIONS[0]]
     late = channel.read(9_000_000, None)
@@ -414,9 +424,32 @@ def test_read_with_no_columns_returns_only_the_times(odd):
 
 
 def test_read_applies_the_interval_rule_without_the_durations_column(odd):
-    table = odd[12].read(2_500_000, 3_000_000, columns=[])
+    table = odd[12].read(2_499_999, 3_000_000, columns=[])
     assert table.time_us.tolist() == [ODD_INTERVAL_EVENTS[0]]
     assert table.duration_us is None
+
+
+def test_read_excludes_an_interval_that_ends_at_the_window_start(odd):
+    end_us = ODD_INTERVAL_EVENTS[0] + ODD_INTERVAL_DURATIONS[0]
+    assert odd[12].read(end_us, None).time_us.tolist() == list(
+        ODD_INTERVAL_EVENTS[2:]
+    )
+    assert odd[12].read(end_us - 1, end_us).time_us.tolist() == [
+        ODD_INTERVAL_EVENTS[0]
+    ]
+
+
+def test_read_includes_a_point_event_at_the_window_start():
+    channel = _built(
+        {
+            "events": np.array([100, 200], np.int64),
+            "durations": np.zeros(2, np.int64),
+        },
+        tsz={**_BUILT_TSZ, "max_duration_us": 0},
+    )
+    assert channel.read(100, 101).time_us.tolist() == [100]
+    assert channel.read(101, None).time_us.tolist() == [200]
+    assert channel.read(200, None).time_us.tolist() == [200]
 
 
 def test_read_masks_values_and_waveforms_by_the_interval_rule():
@@ -707,8 +740,8 @@ def test_written_interval_stays_in_windows_until_it_ends(mixed):
     assert table.label_name == ["seizure"]
     assert table.text == ["seizure"]
     assert table.channel_keys == [[1]]
-    assert channel.read(34_000_000, 40_000_000).time_us.tolist() == [22_000_000]
-    assert len(channel.read(34_000_001, 40_000_000)) == 0
+    assert channel.read(33_999_999, 40_000_000).time_us.tolist() == [22_000_000]
+    assert len(channel.read(34_000_000, 40_000_000)) == 0
 
 
 def test_written_count_levels_each_count_every_event(mixed):
@@ -766,10 +799,11 @@ def test_written_waveform_mean_without_waveforms_reads_back(mixed):
 
 def _brute_force(times, durations, start_us, end_us):
     """Return the indices of the events in a window by the interval rule."""
-    ends = times if durations is None else times + durations
     keep = np.ones(times.shape[0], dtype=bool)
     if start_us is not None:
-        keep &= ends >= start_us
+        keep &= times >= start_us
+        if durations is not None:
+            keep |= (durations > 0) & (times + durations > start_us)
     if end_us is not None:
         keep &= times < end_us
     return np.flatnonzero(keep)
@@ -1043,8 +1077,8 @@ def test_count_level_periods_stored_as_integral_floats_read_as_integers():
     channel = _built(
         {
             "events": _BUILT_EVENTS,
-            "1/count": _counts(1, 2),
-            "2/count": _counts(1, 2),
+            "1/count": _counts(1, 1),
+            "2/count": _counts(1, 1),
         },
         groups=_levels(1000.0, 4000.0),
     )
@@ -1057,9 +1091,9 @@ def test_count_levels_accept_whole_ratios_that_differ_by_level():
     channel = _built(
         {
             "events": _BUILT_EVENTS,
-            "1/count": _counts(1, 2),
-            "2/count": _counts(1, 2),
-            "3/count": _counts(1, 2),
+            "1/count": _counts(1, 1),
+            "2/count": _counts(1, 1),
+            "3/count": _counts(1, 1),
         },
         groups=_levels(1000.0, 2000.0, 6000.0),
     )
@@ -1421,6 +1455,7 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
         pytest.param(
             {
                 "events": _BUILT_EVENTS,
+                "labels": np.zeros(3, np.uint16),
                 "1/count": _counts(1, 2),
                 "2/count": _counts(1, 3),
             },
@@ -1460,6 +1495,206 @@ def test_parse_rejects_a_malformed_channel(arrays, groups, tsz, match):
         _parse(root, _BUILT_KEY)
 
 
+_LABELS = np.array([0, 2, 1], np.uint16)
+_MEAN_ATTRS = {"tsz": {"period_us": 100.0, "event_sample": 1}}
+
+
+@pytest.mark.parametrize(
+    ("arrays", "groups", "tsz", "match"),
+    [
+        pytest.param(
+            {"events": _BUILT_EVENTS, "1/count": _counts(1, 2)},
+            _levels(1000.0),
+            None,
+            r"count must have 1 columns, .*got shape \(1, 2\)",
+            id="count-width-without-labels",
+        ),
+        pytest.param(
+            {
+                "events": np.zeros(0, np.int64),
+                "labels": np.zeros(0, np.uint16),
+                "1/count": _counts(1, 2),
+            },
+            _levels(1000.0),
+            None,
+            r"count must have 1 columns, .*got shape \(1, 2\)",
+            id="count-width-without-events",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
+                "labels": _LABELS,
+                "waveform_mean": (np.zeros((2, 4), np.float32), _MEAN_ATTRS),
+            },
+            None,
+            {**_BUILT_TSZ, "label_names": ["a", "b", "c"]},
+            r"waveform_mean: must have 3 rows, one per label name, got shape "
+            r"\(2, 4\)",
+            id="waveform-mean-rows-against-label-names",
+        ),
+        pytest.param(
+            {
+                "events": np.zeros(0, np.int64),
+                "labels": np.zeros(0, np.uint16),
+                "waveform_mean": (np.zeros((2, 4), np.float32), _MEAN_ATTRS),
+            },
+            None,
+            None,
+            r"waveform_mean: must have 1 rows, .*got shape \(2, 4\)",
+            id="waveform-mean-rows-without-events",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
+                "labels": _LABELS,
+                "1/count": _counts(1, 3),
+                "waveform_mean": (np.zeros((2, 4), np.float32), _MEAN_ATTRS),
+            },
+            _levels(1000.0),
+            None,
+            r"waveform_mean: must have the 3 label columns of count level 1 "
+            r"as rows, got shape \(2, 4\)",
+            id="waveform-mean-rows-against-count-level",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
+                "labels": _LABELS,
+                "waveforms": (np.zeros((3, 5), np.float32), _MEAN_ATTRS),
+                "waveform_mean": (np.zeros((3, 4), np.float32), _MEAN_ATTRS),
+            },
+            None,
+            None,
+            r"waveform_mean: samples must match waveforms, which has 5, "
+            r"got 4",
+            id="waveform-mean-samples-against-waveforms",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
+                "labels": _LABELS,
+                "waveforms": (np.zeros((3, 4), np.float32), _MEAN_ATTRS),
+                "waveform_mean": (
+                    np.zeros((3, 4), np.float32),
+                    {"tsz": {"period_us": 50.0, "event_sample": 1}},
+                ),
+            },
+            None,
+            None,
+            r"waveform_mean: period_us must match waveforms, which has "
+            r"100.0, got 50.0",
+            id="waveform-mean-period-against-waveforms",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
+                "labels": _LABELS,
+                "waveforms": (np.zeros((3, 4), np.float32), _MEAN_ATTRS),
+                "waveform_mean": (
+                    np.zeros((3, 4), np.float32),
+                    {"tsz": {"period_us": 100.0}},
+                ),
+            },
+            None,
+            None,
+            r"waveform_mean: event_sample must match waveforms, which has "
+            r"1, got 0",
+            id="waveform-mean-event-sample-against-waveforms",
+        ),
+    ],
+)
+def test_parse_rejects_label_and_waveform_arrays_that_disagree(
+    arrays, groups, tsz, match
+):
+    root = _build(arrays, groups=groups, tsz=tsz)
+    with pytest.raises(ValueError, match=match):
+        _parse(root, _BUILT_KEY)
+
+
+def test_parse_takes_the_label_count_from_count_level_1_without_label_names():
+    channel = _built(
+        {
+            "events": _BUILT_EVENTS,
+            "labels": _LABELS,
+            "1/count": _counts(1, 3),
+            "waveform_mean": (np.zeros((3, 4), np.float32), _MEAN_ATTRS),
+        },
+        groups=_levels(1000.0),
+    )
+    assert channel.num_labels() == 3
+
+
+def test_num_labels_follows_the_metadata_before_the_data():
+    named = _built(
+        {"events": _BUILT_EVENTS, "labels": _LABELS},
+        tsz={**_BUILT_TSZ, "label_names": ["a", "b", "c", "d"]},
+    )
+    assert named.num_labels() == 4
+    assert (
+        _built({"events": _BUILT_EVENTS, "labels": _LABELS}).num_labels() == 3
+    )
+    assert _built({"events": _BUILT_EVENTS}).num_labels() == 1
+    empty = _built(
+        {"events": np.zeros(0, np.int64), "labels": np.zeros(0, np.uint16)}
+    )
+    assert empty.num_labels() == 1
+
+
+def _with_channel_count(arrays, count):
+    root = _build(arrays)
+    return parse_event_channel(
+        _BUILT_KEY, *_channel_nodes(root, _BUILT_KEY), channel_count=count
+    )
+
+
+@pytest.mark.parametrize(
+    ("channel_count", "width"),
+    [(1, 1), (8, 1), (9, 2), (16, 2), (17, 3)],
+)
+def test_parse_accepts_a_channels_width_of_ceil_channel_count_over_8(
+    channel_count, width
+):
+    channel = _with_channel_count(
+        {"events": _BUILT_EVENTS, "channels": np.zeros((3, width), np.uint8)},
+        channel_count,
+    )
+    assert channel.channels.shape == (3, width)
+
+
+@pytest.mark.parametrize(
+    ("channel_count", "width"), [(1, 2), (8, 2), (9, 1), (17, 2), (17, 4)]
+)
+def test_parse_rejects_a_channels_width_other_than_ceil_channel_count_over_8(
+    channel_count, width
+):
+    with pytest.raises(ValueError, match="channels must have"):
+        _with_channel_count(
+            {
+                "events": _BUILT_EVENTS,
+                "channels": np.zeros((3, width), np.uint8),
+            },
+            channel_count,
+        )
+
+
+def test_read_rejects_a_channels_bit_at_or_above_the_channel_count():
+    rows = np.array([[0b001], [0b101], [0]], np.uint8)
+    channel = _with_channel_count(
+        {"events": _BUILT_EVENTS, "channels": rows}, 2
+    )
+    with pytest.raises(ValueError, match="event 1 sets channel bit 2"):
+        channel.read()
+    assert channel.read(0, 15).channel_keys == [[0]]
+
+
+def test_read_accepts_every_channels_bit_below_the_channel_count():
+    rows = np.array([[0b011], [0b100], [0]], np.uint8)
+    channel = _with_channel_count(
+        {"events": _BUILT_EVENTS, "channels": rows}, 3
+    )
+    assert channel.read().channel_keys == [[0, 1], [2], []]
+
+
 def test_records_built_by_hand_derive_their_time_axes_and_names():
     values = np.zeros((2, 3), np.float32)
     waveform = Waveform(
@@ -1489,8 +1724,8 @@ def test_records_built_by_hand_derive_their_time_axes_and_names():
         label_names=("a", "b"),
     )
     assert table.label_name == ["b", "a"]
-    assert table.applies_to(3).tolist() == [True, True]
-    assert table.applies_to(2).tolist() == [True, False]
+    assert table.applies_to(3).tolist() == [False, True]
+    assert table.applies_to(2).tolist() == [False, False]
     assert table.whole_recording is False
 
 

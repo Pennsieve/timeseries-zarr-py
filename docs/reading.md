@@ -168,7 +168,7 @@ marks = Events(
         ["tone-5"],
         ["tone-5"],
         ["tone-1"],
-        [],
+        ["tone-5", "tone-10", "tone-1"],
         ["tone-5"],
         ["tone-1"],
     ],
@@ -487,14 +487,14 @@ per event. `time_us` holds the event times. `duration_us`, `label`, `label_name`
 when the channel lacks it or the read left it out. `columns` names the stored columns to
 read, and `None` reads every one. A name the channel lacks raises `ValueError`.
 
-An event without a duration is in the window when `start_us <= time < end_us`.
-An event with a duration is in the window when it starts before `end_us` and
-ends at or after `start_us`. To find the events that begin before the window,
+A point event, with no duration or a duration of 0, is in the window when
+`start_us <= time < end_us`. An interval is in the window when it starts before
+`end_us` and ends after `start_us`. To find the events that begin before the window,
 the read searches from `max_duration_us` before `start_us`. On a channel with
 `durations` and no `max_duration_us`, it searches from the first event.
 
 `text` holds the decoded UTF-8 string of each event. `channel_keys` holds the channel
-keys each event applies to, and an empty list means the whole recording. `label_name`
+keys each event applies to, and an empty list means the event applies to no channel. `label_name`
 holds the name of each label when the channel has `label_names`. A label at or above the
 length of `label_names` raises `ValueError`.
 
@@ -503,9 +503,9 @@ length of `label_names` raises `ValueError`.
 `channels` arrays, as `read` does.
 
 `applies_to(key)` returns a boolean mask of the events that apply to channel `key`. An
-event applies when its `channel_keys` names `key` or is empty. On a channel without a
-`channels` column, every event applies to the whole recording. A table read from such a
-channel has `whole_recording` set to `True`, and `applies_to` returns all `True`. On a table read
+event applies when its `channel_keys` names `key`. On a channel without a `channels`
+column, `applies_to` returns `True` for every event. A table read from such a
+channel has `whole_recording` set to `True`. On a table read
 without `channels` from a channel that has the column, `applies_to` raises `ValueError`.
 
 ```python
@@ -521,12 +521,13 @@ with open_bundle("example.zarr") as bundle:
     print(table.text[-1])
     print(table.channel_keys)
     print(table.applies_to(2))
+    print(len(marks.read(259_999_999, 270_000_000)))
     print(len(marks.read(260_000_000, 270_000_000)))
-    print(len(marks.read(260_000_001, 270_000_000)))
 ```
 
-The seizure starts at 200 s and lasts 60 s. It ends at 260 s, so the read from
-260 s holds it and the read from 1 microsecond later does not.
+The seizure starts at 200 s and lasts 60 s. It covers the span up to but not
+including 260 s, so the read from 1 microsecond before 260 s holds it and the read
+from 260 s does not.
 
 `waveform` is a `Waveform` with one snippet row per event of the table.
 The column at index `event_sample` holds the sample at the event time,
@@ -680,11 +681,11 @@ without an id takes its key, as a decimal string, as its id. `bundle_sources` ra
 An event source names the channels of each event by id, and it maps the key of every
 kept channel to an id. A kept event that names a channel left out of `keys` makes
 `read_channel_ids` raise `ValueError` during `write_bundle`. Pass
-`drop_columns={"channels"}` to leave the column out. Every event of the new channel then
-applies to the whole recording.
+`drop_columns={"channels"}` to leave the column out. The new channel then has no
+`channels` column.
 
-A rewrite leaves out `values`, `waveforms`, and the `event_sample` of `waveform_mean`.
-The writer takes no input for them. A rewrite also leaves out a `text` column of width
+A rewrite leaves out `values` and `waveforms`, which the writer takes no input for. It
+keeps the `event_sample` of `waveform_mean`. A rewrite also leaves out a `text` column of width
 0, and `waveform_mean` when it carries no `labels`. The writer computes the levels and
 count levels again with the `WriteOpts` it gets. A channel with `runs` keeps its runs and
 the exact time of each one.

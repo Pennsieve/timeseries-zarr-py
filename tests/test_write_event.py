@@ -354,6 +354,35 @@ def test_write_labels_array_writes_one_whole_shard_per_write(
     assert np.array_equal(stored, labels)
 
 
+def test_write_labels_array_accepts_a_channel_without_events_and_names(
+    tmp_path, event_source
+):
+    source = event_source([], labels=[])
+    assert source.num_labels() == 1
+    assert _write_labels(tmp_path, source)[LABELS_KEY].shape == (0,)
+
+
+def test_write_labels_array_rejects_a_category_count_above_the_largest_label(
+    tmp_path, event_source
+):
+    class Wide(type(event_source([0]))):
+        def num_labels(self):
+            return 5
+
+    source = Wide([1, 2, 3], labels=[0, 1, 2])
+    with pytest.raises(
+        ValueError, match="num_labels.. is 5, but the largest label 2 gives 3"
+    ):
+        _write_labels(tmp_path, source)
+
+
+def test_write_labels_array_accepts_names_beyond_the_largest_label(
+    tmp_path, event_source
+):
+    source = event_source([1, 2], labels=[0, 1], label_names=["a", "b", "c"])
+    assert _write_labels(tmp_path, source)[LABELS_KEY][:].tolist() == [0, 1]
+
+
 def test_write_labels_array_rejects_a_label_at_or_above_the_category_count(
     tmp_path, event_source
 ):
@@ -423,26 +452,13 @@ def test_write_text_array_declares_event_and_unnamed_dimensions_and_zero_fill(
     assert arr.fill_value == 0
 
 
-def test_write_text_array_stores_the_rows_without_a_compression_codec(
-    tmp_path, event_source
-):
+def test_write_text_array_compresses_with_zstd(tmp_path, event_source):
     source = event_source(np.arange(8), text=_TEXTS)
     _write_text(tmp_path, source, source.text_width())
     meta = json.loads((tmp_path / "bundle" / "text" / "zarr.json").read_text())
     inner = meta["codecs"][0]["configuration"]["codecs"]
     assert meta["codecs"][0]["name"] == "sharding_indexed"
-    assert [codec["name"] for codec in inner] == ["bytes"]
-
-
-def test_write_text_array_shard_object_starts_with_the_plain_rows(
-    tmp_path, event_source
-):
-    source = event_source(np.arange(8), text=_TEXTS)
-    width = source.text_width()
-    stored = _write_text(tmp_path, source, width)[TEXT_KEY][:]
-    shard = (tmp_path / "bundle" / "text" / "c" / "0" / "0").read_bytes()
-    assert shard.startswith(stored.tobytes())
-    assert b"seizure onset" in shard
+    assert [codec["name"] for codec in inner] == ["bytes", "zstd"]
 
 
 def test_write_text_array_streams_a_partial_last_block(tmp_path, event_source):
@@ -577,7 +593,7 @@ def test_write_channels_array_width_follows_max_key(tmp_path, event_source):
     ].shape == (1, 3)
 
 
-def test_write_channels_array_whole_recording_rows_are_all_zero(
+def test_write_channels_array_rows_with_no_channel_are_all_zero(
     tmp_path, event_source
 ):
     source = event_source(np.arange(10), channel_ids=[[]] * 10)
@@ -688,6 +704,97 @@ def test_write_waveform_mean_array_carries_the_snippet_period_only(
 ):
     arr = _write_means(tmp_path, _means_source(event_source))[WAVEFORM_MEAN_KEY]
     assert dict(arr.attrs) == {"tsz": {"period_us": 122.0703125}}
+
+
+def test_write_waveform_mean_array_writes_the_event_sample_of_the_source(
+    tmp_path, event_source
+):
+    source = _means_source(event_source, waveform_event_sample=3)
+    arr = _write_means(tmp_path, source)[WAVEFORM_MEAN_KEY]
+    assert dict(arr.attrs) == {
+        "tsz": {"period_us": 122.0703125, "event_sample": 3}
+    }
+
+
+def test_write_waveform_mean_array_treats_a_source_without_the_method_as_0(
+    tmp_path, event_source
+):
+    class Plain:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            if name == "waveform_event_sample":
+                raise AttributeError(name)
+            return getattr(self._inner, name)
+
+    source = Plain(_means_source(event_source, waveform_event_sample=3))
+    arr = _write_means(tmp_path, source)[WAVEFORM_MEAN_KEY]
+    assert "event_sample" not in dict(arr.attrs)["tsz"]
+
+
+def test_write_waveform_mean_array_rejects_an_event_sample_past_the_samples(
+    tmp_path, event_source
+):
+    source = _means_source(event_source, waveform_event_sample=5)
+    with pytest.raises(ValueError, match="event_sample"):
+        _write_means(tmp_path, source)
+    assert list(open_group(tmp_path / "bundle").array_keys()) == []
+
+
+def test_write_waveform_mean_array_rejects_a_mean_for_a_label_without_events(
+    tmp_path, event_source
+):
+    source = event_source(
+        [1, 2],
+        labels=[0, 2],
+        label_names=["a", "b", "c"],
+        waveform_mean=np.ones((3, 5)),
+    )
+    with pytest.raises(ValueError, match="label 1 has no events"):
+        _write_means(tmp_path, source)
+    assert list(open_group(tmp_path / "bundle").array_keys()) == []
+
+
+def test_write_waveform_mean_array_accepts_a_nan_row_for_a_label_without_events(
+    tmp_path, event_source
+):
+    means = np.ones((3, 5), np.float32)
+    means[1] = np.nan
+    source = event_source(
+        [1, 2],
+        labels=[0, 2],
+        label_names=["a", "b", "c"],
+        waveform_mean=means,
+    )
+    stored = _write_means(tmp_path, source)[WAVEFORM_MEAN_KEY][:]
+    assert np.isnan(stored[1]).all()
+
+
+def test_write_waveform_mean_array_has_one_nan_row_without_events_or_names(
+    tmp_path, event_source
+):
+    source = event_source([], labels=[], waveform_mean=np.full((1, 4), np.nan))
+    stored = _write_means(tmp_path, source)[WAVEFORM_MEAN_KEY][:]
+    assert stored.shape == (1, 4)
+    assert np.isnan(stored).all()
+
+
+def test_write_waveform_mean_array_has_the_name_count_of_rows_without_events(
+    tmp_path, event_source
+):
+    source = event_source(
+        [],
+        labels=[],
+        label_names=["a", "b"],
+        waveform_mean=np.full((2, 4), np.nan),
+    )
+    assert _write_means(tmp_path, source)[WAVEFORM_MEAN_KEY].shape == (2, 4)
+    finite = event_source(
+        [], labels=[], label_names=["a", "b"], waveform_mean=np.ones((2, 4))
+    )
+    with pytest.raises(ValueError, match="label 0 has no events"):
+        _write_means(tmp_path / "other", finite)
 
 
 def test_write_waveform_mean_array_names_the_label_axis_and_fills_nan(
@@ -1300,6 +1407,58 @@ def test_check_event_channel_accepts_an_empty_channel(event_source):
     _check_event_channel(event_source([]))
 
 
+def test_check_event_channel_accepts_labels_without_events_and_names(
+    event_source,
+):
+    _check_event_channel(event_source([], labels=[]))
+
+
+def test_check_event_channel_accepts_names_without_events(event_source):
+    _check_event_channel(event_source([], labels=[], label_names=["a", "b"]))
+
+
+def test_check_event_channel_rejects_empty_label_names(event_source):
+    source = event_source([1], labels=[0], label_names=[])
+    with pytest.raises(ValueError, match="label_names must name at least one"):
+        _check_event_channel(source)
+
+
+def test_check_event_channel_rejects_a_category_count_other_than_the_names(
+    event_source,
+):
+    class Wrong(type(event_source([0]))):
+        def num_labels(self):
+            return 3
+
+    source = Wrong([1], labels=[0], label_names=["a", "b"])
+    with pytest.raises(
+        ValueError, match="num_labels.. is 3, but label_names gives 2"
+    ):
+        _check_event_channel(source)
+
+
+@pytest.mark.parametrize("categories", [0, 2])
+def test_check_event_channel_rejects_a_category_count_other_than_1_without_events(
+    event_source, categories
+):
+    class Wrong(type(event_source([0]))):
+        def num_labels(self):
+            return categories
+
+    with pytest.raises(ValueError, match="gives 1 label categories"):
+        _check_event_channel(Wrong([], labels=[]))
+
+
+def test_check_event_channel_ignores_labels_a_source_does_not_offer(
+    event_source,
+):
+    class Wrong(type(event_source([0]))):
+        def num_labels(self):
+            return 9
+
+    _check_event_channel(Wrong([1]))
+
+
 def test_check_event_channel_rejects_2_to_the_32_events(event_source):
     class Huge(type(event_source([0]))):
         def num_events(self):
@@ -1374,3 +1533,48 @@ def test_write_event_channel_rejects_a_bad_time_before_it_creates_a_node(
             opts=_COUNT_OPTS,
         )
     assert list(group.members()) == []
+
+
+def test_write_event_channel_without_events_or_names_has_1_label_category(
+    tmp_path, event_source
+):
+    source = event_source(
+        [], labels=[], waveform_mean=np.full((1, 4), np.nan), id="e", name="x"
+    )
+    group = _write_channel(tmp_path, source)["7"]
+    assert group[LABELS_KEY].shape == (0,)
+    assert group[WAVEFORM_MEAN_KEY].shape == (1, 4)
+    assert np.isnan(group[WAVEFORM_MEAN_KEY][:]).all()
+
+
+def test_write_event_channel_without_events_has_a_nan_row_per_label_name(
+    tmp_path, event_source
+):
+    source = event_source(
+        [],
+        labels=[],
+        label_names=["a", "b"],
+        waveform_mean=np.full((2, 4), np.nan),
+        id="e",
+        name="x",
+    )
+    group = _write_channel(tmp_path, source)["7"]
+    assert group[WAVEFORM_MEAN_KEY].shape == (2, 4)
+    assert dict(group.attrs)["tsz"]["label_names"] == ["a", "b"]
+
+
+def test_write_event_channel_rejects_empty_label_names_before_writing(
+    tmp_path, event_source
+):
+    source = event_source([_START_US], labels=[0], label_names=[], id="e")
+    with pytest.raises(ValueError, match="at least one category"):
+        _write_channel(tmp_path, source)
+    assert list(open_group(tmp_path / "bundle").group_keys()) == []
+
+
+def test_write_event_channel_keeps_one_count_column_per_label_of_the_data(
+    tmp_path, event_source
+):
+    times, _, source = _dense(event_source, labelled=False)
+    group = _write_channel(tmp_path, source, opts=_COUNT_OPTS)["7"]
+    assert group["1"]["count"].shape[1] == 1

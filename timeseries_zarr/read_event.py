@@ -14,11 +14,17 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.attrs import (
+    label_count,
     parse_count_level_attrs,
     parse_event_attrs,
     parse_waveform_attrs,
 )
-from timeseries_zarr.columns import decode_channels_rows, decode_event_text
+from timeseries_zarr.columns import (
+    channels_width,
+    check_channels_rows,
+    decode_channels_rows,
+    decode_event_text,
+)
 from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
@@ -330,12 +336,12 @@ class EventTable:
         value: The value of each event, in the unit of the channel.
         text: The decoded text of each event.
         channel_keys: The channel keys each event applies to. An empty list
-            means the whole recording.
+            means the event applies to no channel.
         waveform: The snippet of each event.
         label_names: The name of each label value by index, or None when the
             channel has no label_names.
-        whole_recording: True when the channel has no channels column. Every
-            event of such a channel applies to the whole recording.
+        whole_recording: True when the channel has no channels column.
+            applies_to then returns True for every event.
     """
 
     time_us: npt.NDArray[np.integer[Any]]
@@ -424,8 +430,8 @@ class EventTable:
     def applies_to(self, key: int) -> npt.NDArray[np.bool_]:
         """Return a mask of the events that apply to channel key.
 
-        An event applies to key when its channel_keys names key or is empty.
-        Every event applies when whole_recording is true.
+        An event applies to key when its channel_keys names key. Every event
+        applies when whole_recording is true.
 
         Args:
             key: A channel key.
@@ -441,7 +447,7 @@ class EventTable:
                 "columns to find the events that apply to a channel"
             )
         return np.array(
-            [not keys or key in keys for keys in self.channel_keys],
+            [key in keys for keys in self.channel_keys],
             dtype=np.bool_,
         )
 
@@ -529,6 +535,9 @@ class EventChannel:
         waveforms: The per-event snippets, or None when absent.
         waveform_mean: The per-label mean snippets, or None when absent.
         count_levels: Each count level by number, in level order.
+        channel_count: The number of channels in the bundle, or None when
+            unknown. A known count lets a read reject a channels bit that
+            names a channel the bundle lacks.
     """
 
     key: int
@@ -547,6 +556,7 @@ class EventChannel:
     waveforms: Snippets | None
     waveform_mean: Snippets | None
     count_levels: Mapping[int, CountLevel]
+    channel_count: int | None = None
 
     @property
     def kind(self) -> Literal["event"]:
@@ -557,6 +567,19 @@ class EventChannel:
     def num_events(self) -> int:
         """Number of events."""
         return self.events.shape[0]
+
+    def num_labels(self) -> int:
+        """Return the number of label categories of the channel.
+
+        The number is the length of label_names. Without label_names it is one
+        more than the largest label, or 1 when the channel has no labels or no
+        events. The last case reads the whole labels column.
+        """
+        names = self.label_names
+        largest = None
+        if names is None and self.labels is not None and self.num_events:
+            largest = int(read_rows(self.labels, 0, self.num_events).max())
+        return label_count(None if names is None else len(names), largest)
 
     @property
     def columns(self) -> tuple[str, ...]:
@@ -580,9 +603,9 @@ class EventChannel:
         """Return the events in a window and their per-event columns.
 
         The window is [start_us, end_us), and a None bound leaves that side
-        open. An event without a duration is in the window when its time is
-        at or after start_us and before end_us. An event with a duration is
-        in the window when it starts before end_us and ends at or after
+        open. A point event, which has no duration or a duration of 0, is in
+        the window when its time is at or after start_us and before end_us. An
+        interval is in the window when it starts before end_us and ends after
         start_us. The table always holds the times.
 
         Args:
@@ -621,7 +644,11 @@ class EventChannel:
             ends = times64 + durations64
             # A positive duration whose sum falls below its time ends past
             # 2^63 - 1, so the interval reaches every int64 start.
-            keep = (ends >= start) | ((durations64 > 0) & (ends < times64))
+            keep = (
+                (ends > start)
+                | ((durations64 == 0) & (times64 >= start))
+                | ((durations64 > 0) & (ends < times64))
+            )
         for name in selected:
             if name not in rows:
                 rows[name] = read_rows(arrays[name], first, stop)
@@ -793,6 +820,13 @@ class EventChannel:
             )
         text = rows.get(TEXT_KEY)
         channels = rows.get(CHANNELS_KEY)
+        if channels is not None and self.channel_count is not None:
+            check_channels_rows(
+                channels,
+                self.channel_count,
+                indices.tolist(),
+                f"channel {self.key}",
+            )
         snippets = rows.get(WAVEFORMS_KEY)
         waveform = None
         if snippets is not None and self.waveforms is not None:
@@ -933,11 +967,45 @@ def _parse_snippets(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _KnownLabels:
+    """The number of label categories that the metadata of a channel fixes.
+
+    Attributes:
+        count: The number of label categories.
+        reason: The phrase that names where the number comes from.
+    """
+
+    count: int
+    reason: str
+
+
+def _known_labels(
+    label_names: tuple[str, ...] | None,
+    labels: ZarrArray | None,
+    num_events: int,
+) -> _KnownLabels | None:
+    """Return the number of label categories, or None when it needs the data.
+
+    The number follows from the metadata when the channel has label_names,
+    and when it has no labels or no events. Otherwise it is one more than the
+    largest label, which only a read of the labels column finds.
+    """
+    if label_names is not None:
+        return _KnownLabels(len(label_names), "one per label name")
+    if labels is None or num_events == 0:
+        return _KnownLabels(
+            label_count(None, None),
+            "the one category of a channel without labels or events",
+        )
+    return None
+
+
 def _parse_count_levels(
     where: str,
     groups: Mapping[str, ZarrGroup],
     arrays: Mapping[str, ZarrArray],
-    label_names: tuple[str, ...] | None,
+    labels: _KnownLabels | None,
 ) -> Mapping[int, CountLevel]:
     """Return the count levels of a channel keyed by number in level order.
 
@@ -965,7 +1033,7 @@ def _parse_count_levels(
         previous = levels.get(number - 1)
         if previous is not None:
             _check_period(level_where, attrs.period_us, previous)
-        _check_label_columns(level_where, count, levels.get(1), label_names)
+        _check_label_columns(level_where, count, levels.get(1), labels)
         levels[number] = CountLevel(
             number=number,
             period_us=attrs.period_us,
@@ -1000,21 +1068,21 @@ def _check_label_columns(
     where: str,
     count: ZarrArray,
     first_level: CountLevel | None,
-    label_names: tuple[str, ...] | None,
+    labels: _KnownLabels | None,
 ) -> None:
     """Check that count has one column per label.
 
-    The number of labels is the length of label_names, or without
-    label_names the number of columns of count level 1.
+    The number of labels is the number the metadata fixes. When only the data
+    fixes it, count must have the columns of count level 1.
 
     Raises:
         ValueError: The number of columns differs from the number of labels.
     """
     columns = count.shape[1]
-    if label_names is not None and columns != len(label_names):
+    if labels is not None and columns != labels.count:
         raise ValueError(
-            f"{where}: {COUNT_KEY} must have {len(label_names)} columns, one "
-            f"per label name, got shape {count.shape}"
+            f"{where}: {COUNT_KEY} must have {labels.count} columns, "
+            f"{labels.reason}, got shape {count.shape}"
         )
     if first_level is not None and columns != first_level.num_labels:
         raise ValueError(
@@ -1023,11 +1091,65 @@ def _check_label_columns(
         )
 
 
+def _check_waveform_rows(
+    where: str,
+    mean: Snippets,
+    labels: _KnownLabels | None,
+    first_level: CountLevel | None,
+) -> None:
+    """Check that waveform_mean has one row per label.
+
+    The number of labels is the number the metadata fixes. When only the data
+    fixes it, waveform_mean must have the label columns of count level 1.
+
+    Raises:
+        ValueError: The number of rows differs from the number of labels.
+    """
+    rows = mean.array.shape[0]
+    if labels is not None and rows != labels.count:
+        raise ValueError(
+            f"{where} {WAVEFORM_MEAN_KEY}: must have {labels.count} rows, "
+            f"{labels.reason}, got shape {mean.array.shape}"
+        )
+    if (
+        labels is None
+        and first_level is not None
+        and rows != first_level.num_labels
+    ):
+        raise ValueError(
+            f"{where} {WAVEFORM_MEAN_KEY}: must have the "
+            f"{first_level.num_labels} label columns of count level 1 as "
+            f"rows, got shape {mean.array.shape}"
+        )
+
+
+def _check_waveform_agreement(
+    where: str, mean: Snippets, waveforms: Snippets
+) -> None:
+    """Check that waveform_mean and waveforms describe the same trace.
+
+    Raises:
+        ValueError: The arrays differ in the number of samples, period_us, or
+            event_sample.
+    """
+    for field, expected, actual in (
+        ("samples", waveforms.array.shape[1], mean.array.shape[1]),
+        ("period_us", waveforms.period_us, mean.period_us),
+        ("event_sample", waveforms.event_sample, mean.event_sample),
+    ):
+        if actual != expected:
+            raise ValueError(
+                f"{where} {WAVEFORM_MEAN_KEY}: {field} must match "
+                f"{WAVEFORMS_KEY}, which has {expected!r}, got {actual!r}"
+            )
+
+
 def parse_event_channel(
     key: int,
     attributes: Mapping[str, object],
     groups: Mapping[str, ZarrGroup],
     arrays: Mapping[str, ZarrArray],
+    channel_count: int | None = None,
 ) -> EventChannel:
     """Return the event channel that channel group key describes.
 
@@ -1040,13 +1162,18 @@ def parse_event_channel(
             as 1.
         arrays: The descendant arrays by path below the channel group, such
             as 1/count.
+        channel_count: The number of channels in the bundle. None skips the
+            checks on the channels column.
 
     Raises:
         ValueError: A required key or array is missing, or an array has the
             wrong rank, dtype kind, or number of rows. Also raised when count
             level numbers have a gap, count levels disagree on the number of
             labels, a count level is stored as an array, or a period_us is
-            not an integer multiple, at least 2, of the one before it. The
+            not an integer multiple, at least 2, of the one before it. Also
+            raised when count or waveform_mean disagrees with the number of
+            label categories, waveform_mean disagrees with waveforms, or
+            channels has other than ceil(channel_count / 8) columns. The
             message names the channel, and the array or count level at fault.
     """
     where = f"channel {key}"
@@ -1059,6 +1186,26 @@ def parse_event_channel(
         name: _checked(arrays.get(name), where, name, layout, count)
         for name, layout in _COLUMN_LAYOUTS.items()
     }
+    channels = columns[CHANNELS_KEY]
+    if channels is not None and channel_count is not None:
+        width = channels_width(channel_count - 1)
+        if channels.shape[1] != width:
+            raise ValueError(
+                f"{where}: {CHANNELS_KEY} must have {width} columns, one bit "
+                f"per channel of the {channel_count} channels, got shape "
+                f"{channels.shape}"
+            )
+    known = _known_labels(fields.label_names, columns[LABELS_KEY], count)
+    waveforms = _parse_snippets(where, arrays, WAVEFORMS_KEY, count)
+    waveform_mean = _parse_snippets(where, arrays, WAVEFORM_MEAN_KEY, None)
+    count_levels = _parse_count_levels(where, groups, arrays, known)
+    if waveform_mean is not None:
+        if columns[LABELS_KEY] is not None:
+            _check_waveform_rows(
+                where, waveform_mean, known, count_levels.get(1)
+            )
+        if waveforms is not None:
+            _check_waveform_agreement(where, waveform_mean, waveforms)
     return EventChannel(
         key=key,
         name=fields.name,
@@ -1072,10 +1219,9 @@ def parse_event_channel(
         labels=columns[LABELS_KEY],
         values=columns[VALUES_KEY],
         text=columns[TEXT_KEY],
-        channels=columns[CHANNELS_KEY],
-        waveforms=_parse_snippets(where, arrays, WAVEFORMS_KEY, count),
-        waveform_mean=_parse_snippets(where, arrays, WAVEFORM_MEAN_KEY, None),
-        count_levels=_parse_count_levels(
-            where, groups, arrays, fields.label_names
-        ),
+        channels=channels,
+        waveforms=waveforms,
+        waveform_mean=waveform_mean,
+        count_levels=count_levels,
+        channel_count=channel_count,
     )

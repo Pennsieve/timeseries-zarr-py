@@ -19,6 +19,7 @@ from timeseries_zarr.protocols import (
     EventChannelSource,
     MultiChannelSource,
     RunsSource,
+    WaveformEventSampleSource,
 )
 from timeseries_zarr.read_bundle import Bundle, Channel, open_bundle
 from timeseries_zarr.read_continuous import (
@@ -81,6 +82,7 @@ __all__ = [
     "Stack",
     "VoltagePolicy",
     "Waveform",
+    "WaveformEventSampleSource",
     "WriteOpts",
     "__version__",
     "bundle_sources",
