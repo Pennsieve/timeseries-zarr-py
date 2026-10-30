@@ -337,6 +337,24 @@ def test_plan_count_levels_rejects_more_events_than_a_uint32_count_holds():
         plan_count_levels(2**32, 0, _DAY_US)
 
 
+def test_plan_count_levels_carries_every_period_as_an_int():
+    plans = plan_count_levels(10**6, 0, _DAY_US)
+    assert len(plans) >= 2
+    assert all(type(plan.period_us) is int for plan in plans)
+
+
+def test_plan_count_levels_rejects_a_last_bin_that_ends_past_the_time_limit():
+    with pytest.raises(
+        ValueError, match="end of the last bin of count level 1"
+    ):
+        plan_count_levels(100_000, 0, 2**53 - 1)
+
+
+def test_plan_count_levels_rejects_an_offset_at_the_time_limit():
+    with pytest.raises(ValueError, match="offset_us of count level 1"):
+        plan_count_levels(100_000, -(2**53), 0)
+
+
 def test_plan_count_levels_rejects_a_negative_event_count():
     with pytest.raises(ValueError, match="n_events"):
         plan_count_levels(-1, 0, _DAY_US)

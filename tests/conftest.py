@@ -585,7 +585,7 @@ def _write_marks(root):
         snippet_attrs,
     )
     level = create_group_with_attrs(
-        channel, "1", level_group_attrs(float(ODD_COUNT_PERIOD_US))
+        channel, "1", {TSZ_KEY: {"period_us": ODD_COUNT_PERIOD_US}}
     )
     _write_rows(level, COUNT_KEY, counts, (TIME_DIMENSION, None))
     create_group_with_attrs(channel, "notes", {})

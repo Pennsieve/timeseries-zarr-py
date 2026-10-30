@@ -23,7 +23,11 @@ from typing import cast
 import numpy as np
 import numpy.typing as npt
 
-from timeseries_zarr.attrs import continuous_channel_attrs, level_group_attrs
+from timeseries_zarr.attrs import (
+    check_time_us,
+    continuous_channel_attrs,
+    level_group_attrs,
+)
 from timeseries_zarr.constants import (
     CHANNEL_APPEND_BYTES,
     COUNT_KEY,
@@ -40,7 +44,7 @@ from timeseries_zarr.constants import (
     WINDOW_BATCH_ROWS,
 )
 from timeseries_zarr.fold import LevelChunk, LevelFolder
-from timeseries_zarr.planning import plan_levels, raw_shape
+from timeseries_zarr.planning import plan_levels, raw_shape, sample_period_us
 from timeseries_zarr.protocols import (
     ContinuousChannelMetadata,
     ContinuousChannelSource,
@@ -90,15 +94,18 @@ def channel_placement(
         reference_us: The reference time in microseconds.
 
     Raises:
-        ValueError: If the runs of the channel do not start at start_us and
-            total num_samples, or place_runs rejects them.
+        ValueError: If the rate is not finite and positive, the runs of the
+            channel do not start at start_us and total num_samples, or
+            place_runs rejects them, or the offset of an empty channel lies
+            outside (-2^53, 2^53) microseconds.
     """
+    sample_period_us(channel.rate_hz())
     runs = source_runs(channel)
     if channel.num_samples() == 0 and not any(run.num_samples for run in runs):
+        offset_us = channel.start_us() - reference_us
+        check_time_us(offset_us, "offset_us")
         return Placement(
-            channel.start_us() - reference_us,
-            0,
-            np.zeros((0, _RUN_COLUMNS), dtype=np.int64),
+            offset_us, 0, np.zeros((0, _RUN_COLUMNS), dtype=np.int64)
         )
     check_source_runs(runs, channel.start_us(), channel.num_samples())
     return place_runs(runs, channel.rate_hz(), reference_us)

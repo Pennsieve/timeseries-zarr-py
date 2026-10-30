@@ -1,7 +1,8 @@
 """Windows of several continuous channels stacked on one shared grid.
 
 Every time argument is an integer count of microseconds from the reference
-time. Channels stack when they share rate_hz and offset_us. Entry i of
+time. Channels stack when they share rate_hz and offset_us, and at a level
+when that level has the same width in samples on every channel. Entry i of
 every row then starts at the same time.
 """
 
@@ -184,8 +185,9 @@ def check_shared_grid(
 
     Raises:
         ValueError: If channels is empty, if a channel differs from the first
-            in rate_hz or offset_us, if a channel lacks the level, if member
-            does not suit the level, or if a level lacks member.
+            in rate_hz or offset_us, if a channel lacks the level, if the
+            level differs from the first channel's in samples per bin, if
+            member does not suit the level, or if a level lacks member.
         TypeError: If level is not an integer.
     """
     if not channels:
@@ -196,12 +198,22 @@ def check_shared_grid(
     # Only level 0 takes None, and every channel holds raw samples.
     if member is None:
         return
+    first_width: int | None = None
     for channel in channels:
         chosen = channel.levels.get(number)
         if chosen is None:
             raise ValueError(
                 f"channel {channel.key} has no level {number}; stack needs "
                 "a level that every channel holds"
+            )
+        if first_width is None:
+            first_width = chosen.samples_per_bin
+        elif chosen.samples_per_bin != first_width:
+            raise ValueError(
+                f"level {number} of channel {channel.key} holds "
+                f"{chosen.samples_per_bin} samples per bin and channel "
+                f"{channels[0].key} holds {first_width}; stack needs "
+                "channels whose level has the same width in samples"
             )
         name, _ = _MEMBER_ARRAYS[member]
         if name not in member_arrays(chosen):

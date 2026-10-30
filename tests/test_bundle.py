@@ -2042,3 +2042,133 @@ def test_write_bundle_leaves_an_existing_bundle_when_a_source_is_incomplete(
     with pytest.raises(ValueError, match="missing waveform_mean"):
         write_bundle([], [partial], output_path=output, opts=_OPTS)
     assert (output / "zarr.json").read_text() == before
+
+
+def _assert_existing_bundle_kept(output, before):
+    assert (output / "zarr.json").read_text() == before
+    assert open_group(output)["0"]["raw"][:].tolist() == list(range(8))
+
+
+@pytest.mark.parametrize(
+    "rate_hz", [float("nan"), float("inf"), 0.0], ids=["nan", "inf", "zero"]
+)
+@pytest.mark.parametrize("samples", [0, 8], ids=["empty", "samples"])
+def test_write_bundle_rejects_a_rate_that_is_not_finite_and_positive_before_writing(
+    tmp_path, continuous_source, samples, rate_hz
+):
+    output = tmp_path / "bundle"
+    bad = continuous_source(
+        np.zeros(samples, np.float32), id="bad", rate_hz=rate_hz
+    )
+    with pytest.raises(ValueError, match=r"channel 0 \('bad'\).*rate_hz"):
+        write_bundle([bad], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("start_us", [2**53, -(2**53)])
+@pytest.mark.parametrize("samples", [0, 8], ids=["empty", "samples"])
+def test_write_bundle_rejects_a_channel_offset_at_the_time_limit_before_writing(
+    tmp_path, continuous_source, samples, start_us
+):
+    output = tmp_path / "bundle"
+    first = continuous_source(np.arange(8, dtype=np.float32), id="c0")
+    write_bundle([first], [], output_path=output, opts=_OPTS)
+    before = (output / "zarr.json").read_text()
+    bad = continuous_source(
+        np.zeros(samples, np.float32), id="bad", start_us=start_us
+    )
+    with pytest.raises(ValueError, match=r"offset_us.*\(-2\^53, 2\^53\)"):
+        write_bundle([first, bad], [], output_path=output, opts=_OPTS)
+    _assert_existing_bundle_kept(output, before)
+
+
+def test_write_bundle_rejects_a_grid_that_ends_past_the_time_limit_before_writing(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    first = continuous_source(np.zeros(8, np.float32), id="c0")
+    bad = continuous_source(
+        np.zeros(100, np.float32), id="bad", rate_hz=1.0, start_us=2**53 - 10
+    )
+    with pytest.raises(ValueError, match="grid time of the last sample"):
+        write_bundle([first, bad], [], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_rejects_an_event_time_at_the_time_limit_before_writing(
+    tmp_path, continuous_source, event_source
+):
+    output = tmp_path / "bundle"
+    first = continuous_source(np.arange(8, dtype=np.float32), id="c0")
+    write_bundle([first], [], output_path=output, opts=_OPTS)
+    before = (output / "zarr.json").read_text()
+    bad = event_source([0, 2**53], id="e9")
+    with pytest.raises(ValueError, match=r"channel 0 \('e9'\).*an event time"):
+        write_bundle([], [bad], output_path=output, opts=_OPTS)
+    _assert_existing_bundle_kept(output, before)
+
+
+def test_write_bundle_rejects_a_duration_bound_at_the_time_limit_before_writing(
+    tmp_path, event_source
+):
+    output = tmp_path / "bundle"
+    bad = event_source([1], durations=[0], max_duration_us=2**53, id="e9")
+    with pytest.raises(ValueError, match="max_duration_us"):
+        write_bundle([], [bad], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_rejects_2_to_the_32_events_before_writing(
+    tmp_path, event_source
+):
+    class Huge(type(event_source([0]))):
+        def num_events(self):
+            return 2**32
+
+    output = tmp_path / "bundle"
+    with pytest.raises(ValueError, match="fewer than 2.32 events"):
+        write_bundle([], [Huge([0])], output_path=output, opts=_OPTS)
+    assert not output.exists()
+
+
+def test_write_bundle_rejects_a_non_finite_recording_value_before_writing(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    first = continuous_source(np.arange(8, dtype=np.float32), id="c0")
+    write_bundle([first], [], output_path=output, opts=_OPTS)
+    before = (output / "zarr.json").read_text()
+    recording = RecordingMeta(subject={"weight_kg": float("nan")})
+    with pytest.raises(ValueError, match=r"recording\.json.*finite"):
+        write_bundle(
+            [first], [], output_path=output, opts=_OPTS, recording=recording
+        )
+    _assert_existing_bundle_kept(output, before)
+    assert not (output / RECORDING_FILE).exists()
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("-inf")])
+def test_write_bundle_rejects_an_infinite_recording_value_before_writing(
+    tmp_path, continuous_source, value
+):
+    output = tmp_path / "bundle"
+    first = continuous_source(np.arange(8, dtype=np.float32), id="c0")
+    recording = RecordingMeta(source={"gain": [1.0, value]})
+    with pytest.raises(ValueError, match=r"recording\.json.*finite"):
+        write_bundle(
+            [first], [], output_path=output, opts=_OPTS, recording=recording
+        )
+    assert not output.exists()
+
+
+def test_write_bundle_rejects_a_recording_value_that_is_not_json_before_writing(
+    tmp_path, continuous_source
+):
+    output = tmp_path / "bundle"
+    first = continuous_source(np.arange(8, dtype=np.float32), id="c0")
+    recording = RecordingMeta(subject={"tags": {1, 2}})
+    with pytest.raises(ValueError, match=r"recording\.json.*JSON"):
+        write_bundle(
+            [first], [], output_path=output, opts=_OPTS, recording=recording
+        )
+    assert not output.exists()

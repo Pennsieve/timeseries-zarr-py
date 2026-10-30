@@ -288,13 +288,14 @@ def test_count_level_rejects_an_offset_off_the_grid():
         )
 
 
-def test_count_windows_use_the_exact_period():
+def test_count_windows_use_the_integer_period():
     channel = _built(
         {"events": [1_595_200, 1_595_201], "1/count": _counts(3000, 1)},
-        groups=_levels(16 * 1e6 / 30_000),
+        groups=_levels(1000),
     )
-    assert channel.read_counts(1_595_200, None, level=1).first == 2990
-    assert channel.level_for(bins=2) == 1
+    counts = channel.read_counts(1_595_200, 1_595_202, level=1)
+    assert counts.first == 1595
+    assert counts.count.shape[0] == 1
 
 
 def test_odd_marks_channel_omits_id_and_label_names(odd):
@@ -1038,19 +1039,18 @@ def test_unknown_nodes_and_keys_are_ignored():
     assert channel.columns == ()
 
 
-def test_count_level_periods_within_the_tolerance_are_accepted():
+def test_count_level_periods_stored_as_integral_floats_read_as_integers():
     channel = _built(
         {
             "events": _BUILT_EVENTS,
             "1/count": _counts(1, 2),
             "2/count": _counts(1, 2),
         },
-        groups=_levels(1000.0, 4000.0 * (1 + 1e-12)),
+        groups=_levels(1000.0, 4000.0),
     )
-    assert [level.period_us for level in channel.count_levels.values()] == [
-        1000.0,
-        4000.0 * (1 + 1e-12),
-    ]
+    periods = [level.period_us for level in channel.count_levels.values()]
+    assert periods == [1000, 4000]
+    assert all(type(period) is int for period in periods)
 
 
 def test_count_levels_accept_whole_ratios_that_differ_by_level():
@@ -1259,6 +1259,34 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
         pytest.param(
             {
                 "events": _BUILT_EVENTS,
+                "waveforms": (
+                    np.zeros((3, 4), np.float32),
+                    {"tsz": {"period_us": 100.0, "event_sample": 4}},
+                ),
+            },
+            None,
+            None,
+            "channel 4 waveforms: tsz.event_sample must be below the 4 "
+            "samples of a snippet, got 4",
+            id="waveforms-event-sample-past-the-samples",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
+                "waveform_mean": (
+                    np.zeros((2, 4), np.float32),
+                    {"tsz": {"period_us": 100.0, "event_sample": 9}},
+                ),
+            },
+            None,
+            None,
+            "channel 4 waveform_mean: tsz.event_sample must be below the 4 "
+            "samples of a snippet, got 9",
+            id="waveform-mean-event-sample-past-the-samples",
+        ),
+        pytest.param(
+            {
+                "events": _BUILT_EVENTS,
                 "waveform_mean": (np.zeros((2, 4), np.float32), {}),
             },
             None,
@@ -1347,8 +1375,8 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
             _levels(1000.0, 1500.0),
             None,
             "channel 4 count level 2: tsz.period_us must be an integer "
-            "multiple of 1000.0, the period_us of count level 1, at least 2 "
-            "times it, got 1500.0",
+            "multiple of 1000, the period_us of count level 1, at least 2 "
+            "times it, got 1500",
             id="count-level-ratio-fractional",
         ),
         pytest.param(
@@ -1360,8 +1388,8 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
             _levels(1000.0, 1000.0),
             None,
             "channel 4 count level 2: tsz.period_us must be an integer "
-            "multiple of 1000.0, the period_us of count level 1, at least 2 "
-            "times it, got 1000.0",
+            "multiple of 1000, the period_us of count level 1, at least 2 "
+            "times it, got 1000",
             id="count-level-ratio-1",
         ),
         pytest.param(
@@ -1374,8 +1402,8 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
             _levels(1000.0, 4000.0, 15000.0),
             None,
             "channel 4 count level 3: tsz.period_us must be an integer "
-            "multiple of 4000.0, the period_us of count level 2, at least 2 "
-            "times it, got 15000.0",
+            "multiple of 4000, the period_us of count level 2, at least 2 "
+            "times it, got 15000",
             id="count-level-ratio-past-level-2",
         ),
         pytest.param(
@@ -1387,8 +1415,8 @@ _INTEGER_COLUMN = np.zeros(3, np.int64)
             _levels(1000.0, 4000.0 * (1 + 1e-8)),
             None,
             r"channel 4 count level 2: tsz\.period_us must be an integer "
-            r"multiple of 1000\.0",
-            id="count-level-ratio-past-the-tolerance",
+            r"from 1 to 2\^53 - 1, got 4000\.00004",
+            id="count-level-period-fractional",
         ),
         pytest.param(
             {

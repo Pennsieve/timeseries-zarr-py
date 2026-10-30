@@ -17,13 +17,15 @@ import math
 import operator
 from collections.abc import Iterable, Mapping
 from fractions import Fraction
-from typing import Any, SupportsIndex, cast
+from typing import Any, Final, SupportsIndex, cast
 
 import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.constants import MICROSECONDS_PER_SECOND
 from timeseries_zarr.zarr_io import ZarrArray
+
+_HALF: Final = 0.5
 
 
 def bin_period(rate_hz: float, samples_per_bin: int) -> Fraction:
@@ -49,6 +51,16 @@ def bin_period(rate_hz: float, samples_per_bin: int) -> Fraction:
     return (
         samples_per_bin * Fraction(MICROSECONDS_PER_SECOND) / Fraction(rate_hz)
     )
+
+
+def nearest_integer(value: float) -> int:
+    """Return the integer nearest value, the larger one when two are as near.
+
+    Args:
+        value: A finite number.
+    """
+    floor = math.floor(value)
+    return floor + 1 if value - floor >= _HALF else floor
 
 
 def duration_us(count: int, rate_hz: float) -> int:

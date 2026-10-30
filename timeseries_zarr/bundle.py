@@ -18,6 +18,7 @@ from timeseries_zarr.protocols import (
     source_provenance,
 )
 from timeseries_zarr.recording import (
+    check_recording_document,
     recording_document,
     reference_time_us,
     session_start_us,
@@ -30,7 +31,7 @@ from timeseries_zarr.write_continuous import (
     write_continuous_channel,
     write_continuous_channels,
 )
-from timeseries_zarr.write_event import write_event_channel
+from timeseries_zarr.write_event import check_event_channel, write_event_channel
 from timeseries_zarr.zarr_io import ZarrGroup, consolidate, open_group
 
 type AnySource = (
@@ -398,10 +399,17 @@ def write_bundle(
             the protocol its list requires, two channels share an id, a time
             of recording has no UTC offset, recording sets reference_time
             with wall_clock False, recording.session holds a start_time key,
-            a voltage unit is not "uV" under voltage_policy require_uv, a
+            a voltage unit is not "uV" under voltage_policy require_uv, the
+            recording document holds a value JSON cannot store or a non-finite
+            number, a
             channel's provenance is not a JSON object of finite values, the
-            runs of a channel do not place on its grid, or output_path is
-            not absent, empty, or a bundle. During the write, if a window of
+            runs of a channel do not place on its grid, a channel holds 2^32
+            events or more, a channel offset, a run time, the grid time of the
+            last sample, an event time at either end of a channel, a duration
+            bound, or a count level offset or end lies outside
+            (-2^53, 2^53) microseconds, or output_path is not absent, empty,
+            or a bundle. During the write, if an event time or the end of an
+            interval lies outside that interval, or if a window of
             a multi-channel source holds the wrong number of blocks, a block
             is not rank 1, or the blocks of a channel do not total its
             num_samples.
@@ -421,10 +429,15 @@ def write_bundle(
             sources, session_start, reference_time_us(recording)
         )
         document = recording_document(recording, reference)
+        check_recording_document(document)
     keys = channel_keys(indexed)
     for index, channel in channels:
         try:
-            if not isinstance(channel, EventChannelSource):
+            if isinstance(channel, EventChannelSource):
+                check_event_channel(
+                    channel, 0 if reference is None else reference, opts
+                )
+            else:
                 resolve_unit(channel.unit, opts.voltage_policy)
                 channel_placement(
                     channel, 0 if reference is None else reference

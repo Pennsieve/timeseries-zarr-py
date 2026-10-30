@@ -14,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 
 from timeseries_zarr.attrs import (
+    check_time_us,
     event_channel_attrs,
     level_group_attrs,
     waveform_array_attrs,
@@ -23,6 +24,7 @@ from timeseries_zarr.constants import (
     CHANNELS_KEY,
     COUNT_KEY,
     DURATIONS_KEY,
+    EVENT_COUNT_LIMIT,
     EVENT_DIMENSION,
     EVENTS_KEY,
     FLOAT32_BYTES,
@@ -120,7 +122,7 @@ def write_events_array(
 
     Raises:
         ValueError: If the times decrease, within a block or across a block
-            boundary.
+            boundary, or a stored time lies outside (-2^53, 2^53).
     """
     array = create_array(
         group,
@@ -146,6 +148,8 @@ def write_events_array(
         )
         if decreases_inside or decreases_at_seam:
             raise ValueError("event times must be non-decreasing")
+        check_time_us(int(block.min()), "an event time")
+        check_time_us(int(block.max()), "an event time")
         previous_last = int(block[-1])
 
     _write_source_blocks(
@@ -159,6 +163,8 @@ def write_durations_array(
     source: EventChannelSource,
     sizing: ChunkShard,
     zstd_level: int,
+    *,
+    reference_us: int = 0,
 ) -> ZarrArray:
     """Create the durations array under group and stream the durations into it.
 
@@ -170,14 +176,17 @@ def write_durations_array(
         source: Source of the durations.
         sizing: Chunk and shard shapes of the array.
         zstd_level: Zstandard compression level.
+        reference_us: Reference time in microseconds since the Unix epoch,
+            which the end of each interval counts from.
 
     Returns:
         The created array.
 
     Raises:
         ValueError: If the source reports no max_duration_us, a duration is
-            negative, or a duration exceeds max_duration_us, which the channel
-            declares as a bound on every duration.
+            negative, a duration exceeds max_duration_us, which the channel
+            declares as a bound on every duration, or the end of an interval
+            lies outside (-2^53, 2^53).
     """
     bound = source.max_duration_us()
     if bound is None:
@@ -194,20 +203,20 @@ def write_durations_array(
         dimension_names=(EVENT_DIMENSION,),
     )
 
-    def check(block: npt.NDArray[np.int64]) -> None:
+    def read(start: int, stop: int) -> npt.NDArray[np.int64]:
+        block = source.read_durations(start, stop)
         if block.min() < 0:
             raise ValueError(f"a duration is negative: {int(block.min())}")
         if block.max() > bound:
             raise ValueError(
                 f"a duration {int(block.max())} exceeds max_duration_us {bound}"
             )
+        ends = source.read_events(start, stop) - reference_us + block
+        check_time_us(int(ends.max()), "the end of an interval")
+        return block
 
     _write_source_blocks(
-        array,
-        source.num_events(),
-        sizing.shard_shape[0],
-        source.read_durations,
-        check,
+        array, source.num_events(), sizing.shard_shape[0], read
     )
     return array
 
@@ -422,7 +431,7 @@ def write_waveform_mean_array(
     Raises:
         ValueError: If the means are not shaped (labels, samples), have no
             samples, or have a row count other than source.num_labels(), or if
-            the period is not positive.
+            the period is not finite and positive.
     """
     means = np.asarray(source.waveform_mean(), dtype=np.float32)
     if len(means.shape) != WAVEFORM_MEAN_RANK:
@@ -437,7 +446,7 @@ def write_waveform_mean_array(
             f"waveform_mean has {labels} rows but the channel has "
             f"{source.num_labels()} label categories"
         )
-    attrs = waveform_array_attrs(source.waveform_period_us())
+    attrs = waveform_array_attrs(source.waveform_period_us(), samples=samples)
     sizing = chunk_and_shard(means.shape, FLOAT32_BYTES)
     array = create_array(
         group,
@@ -624,6 +633,50 @@ def write_count_levels(
         previous = (array, plan)
 
 
+def check_event_channel(
+    source: EventChannelSource, reference_us: int, opts: WriteOpts
+) -> None:
+    """Raise ValueError if a limit of the format rules out writing source.
+
+    The checks read at most the first and last event. They run before the
+    writer creates any node. A check on every event or duration runs while the
+    array is written.
+
+    Args:
+        source: Source of the event channel.
+        reference_us: Reference time in microseconds since the Unix epoch.
+        opts: Level limits of the count levels the writer would plan.
+
+    Raises:
+        ValueError: If the channel holds 2^32 events or more, the first or
+            last event time, max_duration_us, or a count level offset or end
+            lies outside (-2^53, 2^53) microseconds.
+    """
+    total = source.num_events()
+    if total >= EVENT_COUNT_LIMIT:
+        raise ValueError(
+            f"an event channel must hold fewer than 2^32 events, got {total}"
+        )
+    if "durations" in source.columns():
+        bound = source.max_duration_us()
+        if bound is not None:
+            check_time_us(bound, "max_duration_us")
+    if total == 0:
+        return
+    first_event_us = int(source.read_events(0, 1)[0]) - reference_us
+    last_event_us = int(source.read_events(total - 1, total)[0]) - reference_us
+    check_time_us(first_event_us, "an event time")
+    check_time_us(last_event_us, "an event time")
+    plan_count_levels(
+        total,
+        first_event_us,
+        last_event_us,
+        opts.level_cap,
+        opts.min_bins,
+        decimation_factor=opts.decimation_factor,
+    )
+
+
 def write_event_channel(
     parent: ZarrGroup,
     key: int,
@@ -654,10 +707,12 @@ def write_event_channel(
         opts: Chunk and shard targets and compression level of every array.
 
     Raises:
-        ValueError: If the source offers waveform_mean without labels or its
-            provenance is not a JSON object of finite values, and whatever
-            the column writers raise for data that breaks the format.
+        ValueError: If the source offers waveform_mean without labels, its
+            provenance is not a JSON object of finite values, or
+            check_event_channel rejects it, and whatever the column writers
+            raise for data that breaks the format.
     """
+    check_event_channel(source, reference_us, opts)
     columns = source.columns()
     if "waveform_mean" in columns and "labels" not in columns:
         raise ValueError("waveform_mean requires a labels column")
@@ -685,7 +740,11 @@ def write_event_channel(
     )
     if "durations" in columns:
         write_durations_array(
-            group, source, sizing(INT64_BYTES), opts.zstd_level
+            group,
+            source,
+            sizing(INT64_BYTES),
+            opts.zstd_level,
+            reference_us=reference_us,
         )
     if "labels" in columns:
         write_labels_array(group, source, sizing(UINT16_BYTES), opts.zstd_level)

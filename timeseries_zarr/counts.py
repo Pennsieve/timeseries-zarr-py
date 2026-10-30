@@ -6,10 +6,12 @@ from typing import Final
 import numpy as np
 import numpy.typing as npt
 
+from timeseries_zarr.attrs import check_time_us
 from timeseries_zarr.constants import (
     CANVAS_PIXELS,
     COUNT_LADDER_BASE_US,
     DEFAULT_DECIMATION_FACTOR,
+    EVENT_COUNT_LIMIT,
     EVENT_LEVEL_THRESHOLD,
     MIN_DECIMATION_FACTOR,
     RASTER_BUDGET,
@@ -154,15 +156,16 @@ def plan_count_levels(
     Raises:
         ValueError: If n_events is negative or above the uint32 range, which
             a count bin can hold when equal times put every event in one bin,
-            if last_event_us precedes first_event_us, or if decimation_factor
-            is below MIN_DECIMATION_FACTOR.
+            if last_event_us precedes first_event_us, if decimation_factor
+            is below MIN_DECIMATION_FACTOR, or if the offset or the end of the
+            last bin of a level lies outside (-2^53, 2^53) microseconds.
     """
     _check_factor(decimation_factor)
     if max_levels is None:
         max_levels = max_levels_for(decimation_factor)
     if n_events < 0:
         raise ValueError(f"n_events must be at least 0, got {n_events}")
-    if n_events > np.iinfo(np.uint32).max:
+    if n_events >= EVENT_COUNT_LIMIT:
         raise ValueError(
             f"n_events {n_events} exceeds the uint32 range of a count bin"
         )
@@ -181,12 +184,15 @@ def plan_count_levels(
         bins = count_bins(first_event_us, last_event_us, period)
         if bins < min_bins:
             break
+        offset_us = bin_offset_us(first_event_us, period)
+        check_time_us(offset_us, f"offset_us of count level {level}")
+        check_time_us(
+            offset_us + bins * period,
+            f"the end of the last bin of count level {level}",
+        )
         plans.append(
             LevelPlan(
-                level=level,
-                bins=bins,
-                period_us=float(period),
-                offset_us=bin_offset_us(first_event_us, period),
+                level=level, bins=bins, period_us=period, offset_us=offset_us
             )
         )
         period *= decimation_factor

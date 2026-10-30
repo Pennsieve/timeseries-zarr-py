@@ -37,7 +37,8 @@ from a ladder of `1000 * decimation_factor^j` microseconds, and each level above
 `columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows.
 `units.py` resolves the factor and stored unit of a continuous channel.
 `runs.py` holds `Run`, the span of samples that a source states, and `place_runs`, which
-puts the runs of a channel on its sample grid in exact fractions. It returns the offset,
+puts the runs of a channel on its sample grid. It picks the grid index of each run in exact
+fractions and checks every bound of the table in binary64. It returns the offset,
 the grid length, and the table of the `runs` array. The same module checks the table
 and the NaN samples outside the runs. The reader checks the table on the first access of
 `runs` and the samples outside the runs on each raw read.

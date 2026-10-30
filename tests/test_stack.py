@@ -7,11 +7,14 @@ import numpy as np
 import pytest
 
 from tests.conftest import ODD_OFFSET_US, write_pair_bundle
+from tests.test_read_continuous import _hand_build, _hand_nodes
 from timeseries_zarr import read_continuous
 from timeseries_zarr.convert import CHANNEL_DIMENSION, TIME_COLUMN
 from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.read_bundle import open_bundle
+from timeseries_zarr.read_continuous import parse_continuous_channel
 from timeseries_zarr.stack import Stack, check_shared_grid, stack_channels
+from timeseries_zarr.zarr_io import descendants
 
 _RAW_PERIOD_US = 1953.125
 _LEVEL_1_PERIOD_US = 7812.5
@@ -246,6 +249,38 @@ def test_stack_rejects_channels_of_different_rates(mixed):
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         mixed.stack([0, 1], level=2)
+
+
+def _hand_channel(key, widths):
+    """Return a 512 Hz channel whose levels fold widths samples per bin."""
+    channel = _hand_build(_hand_nodes(widths=widths))["0"]
+    groups, arrays = descendants(channel)
+    return parse_continuous_channel(key, channel.attrs, groups, arrays)
+
+
+def test_stack_rejects_channels_whose_level_widths_differ():
+    channels = [_hand_channel(0, [4, 16]), _hand_channel(1, [16, 64])]
+    message = (
+        "level 1 of channel 1 holds 16 samples per bin and channel 0 holds "
+        "4; stack needs channels whose level has the same width in samples"
+    )
+    with pytest.raises(ValueError, match=re.escape(message)):
+        check_shared_grid(channels, 1, "min")
+    with pytest.raises(ValueError, match=re.escape(message)):
+        stack_channels(channels, None, None, level=1, member="min")
+
+
+def test_stack_accepts_channels_whose_level_widths_match():
+    channels = [_hand_channel(0, [4, 16]), _hand_channel(1, [4, 16])]
+    assert check_shared_grid(channels, 1, "min") is None
+    assert check_shared_grid(channels, 2, "min") is None
+
+
+def test_stack_compares_the_widths_of_the_level_it_reads():
+    channels = [_hand_channel(0, [4, 16]), _hand_channel(1, [4, 64])]
+    assert check_shared_grid(channels, 1, "min") is None
+    with pytest.raises(ValueError, match="level 2 of channel 1 holds 64"):
+        check_shared_grid(channels, 2, "min")
 
 
 def test_stack_rejects_channels_of_different_offsets(odd):

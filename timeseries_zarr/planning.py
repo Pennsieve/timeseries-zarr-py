@@ -4,6 +4,8 @@ Raw samples are not a level. Levels are numbered from 1, and level k folds
 decimation_factor**k raw samples into each bin.
 """
 
+import math
+
 from timeseries_zarr.constants import (
     DEFAULT_DECIMATION_FACTOR,
     MICROSECONDS_PER_SECOND,
@@ -23,9 +25,11 @@ def _require_samples_per_bin(samples_per_bin: int) -> None:
 
 
 def _require_rate(rate_hz: float) -> None:
-    """Raise ValueError if rate_hz is not positive."""
-    if rate_hz <= 0:
-        raise ValueError(f"rate_hz must be positive, got {rate_hz!r}")
+    """Raise ValueError if rate_hz is not finite and above 0."""
+    if not math.isfinite(rate_hz) or rate_hz <= 0:
+        raise ValueError(
+            f"rate_hz must be finite and positive, got {rate_hz!r}"
+        )
 
 
 def level_count(

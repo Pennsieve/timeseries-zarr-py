@@ -81,8 +81,17 @@ DEFAULT_DECIMATION_FACTOR: Final = 4
 MIN_DECIMATION_FACTOR: Final = 2
 """Smallest ratio of the bin widths of consecutive levels."""
 
-LEVEL_PERIOD_TOLERANCE: Final = 1e-9
+LEVEL_PERIOD_TOLERANCE: Final = 1e-12
 """Relative tolerance of a level's tsz.period_us against the spec value."""
+
+TIME_LIMIT_US: Final = 2**53
+"""Exclusive bound on the magnitude of every time and duration in microseconds."""
+
+EVENT_COUNT_LIMIT: Final = 2**32
+"""Exclusive bound on the number of events in a channel."""
+
+SAMPLES_PER_BIN_LIMIT: Final = 2**32
+"""Exclusive bound on the width of a continuous level in samples."""
 
 ENVELOPE_PAIR_SIZE: Final = 2
 """Length of the trailing (min, max) axis on every coarser pyramid level."""
