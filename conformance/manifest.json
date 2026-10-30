@@ -1,0 +1,2810 @@
+{
+ "spec_version": "1.0",
+ "conventions": [
+  "Every path is relative to this directory. Each fixture is a bundle.",
+  "A null number stands for NaN. No fixture holds an infinity.",
+  "min, max, count, and the integer values compare exactly. mean and var compare within 2^-20 relative.",
+  "period_us of a level is the value of the level attribute, and samples_per_bin is the width s_k of section 4.3.",
+  "columns lists the per-event columns of an event channel other than events, in the order of section 5.1.",
+  "recording_json is the content of recording.json, or null when the bundle has none.",
+  "findings lists what full validation reports, as a path, a section, and a fragment of the message. A conforming bundle has none.",
+  "reader_must_reject marks a bundle that section 8.2 requires a reader to reject. A reader may accept the other invalid bundles."
+ ],
+ "fixtures": {
+  "continuous_30khz": {
+   "path": "continuous_30khz",
+   "exercises": "A channel at 30000 Hz, where the period of a level is not a whole number of microseconds. The last bin of levels 3 through 6 holds fewer samples than the width of its level.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "continuous_30khz",
+     "id": "continuous_30khz",
+     "unit": "uV",
+     "rate_hz": 30000.0,
+     "offset_us": 0,
+     "num_samples": 6000,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 22.53597640991211
+      },
+      {
+       "index": 1,
+       "value": 6.522332668304443
+      },
+      {
+       "index": 3000,
+       "value": 31.954715728759766
+      },
+      {
+       "index": 5999,
+       "value": 60.396183013916016
+      }
+     ],
+     "levels": [
+      {
+       "level": 1,
+       "samples_per_bin": 4,
+       "period_us": 133.33333333333334,
+       "bins": 1500,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4,
+         "min": -11.791468620300293,
+         "max": 22.53597640991211,
+         "mean": 2.380536437034607
+        },
+        {
+         "index": 750,
+         "count": 4,
+         "min": -81.42288208007812,
+         "max": 68.5486068725586,
+         "mean": 20.849535942077637
+        },
+        {
+         "index": 1499,
+         "count": 4,
+         "min": -142.3773956298828,
+         "max": 60.396183013916016,
+         "mean": -27.030704498291016
+        }
+       ]
+      },
+      {
+       "level": 2,
+       "samples_per_bin": 16,
+       "period_us": 533.3333333333334,
+       "bins": 375,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 16,
+         "min": -209.60179138183594,
+         "max": 154.87796020507812,
+         "mean": 6.113712280988693
+        },
+        {
+         "index": 187,
+         "count": 16,
+         "min": -141.3259735107422,
+         "max": 111.12474822998047,
+         "mean": 21.81239664554596
+        },
+        {
+         "index": 374,
+         "count": 16,
+         "min": -217.02467346191406,
+         "max": 66.94662475585938,
+         "mean": -58.37532818317413
+        }
+       ]
+      },
+      {
+       "level": 3,
+       "samples_per_bin": 64,
+       "period_us": 2133.3333333333335,
+       "bins": 94,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 64,
+         "min": -209.60179138183594,
+         "max": 315.05877685546875,
+         "mean": 15.829229362308979
+        },
+        {
+         "index": 47,
+         "count": 64,
+         "min": -243.4497528076172,
+         "max": 325.8728942871094,
+         "mean": 19.446382706984878
+        },
+        {
+         "index": 93,
+         "count": 48,
+         "min": -217.02467346191406,
+         "max": 314.27325439453125,
+         "mean": -11.828086773554483
+        }
+       ]
+      },
+      {
+       "level": 4,
+       "samples_per_bin": 256,
+       "period_us": 8533.333333333334,
+       "bins": 24,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 256,
+         "min": -230.916748046875,
+         "max": 315.05877685546875,
+         "mean": -1.6451982148573734
+        },
+        {
+         "index": 12,
+         "count": 256,
+         "min": -283.13873291015625,
+         "max": 319.3274230957031,
+         "mean": 4.787164251407376
+        },
+        {
+         "index": 23,
+         "count": 112,
+         "min": -218.75823974609375,
+         "max": 314.27325439453125,
+         "mean": -3.052536372627531
+        }
+       ]
+      },
+      {
+       "level": 5,
+       "samples_per_bin": 1024,
+       "period_us": 34133.333333333336,
+       "bins": 6,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 1024,
+         "min": -331.1302185058594,
+         "max": 315.05877685546875,
+         "mean": -1.8360675272269873
+        },
+        {
+         "index": 3,
+         "count": 1024,
+         "min": -302.73760986328125,
+         "max": 328.8817138671875,
+         "mean": 1.3908432090902352
+        },
+        {
+         "index": 5,
+         "count": 880,
+         "min": -357.7342224121094,
+         "max": 314.27325439453125,
+         "mean": -2.815361862765117
+        }
+       ]
+      },
+      {
+       "level": 6,
+       "samples_per_bin": 4096,
+       "period_us": 136533.33333333334,
+       "bins": 2,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4096,
+         "min": -331.1302185058594,
+         "max": 328.8817138671875,
+         "mean": -0.09044440312391089
+        },
+        {
+         "index": 1,
+         "count": 1904,
+         "min": -357.7342224121094,
+         "max": 314.27325439453125,
+         "mean": -0.9515808624990222
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "continuous_24414hz": {
+   "path": "continuous_24414hz",
+   "exercises": "A channel at 24414.0625 Hz, a rate that is exact in binary and has a sample period of 40.96 microseconds. The last bin of levels 2 through 6 holds fewer samples than the width of its level.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "continuous_24414hz",
+     "id": "continuous_24414hz",
+     "unit": "uV",
+     "rate_hz": 24414.0625,
+     "offset_us": 0,
+     "num_samples": 5000,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 48.343021392822266
+      },
+      {
+       "index": 1,
+       "value": -105.59178161621094
+      },
+      {
+       "index": 2500,
+       "value": 111.87663269042969
+      },
+      {
+       "index": 4999,
+       "value": -8.287848472595215
+      }
+     ],
+     "levels": [
+      {
+       "level": 1,
+       "samples_per_bin": 4,
+       "period_us": 163.84,
+       "bins": 1250,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4,
+         "min": -105.59178161621094,
+         "max": 48.343021392822266,
+         "mean": -18.811497688293457
+        },
+        {
+         "index": 625,
+         "count": 4,
+         "min": -232.28109741210938,
+         "max": 111.87663269042969,
+         "mean": -74.58900928497314
+        },
+        {
+         "index": 1249,
+         "count": 4,
+         "min": -200.49900817871094,
+         "max": 62.85377502441406,
+         "mean": -50.044459104537964
+        }
+       ]
+      },
+      {
+       "level": 2,
+       "samples_per_bin": 16,
+       "period_us": 655.36,
+       "bins": 313,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 16,
+         "min": -282.3286437988281,
+         "max": 211.25039672851562,
+         "mean": 13.169825911521912
+        },
+        {
+         "index": 156,
+         "count": 16,
+         "min": -232.28109741210938,
+         "max": 173.3326873779297,
+         "mean": -26.130121961236
+        },
+        {
+         "index": 312,
+         "count": 8,
+         "min": -200.49900817871094,
+         "max": 171.2233123779297,
+         "mean": -1.6473674774169922
+        }
+       ]
+      },
+      {
+       "level": 3,
+       "samples_per_bin": 64,
+       "period_us": 2621.44,
+       "bins": 79,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 64,
+         "min": -282.3286437988281,
+         "max": 235.31138610839844,
+         "mean": 1.0543864704668522
+        },
+        {
+         "index": 39,
+         "count": 64,
+         "min": -232.28109741210938,
+         "max": 189.36288452148438,
+         "mean": -1.039562335703522
+        },
+        {
+         "index": 78,
+         "count": 8,
+         "min": -200.49900817871094,
+         "max": 171.2233123779297,
+         "mean": -1.6473674774169922
+        }
+       ]
+      },
+      {
+       "level": 4,
+       "samples_per_bin": 256,
+       "period_us": 10485.76,
+       "bins": 20,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 256,
+         "min": -282.3286437988281,
+         "max": 235.31138610839844,
+         "mean": -3.530000314465724
+        },
+        {
+         "index": 10,
+         "count": 256,
+         "min": -210.64073181152344,
+         "max": 303.3633117675781,
+         "mean": 7.268587913829833
+        },
+        {
+         "index": 19,
+         "count": 136,
+         "min": -222.0951690673828,
+         "max": 209.4657440185547,
+         "mean": -13.059570521992796
+        }
+       ]
+      },
+      {
+       "level": 5,
+       "samples_per_bin": 1024,
+       "period_us": 41943.04,
+       "bins": 5,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 1024,
+         "min": -285.94805908203125,
+         "max": 259.36834716796875,
+         "mean": -5.1249085072522576
+        },
+        {
+         "index": 2,
+         "count": 1024,
+         "min": -318.751220703125,
+         "max": 303.3633117675781,
+         "mean": 3.1386266982590314
+        },
+        {
+         "index": 4,
+         "count": 904,
+         "min": -333.4998779296875,
+         "max": 311.2951354980469,
+         "mean": -3.6890369823647546
+        }
+       ]
+      },
+      {
+       "level": 6,
+       "samples_per_bin": 4096,
+       "period_us": 167772.16,
+       "bins": 2,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4096,
+         "min": -327.7601623535156,
+         "max": 379.7245788574219,
+         "mean": -1.8274969491803859
+        },
+        {
+         "index": 1,
+         "count": 904,
+         "min": -333.4998779296875,
+         "max": 311.2951354980469,
+         "mean": -3.6890369823647546
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "continuous_runs": {
+   "path": "continuous_runs",
+   "exercises": "A channel of three runs at 1000 Hz. A pause of 700 samples between the first two leaves NaN samples, so bins of levels 1 and 2 hold count 0 and one bin holds a partial count. The second run starts 0.4 sample periods off the grid. The third run starts 0.05 sample periods after the end of the second, which leaves no NaN sample.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "continuous_runs",
+     "id": "continuous_runs",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 4000,
+     "runs": [
+      [
+       0,
+       1500,
+       0
+      ],
+      [
+       2200,
+       1000,
+       2200400
+      ],
+      [
+       3200,
+       800,
+       3200450
+      ]
+     ],
+     "samples": [
+      {
+       "index": 0,
+       "value": 79.26686096191406
+      },
+      {
+       "index": 1,
+       "value": 91.38371276855469
+      },
+      {
+       "index": 1499,
+       "value": 100.79193115234375
+      },
+      {
+       "index": 1500,
+       "value": null
+      },
+      {
+       "index": 2000,
+       "value": null
+      },
+      {
+       "index": 2199,
+       "value": null
+      },
+      {
+       "index": 2200,
+       "value": 201.6449737548828
+      },
+      {
+       "index": 3199,
+       "value": 199.70223999023438
+      },
+      {
+       "index": 3200,
+       "value": 304.5172424316406
+      },
+      {
+       "index": 3999,
+       "value": 304.1646423339844
+      }
+     ],
+     "levels": [
+      {
+       "level": 1,
+       "samples_per_bin": 4,
+       "period_us": 4000.0,
+       "bins": 1000,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4,
+         "min": 79.26686096191406,
+         "max": 111.46394348144531,
+         "mean": 96.73215675354004
+        },
+        {
+         "index": 374,
+         "count": 4,
+         "min": 92.30574798583984,
+         "max": 110.66812133789062,
+         "mean": 100.83185386657715
+        },
+        {
+         "index": 375,
+         "count": 0,
+         "min": null,
+         "max": null,
+         "mean": null
+        },
+        {
+         "index": 500,
+         "count": 0,
+         "min": null,
+         "max": null,
+         "mean": null
+        },
+        {
+         "index": 549,
+         "count": 0,
+         "min": null,
+         "max": null,
+         "mean": null
+        },
+        {
+         "index": 550,
+         "count": 4,
+         "min": 201.6449737548828,
+         "max": 210.4013214111328,
+         "mean": 207.57191467285156
+        },
+        {
+         "index": 799,
+         "count": 4,
+         "min": 192.13035583496094,
+         "max": 203.61231994628906,
+         "mean": 199.2972412109375
+        },
+        {
+         "index": 800,
+         "count": 4,
+         "min": 301.2923583984375,
+         "max": 308.15765380859375,
+         "mean": 305.3859100341797
+        },
+        {
+         "index": 999,
+         "count": 4,
+         "min": 291.73126220703125,
+         "max": 305.5258483886719,
+         "mean": 300.1433410644531
+        }
+       ]
+      },
+      {
+       "level": 2,
+       "samples_per_bin": 16,
+       "period_us": 16000.0,
+       "bins": 250,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 16,
+         "min": 79.26686096191406,
+         "max": 119.66033172607422,
+         "mean": 103.31128692626953
+        },
+        {
+         "index": 93,
+         "count": 12,
+         "min": 91.15975189208984,
+         "max": 110.66812133789062,
+         "mean": 100.85332616170247
+        },
+        {
+         "index": 125,
+         "count": 0,
+         "min": null,
+         "max": null,
+         "mean": null
+        },
+        {
+         "index": 137,
+         "count": 8,
+         "min": 190.1165771484375,
+         "max": 210.4013214111328,
+         "mean": 203.9670009613037
+        },
+        {
+         "index": 199,
+         "count": 16,
+         "min": 180.62986755371094,
+         "max": 216.07557678222656,
+         "mean": 200.2489128112793
+        },
+        {
+         "index": 200,
+         "count": 16,
+         "min": 278.13079833984375,
+         "max": 312.7381591796875,
+         "mean": 299.6658477783203
+        },
+        {
+         "index": 249,
+         "count": 16,
+         "min": 286.04083251953125,
+         "max": 306.99310302734375,
+         "mean": 298.87218475341797
+        }
+       ]
+      },
+      {
+       "level": 3,
+       "samples_per_bin": 64,
+       "period_us": 64000.0,
+       "bins": 63,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 64,
+         "min": 79.26686096191406,
+         "max": 119.66033172607422,
+         "mean": 100.20967054367065
+        },
+        {
+         "index": 23,
+         "count": 28,
+         "min": 84.61543273925781,
+         "max": 122.38362121582031,
+         "mean": 105.15586580548968
+        },
+        {
+         "index": 31,
+         "count": 0,
+         "min": null,
+         "max": null,
+         "mean": null
+        },
+        {
+         "index": 34,
+         "count": 40,
+         "min": 185.34732055664062,
+         "max": 212.7691192626953,
+         "mean": 200.1597064971924
+        },
+        {
+         "index": 49,
+         "count": 64,
+         "min": 180.62986755371094,
+         "max": 216.07557678222656,
+         "mean": 200.77951002120972
+        },
+        {
+         "index": 50,
+         "count": 64,
+         "min": 274.811767578125,
+         "max": 314.92645263671875,
+         "mean": 298.6036114692688
+        },
+        {
+         "index": 62,
+         "count": 32,
+         "min": 281.2046813964844,
+         "max": 316.7198791503906,
+         "mean": 298.8981513977051
+        }
+       ]
+      },
+      {
+       "level": 4,
+       "samples_per_bin": 256,
+       "period_us": 256000.0,
+       "bins": 16,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 256,
+         "min": 77.9366455078125,
+         "max": 121.09370422363281,
+         "mean": 100.01040345430374
+        },
+        {
+         "index": 5,
+         "count": 220,
+         "min": 79.16816711425781,
+         "max": 122.38362121582031,
+         "mean": 100.81005668640137
+        },
+        {
+         "index": 8,
+         "count": 104,
+         "min": 183.20420837402344,
+         "max": 221.55422973632812,
+         "mean": 200.2234133206881
+        },
+        {
+         "index": 12,
+         "count": 256,
+         "min": 180.62986755371094,
+         "max": 314.92645263671875,
+         "mean": 249.36642682552338
+        },
+        {
+         "index": 15,
+         "count": 160,
+         "min": 279.0484619140625,
+         "max": 316.7198791503906,
+         "mean": 299.60176410675047
+        }
+       ]
+      },
+      {
+       "level": 5,
+       "samples_per_bin": 1024,
+       "period_us": 1024000.0,
+       "bins": 4,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 1024,
+         "min": 72.49382781982422,
+         "max": 121.62936401367188,
+         "mean": 99.84420156478882
+        },
+        {
+         "index": 1,
+         "count": 476,
+         "min": 78.51162719726562,
+         "max": 122.38362121582031,
+         "mean": 100.32314218793597
+        },
+        {
+         "index": 2,
+         "count": 872,
+         "min": 177.19776916503906,
+         "max": 221.55422973632812,
+         "mean": 200.29691069716708
+        },
+        {
+         "index": 3,
+         "count": 928,
+         "min": 180.62986755371094,
+         "max": 324.966552734375,
+         "mean": 285.74916339742725
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "continuous_dropout": {
+   "path": "continuous_dropout",
+   "exercises": "A channel of 4096 samples at 1000 Hz with one NaN sample at index 1234. The sample leaves count one below the width in the bin that holds it at each of the 6 levels, and enters no minimum, maximum, or mean.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "continuous_dropout",
+     "id": "continuous_dropout",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 4096,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": -8.935583114624023
+      },
+      {
+       "index": 1,
+       "value": -150.3866424560547
+      },
+      {
+       "index": 1233,
+       "value": -40.26093673706055
+      },
+      {
+       "index": 1234,
+       "value": null
+      },
+      {
+       "index": 1235,
+       "value": 145.8948974609375
+      },
+      {
+       "index": 2048,
+       "value": -90.79580688476562
+      },
+      {
+       "index": 4095,
+       "value": -26.8084716796875
+      }
+     ],
+     "levels": [
+      {
+       "level": 1,
+       "samples_per_bin": 4,
+       "period_us": 4000.0,
+       "bins": 1024,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4,
+         "min": -150.3866424560547,
+         "max": 46.68387985229492,
+         "mean": -36.722453594207764
+        },
+        {
+         "index": 308,
+         "count": 3,
+         "min": -40.26093673706055,
+         "max": 145.8948974609375,
+         "mean": 35.17102162043253
+        },
+        {
+         "index": 512,
+         "count": 4,
+         "min": -116.30330657958984,
+         "max": 75.68746948242188,
+         "mean": -41.47861576080322
+        },
+        {
+         "index": 1023,
+         "count": 4,
+         "min": -26.8084716796875,
+         "max": 211.56283569335938,
+         "mean": 104.43395233154297
+        }
+       ]
+      },
+      {
+       "level": 2,
+       "samples_per_bin": 16,
+       "period_us": 16000.0,
+       "bins": 256,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 16,
+         "min": -150.3866424560547,
+         "max": 131.48443603515625,
+         "mean": -23.3676136136055
+        },
+        {
+         "index": 77,
+         "count": 15,
+         "min": -240.96511840820312,
+         "max": 145.8948974609375,
+         "mean": -18.17303686141968
+        },
+        {
+         "index": 128,
+         "count": 16,
+         "min": -131.472900390625,
+         "max": 97.07022094726562,
+         "mean": -22.191002368927002
+        },
+        {
+         "index": 255,
+         "count": 16,
+         "min": -204.87722778320312,
+         "max": 212.595703125,
+         "mean": 38.96059548854828
+        }
+       ]
+      },
+      {
+       "level": 3,
+       "samples_per_bin": 64,
+       "period_us": 64000.0,
+       "bins": 64,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 64,
+         "min": -151.45773315429688,
+         "max": 201.70606994628906,
+         "mean": 0.6251766580389813
+        },
+        {
+         "index": 19,
+         "count": 63,
+         "min": -240.96511840820312,
+         "max": 173.3693389892578,
+         "mean": -18.95506525039673
+        },
+        {
+         "index": 32,
+         "count": 64,
+         "min": -229.2827606201172,
+         "max": 228.70033264160156,
+         "mean": -3.7791261225938797
+        },
+        {
+         "index": 63,
+         "count": 64,
+         "min": -293.3833312988281,
+         "max": 271.7742614746094,
+         "mean": 11.307236090302467
+        }
+       ]
+      },
+      {
+       "level": 4,
+       "samples_per_bin": 256,
+       "period_us": 256000.0,
+       "bins": 16,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 256,
+         "min": -264.3602294921875,
+         "max": 235.8569793701172,
+         "mean": -3.7640116169059183
+        },
+        {
+         "index": 4,
+         "count": 255,
+         "min": -240.96511840820312,
+         "max": 290.7086486816406,
+         "mean": -0.595897068229376
+        },
+        {
+         "index": 8,
+         "count": 256,
+         "min": -253.22067260742188,
+         "max": 229.58743286132812,
+         "mean": 3.1156473220326006
+        },
+        {
+         "index": 15,
+         "count": 256,
+         "min": -293.3833312988281,
+         "max": 302.4189453125,
+         "mean": -6.9347214247100055
+        }
+       ]
+      },
+      {
+       "level": 5,
+       "samples_per_bin": 1024,
+       "period_us": 1024000.0,
+       "bins": 4,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 1024,
+         "min": -306.199951171875,
+         "max": 300.5989074707031,
+         "mean": -0.9729863419079265
+        },
+        {
+         "index": 1,
+         "count": 1023,
+         "min": -290.07794189453125,
+         "max": 292.22735595703125,
+         "mean": 2.1153749585341033
+        },
+        {
+         "index": 2,
+         "count": 1024,
+         "min": -341.8229675292969,
+         "max": 311.0869140625,
+         "mean": 4.28621122520417
+        },
+        {
+         "index": 3,
+         "count": 1024,
+         "min": -324.3514099121094,
+         "max": 306.4244689941406,
+         "mean": -0.05108922215003986
+        }
+       ]
+      },
+      {
+       "level": 6,
+       "samples_per_bin": 4096,
+       "period_us": 4096000.0,
+       "bins": 1,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4095,
+         "min": -341.8229675292969,
+         "max": 311.0869140625,
+         "mean": 1.3441893771902564
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "continuous_dc_offset": {
+   "path": "continuous_dc_offset",
+   "exercises": "A channel of 4096 samples at 1000 Hz with mean 1e4 and standard deviation 5, whose levels hold var. A variance folded from float32 means loses its precision at this offset.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "continuous_dc_offset",
+     "id": "continuous_dc_offset",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 4096,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 9993.9375
+      },
+      {
+       "index": 1,
+       "value": 9995.8955078125
+      },
+      {
+       "index": 2048,
+       "value": 9994.9658203125
+      },
+      {
+       "index": 4095,
+       "value": 9994.59765625
+      }
+     ],
+     "levels": [
+      {
+       "level": 1,
+       "samples_per_bin": 4,
+       "period_us": 4000.0,
+       "bins": 1024,
+       "members": [
+        "minmax",
+        "mean",
+        "count",
+        "var"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4,
+         "min": 9993.9375,
+         "max": 10001.3935546875,
+         "mean": 9996.32373046875,
+         "var": 9.166821718215942
+        },
+        {
+         "index": 512,
+         "count": 4,
+         "min": 9994.9658203125,
+         "max": 10001.9775390625,
+         "mean": 9999.63037109375,
+         "var": 7.979340314865112
+        },
+        {
+         "index": 1023,
+         "count": 4,
+         "min": 9994.59765625,
+         "max": 10006.6630859375,
+         "mean": 10000.66064453125,
+         "var": 18.19868493080139
+        }
+       ]
+      },
+      {
+       "level": 2,
+       "samples_per_bin": 16,
+       "period_us": 16000.0,
+       "bins": 256,
+       "members": [
+        "minmax",
+        "mean",
+        "count",
+        "var"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 16,
+         "min": 9988.244140625,
+         "max": 10010.5380859375,
+         "mean": 9998.319580078125,
+         "var": 34.511596739292145
+        },
+        {
+         "index": 128,
+         "count": 16,
+         "min": 9994.798828125,
+         "max": 10010.392578125,
+         "mean": 10001.055358886719,
+         "var": 23.928546514362097
+        },
+        {
+         "index": 255,
+         "count": 16,
+         "min": 9994.52734375,
+         "max": 10006.6630859375,
+         "mean": 9999.69140625,
+         "var": 11.891017198562622
+        }
+       ]
+      },
+      {
+       "level": 3,
+       "samples_per_bin": 64,
+       "period_us": 64000.0,
+       "bins": 64,
+       "members": [
+        "minmax",
+        "mean",
+        "count",
+        "var"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 64,
+         "min": 9988.244140625,
+         "max": 10015.2119140625,
+         "mean": 9999.936889648438,
+         "var": 37.4918565005064
+        },
+        {
+         "index": 32,
+         "count": 64,
+         "min": 9988.7880859375,
+         "max": 10012.3037109375,
+         "mean": 10000.174102783203,
+         "var": 31.154470070265234
+        },
+        {
+         "index": 63,
+         "count": 64,
+         "min": 9984.0107421875,
+         "max": 10012.0068359375,
+         "mean": 9999.337326049805,
+         "var": 20.466800385853276
+        }
+       ]
+      },
+      {
+       "level": 4,
+       "samples_per_bin": 256,
+       "period_us": 256000.0,
+       "bins": 16,
+       "members": [
+        "minmax",
+        "mean",
+        "count",
+        "var"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 256,
+         "min": 9988.244140625,
+         "max": 10015.2119140625,
+         "mean": 10000.006893157959,
+         "var": 26.702209398601553
+        },
+        {
+         "index": 8,
+         "count": 256,
+         "min": 9984.5361328125,
+         "max": 10013.16796875,
+         "mean": 9999.681617736816,
+         "var": 28.846624664438423
+        },
+        {
+         "index": 15,
+         "count": 256,
+         "min": 9984.0107421875,
+         "max": 10013.7060546875,
+         "mean": 10000.011463165283,
+         "var": 26.174692218992277
+        }
+       ]
+      },
+      {
+       "level": 5,
+       "samples_per_bin": 1024,
+       "period_us": 1024000.0,
+       "bins": 4,
+       "members": [
+        "minmax",
+        "mean",
+        "count",
+        "var"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 1024,
+         "min": 9985.6337890625,
+         "max": 10016.1181640625,
+         "mean": 9999.934721946716,
+         "var": 25.514377769372913
+        },
+        {
+         "index": 2,
+         "count": 1024,
+         "min": 9984.5361328125,
+         "max": 10019.3271484375,
+         "mean": 10000.031805992126,
+         "var": 26.888315345232513
+        },
+        {
+         "index": 3,
+         "count": 1024,
+         "min": 9982.8779296875,
+         "max": 10014.45703125,
+         "mean": 10000.154428482056,
+         "var": 25.055120275730587
+        }
+       ]
+      },
+      {
+       "level": 6,
+       "samples_per_bin": 4096,
+       "period_us": 4096000.0,
+       "bins": 1,
+       "members": [
+        "minmax",
+        "mean",
+        "count",
+        "var"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4096,
+         "min": 9982.8779296875,
+         "max": 10019.3271484375,
+         "mean": 10000.02726984024,
+         "var": 26.134508266704643
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "continuous_empty": {
+   "path": "continuous_empty",
+   "exercises": "A continuous channel with N = 0: raw has shape (0,), and the channel holds no runs and no levels.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "continuous_empty",
+     "id": "continuous_empty",
+     "unit": "uV",
+     "rate_hz": 30000.0,
+     "offset_us": 0,
+     "num_samples": 0,
+     "runs": null,
+     "samples": [],
+     "levels": []
+    }
+   ]
+  },
+  "events_empty": {
+   "path": "events_empty",
+   "exercises": "An event channel with n = 0 that holds every optional column except a count level. Each column has 0 rows, text has width 1, channels has 1 byte, and waveform_mean holds L = 2 rows of NaN.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "event",
+     "name": "events_empty",
+     "id": "events_empty",
+     "unit": "uV",
+     "label_names": [
+      "first",
+      "second"
+     ],
+     "num_labels": 2,
+     "max_duration_us": 0,
+     "num_events": 0,
+     "events": [],
+     "durations": [],
+     "labels": [],
+     "values": [],
+     "text_width": 1,
+     "text": [],
+     "channel_bytes": 1,
+     "channels": [],
+     "waveform": {
+      "samples": 8,
+      "period_us": 33.333333333333336,
+      "event_sample": 0,
+      "waveforms": [],
+      "waveform_mean": [
+       [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+       ],
+       [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+       ]
+      ]
+     },
+     "columns": [
+      "durations",
+      "labels",
+      "values",
+      "text",
+      "channels",
+      "waveforms"
+     ],
+     "count_levels": []
+    }
+   ]
+  },
+  "events_all_columns": {
+   "path": "events_all_columns",
+   "exercises": "An event channel at index 9 of a bundle of 10 channels, so channels is 2 bytes wide. It holds durations below a loose max_duration_us, a tie in the event times, labels 0 and 1 of 3 label_names, values, text with multi-byte UTF-8, an empty text, and a text as wide as the column, channels with a row that names no channel and a row with the last valid bit set, waveforms and waveform_mean with a label that has no event and a sample with no finite value, and 3 count levels whose offset_us is negative. recording.json holds a reference_time and a session start_time in another zone.",
+   "version": "1.0",
+   "recording_json": {
+    "reference_time": "2024-03-14T14:15:00.000000+00:00",
+    "session": {
+     "start_time": "2024-03-14T09:15:00.000000-05:00"
+    }
+   },
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 10,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "raw-0",
+     "id": "raw-0",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 37.53156280517578
+      },
+      {
+       "index": 1,
+       "value": 109.81904602050781
+      },
+      {
+       "index": 32,
+       "value": 28.508014678955078
+      },
+      {
+       "index": 63,
+       "value": -9.349529266357422
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 1,
+     "kind": "continuous",
+     "name": "raw-1",
+     "id": "raw-1",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 7.841726303100586
+      },
+      {
+       "index": 1,
+       "value": 119.7187728881836
+      },
+      {
+       "index": 32,
+       "value": 58.913978576660156
+      },
+      {
+       "index": 63,
+       "value": -5.400634765625
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 2,
+     "kind": "continuous",
+     "name": "raw-2",
+     "id": "raw-2",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 85.03870391845703
+      },
+      {
+       "index": 1,
+       "value": -0.09996616840362549
+      },
+      {
+       "index": 32,
+       "value": 136.66543579101562
+      },
+      {
+       "index": 63,
+       "value": -27.115346908569336
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 3,
+     "kind": "continuous",
+     "name": "raw-3",
+     "id": "raw-3",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 95.7479476928711
+      },
+      {
+       "index": 1,
+       "value": -97.8667984008789
+      },
+      {
+       "index": 32,
+       "value": 2.4507040977478027
+      },
+      {
+       "index": 63,
+       "value": -27.4564208984375
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 4,
+     "kind": "continuous",
+     "name": "raw-4",
+     "id": "raw-4",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 119.4227294921875
+      },
+      {
+       "index": 1,
+       "value": 26.023645401000977
+      },
+      {
+       "index": 32,
+       "value": -18.341304779052734
+      },
+      {
+       "index": 63,
+       "value": 39.935550689697266
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 5,
+     "kind": "continuous",
+     "name": "raw-5",
+     "id": "raw-5",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": -33.2015495300293
+      },
+      {
+       "index": 1,
+       "value": -55.14426803588867
+      },
+      {
+       "index": 32,
+       "value": 108.41265106201172
+      },
+      {
+       "index": 63,
+       "value": -47.53450393676758
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 6,
+     "kind": "continuous",
+     "name": "raw-6",
+     "id": "raw-6",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 165.0160675048828
+      },
+      {
+       "index": 1,
+       "value": 47.042152404785156
+      },
+      {
+       "index": 32,
+       "value": -16.08766746520996
+      },
+      {
+       "index": 63,
+       "value": -102.89894104003906
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 7,
+     "kind": "continuous",
+     "name": "raw-7",
+     "id": "raw-7",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 222.35438537597656
+      },
+      {
+       "index": 1,
+       "value": -104.86106872558594
+      },
+      {
+       "index": 32,
+       "value": -193.05734252929688
+      },
+      {
+       "index": 63,
+       "value": -33.32221603393555
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 8,
+     "kind": "continuous",
+     "name": "raw-8",
+     "id": "raw-8",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 64,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": 37.3310546875
+      },
+      {
+       "index": 1,
+       "value": -133.7372589111328
+      },
+      {
+       "index": 32,
+       "value": -95.21492004394531
+      },
+      {
+       "index": 63,
+       "value": 107.72361755371094
+      }
+     ],
+     "levels": []
+    },
+    {
+     "key": 9,
+     "kind": "event",
+     "name": "events",
+     "id": "events",
+     "unit": "uV",
+     "label_names": [
+      "spike",
+      "burst",
+      "artifact"
+     ],
+     "num_labels": 3,
+     "max_duration_us": 2000000,
+     "num_events": 24,
+     "events": [
+      -40000,
+      -23900,
+      -7600,
+      8200,
+      24200,
+      40400,
+      56100,
+      56100,
+      88100,
+      104400,
+      120200,
+      136200,
+      152400,
+      168100,
+      184000,
+      200100,
+      216400,
+      232200,
+      248200,
+      264400,
+      280100,
+      296000,
+      312100,
+      328400
+     ],
+     "durations": [
+      250000,
+      0,
+      0,
+      0,
+      0,
+      750000,
+      0,
+      0,
+      0,
+      0,
+      500000,
+      0,
+      0,
+      0,
+      0,
+      250000,
+      0,
+      0,
+      0,
+      0,
+      750000,
+      0,
+      0,
+      0
+     ],
+     "labels": [
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0,
+      1,
+      0,
+      0
+     ],
+     "values": [
+      -2.0,
+      -1.75,
+      -1.5,
+      -1.25,
+      -1.0,
+      -0.75,
+      -0.5,
+      -0.25,
+      0.0,
+      0.25,
+      0.5,
+      0.75,
+      1.0,
+      1.25,
+      1.5,
+      1.75,
+      2.0,
+      2.25,
+      2.5,
+      2.75,
+      3.0,
+      3.25,
+      3.5,
+      3.75
+     ],
+     "text_width": 10,
+     "text": [
+      "",
+      "caf\u00e9",
+      "\u6e2c\u8a66",
+      "burst",
+      "\ud83d\ude00 onset",
+      "",
+      "caf\u00e9",
+      "\u6e2c\u8a66",
+      "burst",
+      "\ud83d\ude00 onset",
+      "",
+      "caf\u00e9",
+      "\u6e2c\u8a66",
+      "burst",
+      "\ud83d\ude00 onset",
+      "",
+      "caf\u00e9",
+      "\u6e2c\u8a66",
+      "burst",
+      "\ud83d\ude00 onset",
+      "",
+      "caf\u00e9",
+      "\u6e2c\u8a66",
+      "burst"
+     ],
+     "channel_bytes": 2,
+     "channels": [
+      [
+       0
+      ],
+      [
+       1,
+       8
+      ],
+      [],
+      [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8,
+       9
+      ],
+      [
+       8
+      ],
+      [
+       0
+      ],
+      [
+       1,
+       8
+      ],
+      [],
+      [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8,
+       9
+      ],
+      [
+       8
+      ],
+      [
+       0
+      ],
+      [
+       1,
+       8
+      ],
+      [],
+      [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8,
+       9
+      ],
+      [
+       8
+      ],
+      [
+       0
+      ],
+      [
+       1,
+       8
+      ],
+      [],
+      [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8,
+       9
+      ],
+      [
+       8
+      ],
+      [
+       0
+      ],
+      [
+       1,
+       8
+      ],
+      [],
+      [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8,
+       9
+      ]
+     ],
+     "waveform": {
+      "samples": 8,
+      "period_us": 33.333333333333336,
+      "event_sample": 2,
+      "waveforms": [
+       [
+        1.4656096696853638,
+        2.3698642253875732,
+        0.0985095277428627,
+        1.190329670906067,
+        1.4133752584457397,
+        null,
+        -0.30211925506591797,
+        -0.7518518567085266
+       ],
+       [
+        -0.9359023571014404,
+        -2.622417688369751,
+        1.1696240901947021,
+        -0.6660379767417908,
+        -0.517516016960144,
+        0.46992379426956177,
+        0.45476359128952026,
+        -0.09430995583534241
+       ],
+       [
+        0.07333608716726303,
+        0.5826612710952759,
+        0.2033342719078064,
+        -0.02436745911836624,
+        -0.7975980043411255,
+        0.34063369035720825,
+        -0.4956851899623871,
+        0.25008082389831543
+       ],
+       [
+        0.4739828109741211,
+        0.83785480260849,
+        null,
+        -0.9772298336029053,
+        0.2509442865848541,
+        null,
+        -1.3466308116912842,
+        0.8446037173271179
+       ],
+       [
+        0.6813557744026184,
+        -0.06052422523498535,
+        -0.6114305257797241,
+        -0.6227184534072876,
+        -0.7150898575782776,
+        0.8446701169013977,
+        0.8025908470153809,
+        -0.3823360502719879
+       ],
+       [
+        0.6653977036476135,
+        -0.5267665386199951,
+        0.40675967931747437,
+        0.09944173693656921,
+        -0.42570921778678894,
+        -0.026078054681420326,
+        -0.3263971507549286,
+        -0.558390736579895
+       ],
+       [
+        -0.6413362622261047,
+        -0.15957492589950562,
+        -0.20426568388938904,
+        0.5141119360923767,
+        2.583711862564087,
+        null,
+        -2.0401535034179688,
+        1.0351570844650269
+       ],
+       [
+        -0.4888281524181366,
+        1.4105720520019531,
+        0.5410767793655396,
+        -1.3445210456848145,
+        -1.3811712265014648,
+        0.4463319778442383,
+        -0.35603535175323486,
+        -0.35697343945503235
+       ],
+       [
+        1.5681625604629517,
+        -0.8584712147712708,
+        -0.48811662197113037,
+        -0.4181983172893524,
+        0.1430966854095459,
+        0.5326656699180603,
+        0.9480631351470947,
+        -0.005605811253190041
+       ],
+       [
+        1.126603364944458,
+        -2.2616255283355713,
+        0.8344786167144775,
+        0.6515520811080933,
+        0.8093347549438477,
+        null,
+        -1.668723225593567,
+        0.03359804302453995
+       ],
+       [
+        0.35657012462615967,
+        -1.7312521934509277,
+        -0.7766061425209045,
+        -1.9751026630401611,
+        0.970274806022644,
+        -0.1940794140100479,
+        0.13672704994678497,
+        0.1924567073583603
+       ],
+       [
+        0.5740739703178406,
+        -0.6621418595314026,
+        -0.017375946044921875,
+        0.2965312600135803,
+        0.37112191319465637,
+        0.6949774622917175,
+        -0.563709020614624,
+        0.9091619253158569
+       ],
+       [
+        -1.1716759204864502,
+        0.637519359588623,
+        -0.7210640907287598,
+        -0.22387056052684784,
+        -1.3922011852264404,
+        null,
+        -0.0150175541639328,
+        -0.842441976070404
+       ],
+       [
+        1.9048030376434326,
+        0.021984755992889404,
+        0.28193044662475586,
+        -1.1255236864089966,
+        -0.061166346073150635,
+        0.13467979431152344,
+        -0.29385077953338623,
+        -0.4677353799343109
+       ],
+       [
+        -1.0270947217941284,
+        -0.5200398564338684,
+        -0.8906899094581604,
+        0.476610392332077,
+        1.561301350593567,
+        1.4501171112060547,
+        -1.9789220094680786,
+        -0.6122660636901855
+       ],
+       [
+        -1.6800307035446167,
+        0.8994995951652527,
+        -0.2859804928302765,
+        2.092153787612915,
+        2.4033658504486084,
+        null,
+        -0.8584887981414795,
+        0.19488658010959625
+       ],
+       [
+        -0.5998224020004272,
+        -0.8707818388938904,
+        -0.3462465703487396,
+        -0.5255425572395325,
+        0.6717693209648132,
+        0.879975438117981,
+        -1.0625133514404297,
+        -1.243915319442749
+       ],
+       [
+        -2.0220861434936523,
+        -2.179948091506958,
+        -0.5326128602027893,
+        0.034466471523046494,
+        -1.4920357465744019,
+        0.3501914143562317,
+        0.4104249179363251,
+        -0.4857102632522583
+       ],
+       [
+        0.16186320781707764,
+        -0.3161163330078125,
+        0.8510650992393494,
+        0.7613648176193237,
+        0.630454421043396,
+        null,
+        0.8351731896400452,
+        -1.3285754919052124
+       ],
+       [
+        0.7873595952987671,
+        1.2529977560043335,
+        0.6497785449028015,
+        0.8704777359962463,
+        0.31942012906074524,
+        -1.948370099067688,
+        2.624511957168579,
+        -0.6972929835319519
+       ],
+       [
+        -0.6826547384262085,
+        2.0567402839660645,
+        0.007368871476501226,
+        1.2119669914245605,
+        -2.5782089233398438,
+        1.4061506986618042,
+        -0.6361669898033142,
+        -1.7558039426803589
+       ],
+       [
+        -2.2683916091918945,
+        0.8922244310379028,
+        -0.11903204023838043,
+        -0.6764815449714661,
+        0.9884143471717834,
+        null,
+        -0.09318383783102036,
+        -1.2084934711456299
+       ],
+       [
+        1.1696497201919556,
+        -0.042724303901195526,
+        0.4157783091068268,
+        0.9575906991958618,
+        -1.0415586233139038,
+        0.2451419234275818,
+        0.9907153248786926,
+        -2.112389326095581
+       ],
+       [
+        -0.7895047068595886,
+        1.773293137550354,
+        0.3827904462814331,
+        1.2031991481781006,
+        -0.570132315158844,
+        -0.9009345769882202,
+        -2.199362277984619,
+        -0.4542420208454132
+       ]
+      ],
+      "waveform_mean": [
+       [
+        0.07717595994472504,
+        -0.1860511600971222,
+        0.02471017837524414,
+        -0.09698298573493958,
+        -0.3464501202106476,
+        0.2953748106956482,
+        -0.09655283391475677,
+        -0.492204487323761
+       ],
+       [
+        -0.3166719377040863,
+        0.36245569586753845,
+        0.06481584906578064,
+        0.41649129986763,
+        0.9609249234199524,
+        null,
+        -0.6861429810523987,
+        -0.2528896629810333
+       ],
+       [
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+       ]
+      ]
+     },
+     "columns": [
+      "durations",
+      "labels",
+      "values",
+      "text",
+      "channels",
+      "waveforms"
+     ],
+     "count_levels": [
+      {
+       "level": 1,
+       "period_us": 16000,
+       "offset_us": -48000,
+       "bins": 24,
+       "count": [
+        [
+         0,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         0,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         1,
+         0
+        ],
+        [
+         0,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         0,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         0,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         0,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         0,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         0,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ]
+       ]
+      },
+      {
+       "level": 2,
+       "period_us": 64000,
+       "offset_us": -64000,
+       "bins": 7,
+       "count": [
+        [
+         2,
+         1,
+         0
+        ],
+        [
+         3,
+         2,
+         0
+        ],
+        [
+         2,
+         1,
+         0
+        ],
+        [
+         3,
+         1,
+         0
+        ],
+        [
+         2,
+         2,
+         0
+        ],
+        [
+         3,
+         1,
+         0
+        ],
+        [
+         1,
+         0,
+         0
+        ]
+       ]
+      },
+      {
+       "level": 3,
+       "period_us": 256000,
+       "offset_us": -256000,
+       "bins": 3,
+       "count": [
+        [
+         2,
+         1,
+         0
+        ],
+        [
+         10,
+         6,
+         0
+        ],
+        [
+         4,
+         1,
+         0
+        ]
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  "extension_1_1": {
+   "path": "extension_1_1",
+   "exercises": "A bundle that declares version 1.1 and holds what a later minor release may add: an unknown tsz key on the root, a channel, a level, and an event channel, an unknown group under a channel, an unknown member of a level, an unknown column of an event channel, an unknown node under the root, an unknown key in recording.json, and two unknown files. A 1.0 reader reads it and ignores them. A validator reports the minor version as unsupported and nothing else.",
+   "version": "1.1",
+   "recording_json": {
+    "reference_time": "2024-03-14T14:15:00.000000+00:00",
+    "device": {
+     "model": "a key that 1.0 does not define"
+    }
+   },
+   "reader_must_reject": false,
+   "findings": [
+    {
+     "path": "",
+     "section": "9",
+     "message_contains": "minor version"
+    }
+   ],
+   "channel_count": 2,
+   "channels": [
+    {
+     "key": 0,
+     "kind": "continuous",
+     "name": "wide",
+     "id": "wide",
+     "unit": "uV",
+     "rate_hz": 1000.0,
+     "offset_us": 0,
+     "num_samples": 1024,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": -54.09896469116211
+      },
+      {
+       "index": 1,
+       "value": -148.95762634277344
+      },
+      {
+       "index": 512,
+       "value": 16.849855422973633
+      },
+      {
+       "index": 1023,
+       "value": -44.46677017211914
+      }
+     ],
+     "levels": [
+      {
+       "level": 1,
+       "samples_per_bin": 4,
+       "period_us": 4000.0,
+       "bins": 256,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 4,
+         "min": -148.95762634277344,
+         "max": -53.474273681640625,
+         "mean": -90.98696804046631
+        },
+        {
+         "index": 128,
+         "count": 4,
+         "min": -166.282470703125,
+         "max": 99.22303771972656,
+         "mean": -10.435661792755127
+        },
+        {
+         "index": 255,
+         "count": 4,
+         "min": -107.93370819091797,
+         "max": -28.063074111938477,
+         "mean": -57.40033674240112
+        }
+       ]
+      },
+      {
+       "level": 2,
+       "samples_per_bin": 16,
+       "period_us": 16000.0,
+       "bins": 64,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 16,
+         "min": -200.4629669189453,
+         "max": 190.4947052001953,
+         "mean": -39.984688967466354
+        },
+        {
+         "index": 32,
+         "count": 16,
+         "min": -166.282470703125,
+         "max": 209.74639892578125,
+         "mean": -12.626918610185385
+        },
+        {
+         "index": 63,
+         "count": 16,
+         "min": -145.23548889160156,
+         "max": 145.62173461914062,
+         "mean": -7.670376420021057
+        }
+       ]
+      },
+      {
+       "level": 3,
+       "samples_per_bin": 64,
+       "period_us": 64000.0,
+       "bins": 16,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 64,
+         "min": -228.53433227539062,
+         "max": 212.66476440429688,
+         "mean": -25.365335512906313
+        },
+        {
+         "index": 8,
+         "count": 64,
+         "min": -244.8135986328125,
+         "max": 209.74639892578125,
+         "mean": -0.09850870724767447
+        },
+        {
+         "index": 15,
+         "count": 64,
+         "min": -216.7804412841797,
+         "max": 208.8658905029297,
+         "mean": -6.0133378356695175
+        }
+       ]
+      },
+      {
+       "level": 4,
+       "samples_per_bin": 256,
+       "period_us": 256000.0,
+       "bins": 4,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 256,
+         "min": -238.91583251953125,
+         "max": 238.07974243164062,
+         "mean": -6.016359801404178
+        },
+        {
+         "index": 2,
+         "count": 256,
+         "min": -255.87200927734375,
+         "max": 232.97100830078125,
+         "mean": -0.0027589870151132345
+        },
+        {
+         "index": 3,
+         "count": 256,
+         "min": -269.4102783203125,
+         "max": 352.5014343261719,
+         "mean": -2.424554908182472
+        }
+       ]
+      },
+      {
+       "level": 5,
+       "samples_per_bin": 1024,
+       "period_us": 1024000.0,
+       "bins": 1,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 1024,
+         "min": -288.3719482421875,
+         "max": 352.5014343261719,
+         "mean": -2.9114900234126253
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "key": 1,
+     "kind": "event",
+     "name": "marks",
+     "id": "marks",
+     "unit": "uV",
+     "label_names": [
+      "first",
+      "second"
+     ],
+     "num_labels": 2,
+     "max_duration_us": null,
+     "num_events": 8,
+     "events": [
+      0,
+      1000000,
+      2000000,
+      3000000,
+      4000000,
+      5000000,
+      6000000,
+      7000000
+     ],
+     "labels": [
+      0,
+      1,
+      0,
+      1,
+      0,
+      1,
+      0,
+      1
+     ],
+     "columns": [
+      "labels"
+     ],
+     "count_levels": []
+    }
+   ]
+  },
+  "invalid/no_consolidated_metadata": {
+   "path": "invalid/no_consolidated_metadata",
+   "exercises": "A root zarr.json without consolidated_metadata, which is not a bundle. A reader rejects it.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": true,
+   "findings": [
+    {
+     "path": "",
+     "section": "6.2",
+     "message_contains": "no consolidated_metadata"
+    }
+   ]
+  },
+  "invalid/missing_events_chunk": {
+   "path": "invalid/missing_events_chunk",
+   "exercises": "An event channel of 8 events whose events array has no chunk. Section 7.3 requires every chunk of a per-event column.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [
+    {
+     "path": "1/events",
+     "section": "7.3",
+     "message_contains": "chunks are missing"
+    }
+   ]
+  },
+  "invalid/event_time_past_limit": {
+   "path": "invalid/event_time_past_limit",
+   "exercises": "An event at 2^53 microseconds, which section 2.3 excludes. The writer refuses such a time, so the bundle is built by hand.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [
+    {
+     "path": "1/events",
+     "section": "2.3",
+     "message_contains": "event time"
+    }
+   ]
+  }
+ }
+}
