@@ -363,15 +363,22 @@ def test_odd_bundle_level_members_are_the_statistics_of_their_bins(
     odd_bundle, key, level, members
 ):
     channel = _open(odd_bundle)[key]
-    bins = _bins(channel["raw"][:], 4**level)
+    bins = [
+        samples[np.isfinite(samples)]
+        for samples in _bins(channel["raw"][:], 4**level)
+    ]
+
+    def over_finite(reduction, empty=np.nan):
+        return np.array(
+            [reduction(samples) if samples.size else empty for samples in bins]
+        )
+
     reference = {
-        "minmax": np.array(
-            [[np.min(samples), np.max(samples)] for samples in bins]
-        ),
-        "median": np.array([np.median(samples) for samples in bins]),
-        "mean": np.array([np.mean(samples) for samples in bins]),
-        "var": np.array([np.var(samples) for samples in bins]),
-        "count": np.array([np.isfinite(samples).sum() for samples in bins]),
+        "minmax": np.stack([over_finite(np.min), over_finite(np.max)], axis=1),
+        "median": over_finite(np.median),
+        "mean": over_finite(np.mean),
+        "var": over_finite(np.var),
+        "count": over_finite(np.size, empty=0),
     }
     for member in members:
         stored = channel[str(level)][member][:]
@@ -388,7 +395,9 @@ def test_odd_bundle_last_bin_of_channel_0_is_short(odd_bundle):
     assert channel["2"]["count"][62] == 1001 - 62 * 16
 
 
-def test_odd_bundle_nan_run_of_channel_0_reaches_both_levels(odd_bundle):
+def test_odd_bundle_nan_run_of_channel_0_empties_only_the_bins_it_covers(
+    odd_bundle,
+):
     channel = _open(odd_bundle)["0"]
     raw = channel["raw"][:]
     start, stop = ODD_NAN_RUN
@@ -396,7 +405,7 @@ def test_odd_bundle_nan_run_of_channel_0_reaches_both_levels(odd_bundle):
     level_1 = np.isnan(channel["1"]["minmax"][:]).any(axis=1)
     assert np.flatnonzero(level_1).tolist() == list(range(25, 35))
     level_2 = np.isnan(channel["2"]["minmax"][:]).any(axis=1)
-    assert np.flatnonzero(level_2).tolist() == [6, 7, 8]
+    assert np.flatnonzero(level_2).tolist() == [7]
     assert channel["2"]["count"][5:10].tolist() == [16, 4, 0, 4, 16]
 
 

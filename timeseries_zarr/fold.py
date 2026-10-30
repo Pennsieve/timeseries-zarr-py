@@ -1,9 +1,10 @@
 """Pyramid folding: reduce a level to the next coarser one in fixed blocks.
 
 A folded level travels as Statistics: the minimum, maximum, mean, population
-variance, and count of finite samples of each bin, as one float64 array each.
-Every statistic uses the plain reduction, so a NaN propagates into the bin
-holding it; only the count stays finite.
+variance, and count of the finite samples of each bin, as one float64 array
+each. A NaN or infinite sample does not count and does not enter any
+statistic. A bin with no finite sample has count 0 and NaN in the other four
+statistics.
 
 fold_raw and fold_statistics work on column views, which keeps every numpy
 call a full pass over the block instead of a loop over the elements of a row.
@@ -44,13 +45,13 @@ class Statistics:
     """The statistics of consecutive bins, one float64 array per statistic.
 
     Attributes:
-        minimum: Minimum of each bin. NaN when the bin holds a non-finite
-            sample.
-        maximum: Maximum of each bin. NaN when the bin holds a non-finite
-            sample.
-        mean: Mean of each bin. NaN when the bin holds a non-finite sample.
-        variance: Population variance of each bin. NaN when the bin holds a
-            non-finite sample.
+        minimum: Minimum of the finite samples of each bin. NaN when the count
+            is 0.
+        maximum: Maximum of the finite samples of each bin. NaN when the count
+            is 0.
+        mean: Mean of the finite samples of each bin. NaN when the count is 0.
+        variance: Population variance of the finite samples of each bin. NaN
+            when the count is 0.
         count: Number of finite samples in each bin.
     """
 
@@ -119,6 +120,37 @@ class Statistics:
         return minmax, mean, var, self.count.astype(np.uint32)
 
 
+def _reduce_finite(columns: Sequence[npt.NDArray[Any]]) -> Statistics:
+    """Return the statistics of the finite samples of each row.
+
+    Args:
+        columns: One equal-length view per sample position in the bin.
+    """
+    rows = columns[0].shape[0]
+    count = np.zeros(rows, dtype=np.float64)
+    total = np.zeros(rows, dtype=np.float64)
+    minimum = np.full(rows, np.inf, dtype=np.float64)
+    maximum = np.full(rows, -np.inf, dtype=np.float64)
+    masks = [np.isfinite(column) for column in columns]
+    values = [column.astype(np.float64) for column in columns]
+    for mask, value in zip(masks, values, strict=True):
+        count += mask
+        total += np.where(mask, value, 0.0)
+        np.minimum(minimum, np.where(mask, value, np.inf), out=minimum)
+        np.maximum(maximum, np.where(mask, value, -np.inf), out=maximum)
+    empty = count == 0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        mean = total / count
+        variance = np.zeros(rows, dtype=np.float64)
+        for mask, value in zip(masks, values, strict=True):
+            deviation = np.where(mask, value - mean, 0.0)
+            variance += deviation * deviation
+        variance /= count
+    minimum[empty] = np.nan
+    maximum[empty] = np.nan
+    return Statistics(minimum, maximum, mean, variance, count)
+
+
 def _reduce_columns(columns: Sequence[npt.NDArray[Any]]) -> Statistics:
     """Return the statistics of each row of the (rows, len(columns)) samples.
 
@@ -161,14 +193,12 @@ def _reduce_columns(columns: Sequence[npt.NDArray[Any]]) -> Statistics:
     maximum64 = maximum.astype(np.float64)
     bad = np.flatnonzero(~(np.isfinite(minimum) & np.isfinite(maximum)))
     if bad.size:
-        finite = np.zeros(bad.size, dtype=np.float64)
-        for column in columns:
-            finite += np.isfinite(column[bad])
-        count[bad] = finite
-        minimum64[bad] = np.nan
-        maximum64[bad] = np.nan
-        mean[bad] = np.nan
-        variance[bad] = np.nan
+        patch = _reduce_finite([column[bad] for column in columns])
+        minimum64[bad] = patch.minimum
+        maximum64[bad] = patch.maximum
+        mean[bad] = patch.mean
+        variance[bad] = patch.variance
+        count[bad] = patch.count
     return Statistics(minimum64, maximum64, mean, variance, count)
 
 
@@ -188,11 +218,10 @@ def _join(parts: list[Statistics]) -> Statistics:
 def fold_raw(raw: npt.NDArray[np.float32], block: int) -> Statistics:
     """Fold raw samples into per-bin statistics over disjoint blocks.
 
-    A non-finite sample (NaN or infinity) counts as NaN, so a block holding
-    one has NaN in its four statistics while the count still reports the
-    finite samples. A block of only non-finite samples has count 0. A final
-    partial block of fewer than block samples becomes one row. An empty input
-    yields zero rows. The input is not modified.
+    A non-finite sample (NaN or infinity) enters no statistic and does not
+    count. A block with no finite sample has count 0 and NaN in the other four
+    statistics. A final partial block of fewer than block samples becomes one
+    row. An empty input yields zero rows. The input is not modified.
 
     Args:
         raw: Raw samples of one channel.
@@ -223,32 +252,36 @@ def fold_raw(raw: npt.NDArray[np.float32], block: int) -> Statistics:
 def _combine_columns(children: Sequence[Statistics]) -> Statistics:
     """Combine the statistics of each row's children, one Statistics each.
 
+    A child with count 0 is absent from every statistic.
+
     Args:
         children: For each child position, the statistics of that child in
             every row.
     """
-    first = children[0]
+    rows = children[0].rows
+    present = [child.count > 0 for child in children]
+    minimum = np.full(rows, np.inf, dtype=np.float64)
+    maximum = np.full(rows, -np.inf, dtype=np.float64)
+    total = np.zeros(rows, dtype=np.float64)
+    weighted = np.zeros(rows, dtype=np.float64)
+    for child, here in zip(children, present, strict=True):
+        np.minimum(minimum, np.where(here, child.minimum, np.inf), out=minimum)
+        np.maximum(maximum, np.where(here, child.maximum, -np.inf), out=maximum)
+        total += child.count
+        weighted += child.count * np.where(here, child.mean, 0.0)
+    empty = total == 0
     with np.errstate(invalid="ignore", divide="ignore"):
-        minimum = first.minimum.copy()
-        maximum = first.maximum.copy()
-        total = first.count.copy()
-        weighted = first.count * first.mean
-        for child in children[1:]:
-            np.minimum(minimum, child.minimum, out=minimum)
-            np.maximum(maximum, child.maximum, out=maximum)
-            total += child.count
-            weighted += child.count * child.mean
-        weighted /= total
-        parent_mean = weighted
-        variance = np.zeros(first.rows, dtype=np.float64)
-        spread = np.empty(first.rows, dtype=np.float64)
-        for child in children:
-            np.subtract(child.mean, parent_mean, out=spread)
-            np.multiply(spread, spread, out=spread)
+        parent_mean = weighted / total
+        variance = np.zeros(rows, dtype=np.float64)
+        for child, here in zip(children, present, strict=True):
+            spread = child.mean - parent_mean
+            spread *= spread
             spread += child.variance
             spread *= child.count
-            variance += spread
+            variance += np.where(here, spread, 0.0)
         variance /= total
+    minimum[empty] = np.nan
+    maximum[empty] = np.nan
     return Statistics(minimum, maximum, parent_mean, variance, total)
 
 
@@ -278,15 +311,15 @@ def _children(
 def fold_statistics(statistics: Statistics, block: int) -> Statistics:
     """Fold statistics into the next coarser level in blocks of rows.
 
-    Each output row combines up to block child rows: the minimum of the
-    minimums, the maximum of the maximums, the count-weighted mean of the
-    means, the count-weighted mean of each child's variance plus the squared
-    distance of its mean from the parent mean, and the sum of the counts. In
-    exact arithmetic the result equals the statistics of the raw samples the
-    children cover. A NaN in any child statistic makes the parent's four
-    statistics NaN, and so do children whose counts sum to 0; the count is
-    the plain sum in every case. A final partial block of fewer than block
-    rows becomes one row. An empty input yields zero rows.
+    Each output row combines up to block child rows with count above 0: the
+    minimum of the minimums, the maximum of the maximums, the count-weighted
+    mean of the means, the count-weighted mean of each child's variance plus
+    the squared distance of its mean from the parent mean, and the sum of the
+    counts. In exact arithmetic the result equals the statistics of the finite
+    raw samples the children cover. A child with count 0 contributes nothing.
+    A row whose children all have count 0 has count 0 and NaN in the other
+    four statistics. A final partial block of fewer than block rows becomes
+    one row. An empty input yields zero rows.
 
     Args:
         statistics: Statistics of the finer level.

@@ -1,5 +1,7 @@
 """Shared pytest fixtures, the in-memory sources, and the test bundles."""
 
+import warnings
+
 import numpy as np
 import pytest
 from zarr.buffer import default_buffer_prototype
@@ -480,22 +482,26 @@ def _reduce_bins(values, width, reduce):
 def _level_statistics(samples, samples_per_bin):
     """Return every member of a level of samples_per_bin, keyed by name.
 
-    A NaN sample makes minmax, mean, var, and median of its bin NaN. count
-    holds the number of finite samples in each bin.
+    Each member covers the finite samples of its bin. A bin with no finite
+    sample has count 0 and NaN in every other member.
     """
     width = samples_per_bin
     values = samples.astype(np.float64)
-    minimum = _reduce_bins(values, width, np.min)
-    maximum = _reduce_bins(values, width, np.max)
+    values[~np.isfinite(values)] = np.nan
     finite = _reduce_bins(np.isfinite(samples), width, np.sum)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        minimum = _reduce_bins(values, width, np.nanmin)
+        maximum = _reduce_bins(values, width, np.nanmax)
+        mean = _reduce_bins(values, width, np.nanmean)
+        variance = _reduce_bins(values, width, np.nanvar)
+        median = _reduce_bins(values, width, np.nanmedian)
     return {
         MINMAX_KEY: np.stack([minimum, maximum], axis=1).astype(np.float32),
-        MEAN_KEY: _reduce_bins(values, width, np.mean).astype(np.float32),
-        VAR_KEY: _reduce_bins(values, width, np.var).astype(np.float32),
+        MEAN_KEY: mean.astype(np.float32),
+        VAR_KEY: variance.astype(np.float32),
         COUNT_KEY: finite.astype(np.uint32),
-        ODD_MEDIAN_KEY: _reduce_bins(values, width, np.median).astype(
-            np.float32
-        ),
+        ODD_MEDIAN_KEY: median.astype(np.float32),
     }
 
 

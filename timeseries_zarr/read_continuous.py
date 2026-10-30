@@ -152,9 +152,9 @@ class Bins:
     """Statistics of the bins of one level in a window.
 
     Entry i describes bin first + i, which starts at offset_us + (first + i)
-    * period_us microseconds from the reference time. A bin with a non-finite
-    sample has NaN statistics, and count holds the number of its finite
-    samples.
+    * period_us microseconds from the reference time. Every statistic covers
+    the finite samples of the bin. A bin with no finite sample has count 0 and
+    NaN statistics.
 
     Attributes:
         level: The level number.

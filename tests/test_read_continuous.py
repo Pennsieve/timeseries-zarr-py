@@ -383,14 +383,14 @@ def test_level_read_keeps_the_short_last_bin(odd_bundle):
     assert level_two.time_us[-1] == 62 * 31_250.0
 
 
-def test_level_read_passes_nan_bins_and_counts_through(odd_bundle):
+def test_level_read_passes_empty_bins_and_counts_through(odd_bundle):
     channel = _channel(odd_bundle, 0)
     level_one = channel.read(level=1)
     level_two = channel.read(level=2)
     assert np.flatnonzero(np.isnan(level_one.min)).tolist() == list(
         range(25, 35)
     )
-    assert np.flatnonzero(np.isnan(level_two.max)).tolist() == [6, 7, 8]
+    assert np.flatnonzero(np.isnan(level_two.max)).tolist() == [7]
     assert level_two.count[5:10].tolist() == [16, 4, 0, 4, 16]
 
 
