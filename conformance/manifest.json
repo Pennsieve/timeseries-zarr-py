@@ -21,7 +21,7 @@
    "channel_count": 1,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "continuous_30khz",
      "id": "continuous_30khz",
@@ -260,7 +260,7 @@
    "channel_count": 1,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "continuous_24414hz",
      "id": "continuous_24414hz",
@@ -499,7 +499,7 @@
    "channel_count": 1,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "continuous_runs",
      "id": "continuous_runs",
@@ -870,7 +870,7 @@
    "channel_count": 1,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "continuous_dropout",
      "id": "continuous_dropout",
@@ -1149,7 +1149,7 @@
    "channel_count": 1,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "continuous_dc_offset",
      "id": "continuous_dc_offset",
@@ -1403,7 +1403,7 @@
    "channel_count": 1,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "continuous_empty",
      "id": "continuous_empty",
@@ -1427,7 +1427,7 @@
    "channel_count": 1,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "event",
      "name": "events_empty",
      "id": "events_empty",
@@ -1502,7 +1502,7 @@
    "channel_count": 10,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "raw-0",
      "id": "raw-0",
@@ -1532,7 +1532,7 @@
      "levels": []
     },
     {
-     "key": 1,
+     "index": 1,
      "kind": "continuous",
      "name": "raw-1",
      "id": "raw-1",
@@ -1562,7 +1562,7 @@
      "levels": []
     },
     {
-     "key": 2,
+     "index": 2,
      "kind": "continuous",
      "name": "raw-2",
      "id": "raw-2",
@@ -1592,7 +1592,7 @@
      "levels": []
     },
     {
-     "key": 3,
+     "index": 3,
      "kind": "continuous",
      "name": "raw-3",
      "id": "raw-3",
@@ -1622,7 +1622,7 @@
      "levels": []
     },
     {
-     "key": 4,
+     "index": 4,
      "kind": "continuous",
      "name": "raw-4",
      "id": "raw-4",
@@ -1652,7 +1652,7 @@
      "levels": []
     },
     {
-     "key": 5,
+     "index": 5,
      "kind": "continuous",
      "name": "raw-5",
      "id": "raw-5",
@@ -1682,7 +1682,7 @@
      "levels": []
     },
     {
-     "key": 6,
+     "index": 6,
      "kind": "continuous",
      "name": "raw-6",
      "id": "raw-6",
@@ -1712,7 +1712,7 @@
      "levels": []
     },
     {
-     "key": 7,
+     "index": 7,
      "kind": "continuous",
      "name": "raw-7",
      "id": "raw-7",
@@ -1742,7 +1742,7 @@
      "levels": []
     },
     {
-     "key": 8,
+     "index": 8,
      "kind": "continuous",
      "name": "raw-8",
      "id": "raw-8",
@@ -1772,7 +1772,7 @@
      "levels": []
     },
     {
-     "key": 9,
+     "index": 9,
      "kind": "event",
      "name": "events",
      "id": "events",
@@ -2538,7 +2538,7 @@
    "channel_count": 2,
    "channels": [
     {
-     "key": 0,
+     "index": 0,
      "kind": "continuous",
      "name": "wide",
      "id": "wide",
@@ -2725,7 +2725,7 @@
      ]
     },
     {
-     "key": 1,
+     "index": 1,
      "kind": "event",
      "name": "marks",
      "id": "marks",

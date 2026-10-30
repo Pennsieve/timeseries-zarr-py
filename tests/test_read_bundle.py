@@ -230,9 +230,9 @@ def test_open_bundle_rejects_a_runs_array_of_the_wrong_shape(
         open_bundle(_copy(runs_bundle, edit_root=narrow))
 
 
-def test_channels_is_a_read_only_mapping_in_key_order(mixed):
+def test_channels_is_a_read_only_mapping_in_index_order(mixed):
     assert isinstance(mixed.channels, MappingProxyType)
-    assert [channel.key for channel in mixed.channels.values()] == [
+    assert [channel.index for channel in mixed.channels.values()] == [
         0,
         1,
         2,
@@ -270,7 +270,7 @@ def test_the_recording_of_a_bundle_is_hashable(mixed, mixed_bundle):
     assert hash(again) == hash(mixed.recording)
 
 
-def test_odd_bundle_opens_with_a_newer_minor_version_and_an_unknown_key(odd):
+def test_odd_bundle_opens_with_a_newer_minor_version_and_an_unknown_index(odd):
     assert odd.version == ODD_VERSION
     assert odd.recording is None
 
@@ -318,7 +318,7 @@ def test_channel_prefers_a_name_match_to_an_id_match(mixed_bundle):
     store = _copy(
         mixed_bundle, edit_root=_set_channel_field(2, "name", "marks")
     )
-    assert open_bundle(store).channel("marks").key == 2
+    assert open_bundle(store).channel("marks").index == 2
 
 
 def test_channel_rejects_a_name_that_several_channels_share(mixed_bundle):
@@ -328,7 +328,7 @@ def test_channel_rejects_a_name_that_several_channels_share(mixed_bundle):
         ValueError, match=r"^channels 0, 1 share the name 'LA1'; select one"
     ):
         bundle.channel("LA1")
-    assert bundle.channel("LA2").key == 1
+    assert bundle.channel("LA2").index == 1
 
 
 def test_channel_rejects_an_id_that_several_channels_share(mixed_bundle):
@@ -339,7 +339,7 @@ def test_channel_rejects_an_id_that_several_channels_share(mixed_bundle):
         open_bundle(store).channel("marks")
 
 
-def test_channel_raises_key_error_for_an_unknown_name_or_id(mixed):
+def test_channel_raises_index_error_for_an_unknown_name_or_id(mixed):
     message = (
         "no channel has the name or id 'LA9'; describe() lists the name and "
         "id of each channel"
@@ -351,30 +351,30 @@ def test_channel_raises_key_error_for_an_unknown_name_or_id(mixed):
 
 def test_describe_lists_the_mixed_bundle_one_channel_a_line(mixed):
     assert mixed.describe().splitlines() == [
-        "key  kind        name           id     unit  rate_hz  length"
+        "index  kind        name           id     unit  rate_hz  length"
         "         levels",
-        "0    continuous  LA1            LA1    uV    256.0    8192 samples"
+        "0      continuous  LA1            LA1    uV    256.0    8192 samples"
         "   1-2",
-        "1    continuous  LA2            LA2    uV    512.0    16384 samples"
+        "1      continuous  LA2            LA2    uV    512.0    16384 samples"
         "  1-3",
-        "2    event       units          units  -     -        400 events"
+        "2      event       units          units  -     -        400 events"
         "     -",
-        "3    event       curated marks  marks  -     -        6 events"
+        "3      event       curated marks  marks  -     -        6 events"
         "       -",
-        "4    event       hfo detector   hfo    -     -        70000 events"
+        "4      event       hfo detector   hfo    -     -        70000 events"
         "   1-4",
     ]
 
 
 def test_describe_shows_a_hyphen_for_each_absent_value(odd):
     assert odd.describe().splitlines() == [
-        "key  kind        name       id     unit  rate_hz  length        levels",
-        "0    continuous  short      -      uV    512.0    1001 samples  1-2",
-        "2    continuous  full       two    uV    512.0    3000 samples  1",
-        "5    continuous  late       five   uV    512.0    1024 samples  -",
-        "7    continuous  empty      seven  uV    30000.0  0 samples     -",
-        "9    event       marks      -      a.u.  -        64 events     1",
-        "12   event       intervals  -      -     -        5 events      -",
+        "index  kind        name       id     unit  rate_hz  length        levels",
+        "0      continuous  short      -      uV    512.0    1001 samples  1-2",
+        "2      continuous  full       two    uV    512.0    3000 samples  1",
+        "5      continuous  late       five   uV    512.0    1024 samples  -",
+        "7      continuous  empty      seven  uV    30000.0  0 samples     -",
+        "9      event       marks      -      a.u.  -        64 events     1",
+        "12     event       intervals  -      -     -        5 events      -",
     ]
 
 
@@ -390,8 +390,8 @@ def test_describe_names_one_sample_and_one_event_in_the_singular(
     )
     lines = open_bundle(path).describe().splitlines()
     assert lines[1:] == [
-        "0    continuous  one   one   uV    512.0    1 sample  -",
-        "1    event       tick  tick  -     -        1 event   -",
+        "0      continuous  one   one   uV    512.0    1 sample  -",
+        "1      event       tick  tick  -     -        1 event   -",
     ]
 
 
@@ -401,7 +401,7 @@ def test_describe_of_a_bundle_without_channels_is_the_header(tmp_path):
     bundle = open_bundle(path)
     assert bundle.channels == {}
     assert bundle.describe() == (
-        "key  kind  name  id  unit  rate_hz  length  levels"
+        "index  kind  name  id  unit  rate_hz  length  levels"
     )
 
 
@@ -763,7 +763,7 @@ def test_open_bundle_reads_only_the_root_zarr_json_and_recording_json(
     assert store.reads == [f"{lead}zarr.json", f"{lead}{RECORDING_FILE}"]
 
 
-def test_open_bundle_without_recording_json_reads_only_the_two_root_keys(
+def test_open_bundle_without_recording_json_reads_only_the_two_root_indices(
     odd_bundle,
 ):
     store = _RecordingStore(memory_store(odd_bundle))

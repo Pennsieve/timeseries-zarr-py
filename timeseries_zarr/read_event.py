@@ -111,7 +111,7 @@ def _object_column(
     if items is None:
         return None
     column = np.empty(len(items), dtype=np.object_)
-    # np.array would read equal-length key lists as a second axis.
+    # np.array would read equal-length index lists as a second axis.
     for index, item in enumerate(items):
         column[index] = item
     return column
@@ -335,7 +335,7 @@ class EventTable:
         label: The label of each event.
         value: The value of each event, in the unit of the channel.
         text: The decoded text of each event.
-        channel_keys: The channel keys each event applies to. An empty list
+        channel_indices: The channel indices each event applies to. An empty list
             means the event applies to no channel.
         waveform: The snippet of each event.
         label_names: The name of each label value by index, or None when the
@@ -349,7 +349,7 @@ class EventTable:
     label: npt.NDArray[np.integer[Any]] | None
     value: npt.NDArray[np.floating[Any]] | None
     text: list[str] | None
-    channel_keys: list[list[int]] | None
+    channel_indices: list[list[int]] | None
     waveform: Waveform | None
     label_names: tuple[str, ...] | None
     whole_recording: bool = False
@@ -394,7 +394,7 @@ class EventTable:
             ),
             "value": self.value is not None,
             "text": self.text is not None,
-            "channel_keys": self.channel_keys is not None,
+            "channel_indices": self.channel_indices is not None,
         }
         return (
             TIME_COLUMN,
@@ -405,8 +405,8 @@ class EventTable:
         """Return time_us and each other per-event column the table holds.
 
         The order is time_us, duration_us, label, label_name, value, text,
-        and channel_keys. label_name, text, and channel_keys are object
-        arrays that hold a str or a list of keys per event. waveform and
+        and channel_indices. label_name, text, and channel_indices are object
+        arrays that hold a str or a list of indices per event. waveform and
         whole_recording are not columns.
         """
         present = {
@@ -415,7 +415,7 @@ class EventTable:
             "label_name": _object_column(self.label_name),
             "value": self.value,
             "text": _object_column(self.text),
-            "channel_keys": _object_column(self.channel_keys),
+            "channel_indices": _object_column(self.channel_indices),
         }
         columns: Columns = {TIME_COLUMN: self.time_us}
         for name, values in present.items():
@@ -427,27 +427,27 @@ class EventTable:
         """Return the events as a pandas DataFrame, one row per event."""
         return events_to_dataframe(self)
 
-    def applies_to(self, key: int) -> npt.NDArray[np.bool_]:
-        """Return a mask of the events that apply to channel key.
+    def applies_to(self, index: int) -> npt.NDArray[np.bool_]:
+        """Return a mask of the events that apply to channel index.
 
-        An event applies to key when its channel_keys names key. Every event
+        An event applies to index when its channel_indices names index. Every event
         applies when whole_recording is true.
 
         Args:
-            key: A channel key.
+            index: A channel index.
 
         Raises:
-            ValueError: channel_keys is None and whole_recording is false.
+            ValueError: channel_indices is None and whole_recording is false.
         """
-        if self.channel_keys is None:
+        if self.channel_indices is None:
             if self.whole_recording:
                 return np.ones(len(self), dtype=np.bool_)
             raise ValueError(
-                "the table has no channel_keys; read with 'channels' among "
+                "the table has no channel_indices; read with 'channels' among "
                 "columns to find the events that apply to a channel"
             )
         return np.array(
-            [key in keys for keys in self.channel_keys],
+            [index in indices for indices in self.channel_indices],
             dtype=np.bool_,
         )
 
@@ -517,7 +517,7 @@ class EventChannel:
     """An event channel of a bundle.
 
     Attributes:
-        key: The name of the channel group.
+        index: The name of the channel group.
         name: The channel name.
         id: The channel id, or None when the group omits it.
         unit: The unit of values, or None when the group omits it.
@@ -531,7 +531,7 @@ class EventChannel:
         labels: The zarr array of labels, or None when absent.
         values: The zarr array of values, or None when absent.
         text: The zarr array of event text, or None when absent.
-        channels: The zarr array of channel keys, or None when absent.
+        channels: The zarr array of channel indices, or None when absent.
         waveforms: The per-event snippets, or None when absent.
         waveform_mean: The per-label mean snippets, or None when absent.
         count_levels: Each count level by number, in level order.
@@ -540,7 +540,7 @@ class EventChannel:
             names a channel the bundle lacks.
     """
 
-    key: int
+    index: int
     name: str
     id: str | None
     unit: str | None
@@ -587,9 +587,9 @@ class EventChannel:
         return tuple(self._column_arrays())
 
     def __repr__(self) -> str:
-        """Return the key, name, event count, and per-event columns."""
+        """Return the index, name, event count, and per-event columns."""
         return (
-            f"EventChannel(key={self.key}, name={self.name!r}, "
+            f"EventChannel(index={self.index}, name={self.name!r}, "
             f"num_events={self.num_events}, columns={self.columns!r})"
         )
 
@@ -777,7 +777,7 @@ class EventChannel:
         for name in selected:
             if name not in present:
                 raise ValueError(
-                    f"channel {self.key} has columns {present!r}; columns "
+                    f"channel {self.index} has columns {present!r}; columns "
                     f"must name only these, got {name!r}"
                 )
         return selected
@@ -813,7 +813,7 @@ class EventChannel:
         names = self.label_names
         if label is not None and names is not None:
             check_label_range(
-                f"channel {self.key}",
+                f"channel {self.index}",
                 label,
                 len(names),
                 "the length of label_names",
@@ -825,7 +825,7 @@ class EventChannel:
                 channels,
                 self.channel_count,
                 indices.tolist(),
-                f"channel {self.key}",
+                f"channel {self.index}",
             )
         snippets = rows.get(WAVEFORMS_KEY)
         waveform = None
@@ -845,10 +845,10 @@ class EventChannel:
                 None
                 if text is None
                 else decode_event_text(
-                    text, indices.tolist(), f"channel {self.key}"
+                    text, indices.tolist(), f"channel {self.index}"
                 )
             ),
-            channel_keys=(
+            channel_indices=(
                 None if channels is None else decode_channels_rows(channels)
             ),
             waveform=waveform,
@@ -858,7 +858,7 @@ class EventChannel:
 
     def _count_level_choices(self, level: int) -> str:
         """Return the error message for a count level the channel lacks."""
-        where = f"channel {self.key}"
+        where = f"channel {self.index}"
         count = len(self.count_levels)
         if level == 0:
             choices = ""
@@ -1145,18 +1145,18 @@ def _check_waveform_agreement(
 
 
 def parse_event_channel(
-    key: int,
+    index: int,
     attributes: Mapping[str, object],
     groups: Mapping[str, ZarrGroup],
     arrays: Mapping[str, ZarrArray],
     channel_count: int | None = None,
 ) -> EventChannel:
-    """Return the event channel that channel group key describes.
+    """Return the event channel that channel group index describes.
 
     The parser ignores unknown nodes and unknown tsz keys.
 
     Args:
-        key: The channel key.
+        index: The channel index.
         attributes: The attributes of the channel group.
         groups: The descendant groups by path below the channel group, such
             as 1.
@@ -1176,7 +1176,7 @@ def parse_event_channel(
             channels has other than ceil(channel_count / 8) columns. The
             message names the channel, and the array or count level at fault.
     """
-    where = f"channel {key}"
+    where = f"channel {index}"
     fields = parse_event_attrs(attributes, where)
     events = _required(
         arrays.get(EVENTS_KEY), where, EVENTS_KEY, _INTEGER_COLUMN, None
@@ -1207,7 +1207,7 @@ def parse_event_channel(
         if waveforms is not None:
             _check_waveform_agreement(where, waveform_mean, waveforms)
     return EventChannel(
-        key=key,
+        index=index,
         name=fields.name,
         id=fields.id,
         unit=fields.unit,

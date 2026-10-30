@@ -233,7 +233,7 @@ def _assert_same_events(original, copy):
             getattr(table, name), getattr(original_table, name)
         )
     assert table.text == original_table.text
-    assert table.channel_keys == original_table.channel_keys
+    assert table.channel_indices == original_table.channel_indices
     if original.waveform_mean is None:
         assert copy.waveform_mean is None
     else:
@@ -311,7 +311,7 @@ def test_a_subset_without_the_channels_column_keeps_every_time(mixed, tmp_path):
         mixed,
         tmp_path / "subset",
         recording=recording_meta(mixed),
-        keys=[1, 3],
+        indices=[1, 3],
         drop_columns={"channels"},
     )
     assert channel_ids(copy) == {0: "LA2", 1: "marks"}
@@ -328,10 +328,10 @@ def test_a_subset_that_leaves_out_a_named_channel_makes_the_writer_raise(
 ):
     with pytest.raises(
         ValueError,
-        match=r"channel 3: event \d+ names channel key 0, and the source maps "
-        r"the channel keys \[1, 3\]",
+        match=r"channel 3: event \d+ names channel index 0, and the source maps "
+        r"the channel indices \[1, 3\]",
     ):
-        _rewrite(mixed, tmp_path / "subset", keys=[1, 3])
+        _rewrite(mixed, tmp_path / "subset", indices=[1, 3])
 
 
 @pytest.mark.parametrize("first_tsz", [{}, {"id": "0"}])
@@ -340,22 +340,20 @@ def test_an_event_that_names_a_dropped_channel_with_a_kept_id_raises(
 ):
     bundle = _aliased_bundle(first_tsz)
     message = (
-        r"channel 1: event 0 names channel key 0, and the source maps the "
-        r"channel keys \[1\]"
+        r"channel 1: event 0 names channel index 0, and the source maps the "
+        r"channel indices \[1\]"
     )
     _, events = bundle_sources(bundle, [1])
     with pytest.raises(ValueError, match=message):
         events[0].read_channel_ids(0, 2)
     with pytest.raises(ValueError, match=message):
-        _rewrite(bundle, tmp_path / "subset", keys=[1])
+        _rewrite(bundle, tmp_path / "subset", indices=[1])
 
 
 @pytest.mark.parametrize("first_tsz", [{}, {"id": "0"}])
 def test_bundle_sources_rejects_two_kept_channels_that_share_an_id(first_tsz):
     bundle = _aliased_bundle(first_tsz)
-    message = (
-        "channels 0 and 1 share the id '0'; keys must name at most one of them"
-    )
+    message = "channels 0 and 1 share the id '0'; indices must name at most one of them"
     with pytest.raises(ValueError, match=message):
         bundle_sources(bundle)
     with pytest.raises(ValueError, match=message):
@@ -377,17 +375,17 @@ def test_a_rewrite_with_write_var_adds_var_to_every_level(mixed, tmp_path):
             )
 
 
-def test_channel_ids_gives_a_channel_without_an_id_its_key(odd):
+def test_channel_ids_gives_a_channel_without_an_id_its_index(odd):
     assert channel_ids(odd) == _ODD_IDS
     assert BundleContinuousSource(odd.channels[0], epoch_us=0).id == "0"
     assert _event_source(odd, 9).id == "9"
 
 
-def test_channel_ids_maps_each_key_to_the_id_of_its_channel(mixed):
+def test_channel_ids_maps_each_index_to_the_id_of_its_channel(mixed):
     assert channel_ids(mixed) == _MIXED_IDS
 
 
-def test_channel_ids_maps_only_the_keys_it_names_in_key_order(mixed):
+def test_channel_ids_maps_only_the_indices_it_names_in_index_order(mixed):
     assert channel_ids(mixed, [3, 1, 3]) == {1: "LA2", 3: "marks"}
     assert channel_ids(mixed, iter([4, 0])) == {0: "LA1", 4: "hfo"}
     assert channel_ids(mixed, [7]) == {}
@@ -398,7 +396,7 @@ def test_channel_ids_rejects_two_named_channels_that_share_an_id(first_tsz):
     bundle = _aliased_bundle(first_tsz)
     with pytest.raises(
         ValueError,
-        match="^channels 0 and 1 share the id '0'; keys must name at most "
+        match="^channels 0 and 1 share the id '0'; indices must name at most "
         "one of them$",
     ):
         channel_ids(bundle)
@@ -416,7 +414,7 @@ def test_a_rewrite_of_the_odd_bundle_renumbers_the_channels_by_id(
         for keys in ODD_CHANNEL_SETS
     ]
     marks = copy.events[4].read()
-    assert marks.channel_keys[: len(ODD_CHANNEL_SETS)] == expected
+    assert marks.channel_indices[: len(ODD_CHANNEL_SETS)] == expected
     assert marks.text[ODD_FULL_TEXT_ROW] == ODD_FULL_TEXT
     assert copy.continuous[2].offset_us == ODD_OFFSET_US
     assert copy.events[5].max_duration_us == max(ODD_INTERVAL_DURATIONS)
@@ -673,7 +671,7 @@ def test_read_text_names_the_channel_and_event_of_text_that_is_not_utf8():
         source.read_text(1, 3)
 
 
-def test_read_channel_ids_maps_the_keys_of_the_kept_channels_to_ids(odd):
+def test_read_channel_ids_maps_the_indices_of_the_kept_channels_to_ids(odd):
     expected = [["0"], ["two", "five"], [], ["0"]]
     _, events = bundle_sources(odd)
     assert events[0].read_channel_ids(0, 4) == expected
@@ -683,18 +681,18 @@ def test_read_channel_ids_maps_the_keys_of_the_kept_channels_to_ids(odd):
     assert events[0].read_channel_ids(1, 3) == [["two", "five"], []]
     with pytest.raises(
         ValueError,
-        match=r"event 0 names channel key 0, and the source maps the channel "
-        r"keys \[2, 5, 9\]",
+        match=r"event 0 names channel index 0, and the source maps the channel "
+        r"indices \[2, 5, 9\]",
     ):
         events[0].read_channel_ids(0, 1)
 
 
-def test_read_channel_ids_rejects_a_key_that_names_no_channel(odd):
+def test_read_channel_ids_rejects_an_index_that_names_no_channel(odd):
     source = BundleEventSource(odd.channels[9], {0: "0"}, epoch_us=0)
     with pytest.raises(
         ValueError,
-        match=r"channel 9: event 1 names channel key 2, and the source maps "
-        r"the channel keys \[0\]",
+        match=r"channel 9: event 1 names channel index 2, and the source maps "
+        r"the channel indices \[0\]",
     ):
         source.read_channel_ids(1, 2)
 
@@ -780,7 +778,7 @@ def test_the_reference_time_moves_to_the_first_kept_sample_without_a_recording(
 ):
     plain = open_bundle(write_mixed("plain", recording=None))
     assert recording_meta(plain) is None
-    copy = _rewrite(plain, tmp_path / "copy", keys=[1])
+    copy = _rewrite(plain, tmp_path / "copy", indices=[1])
     assert plain.channels[1].offset_us == 500_000
     assert copy.channels[0].offset_us == 0
     np.testing.assert_array_equal(
@@ -794,7 +792,7 @@ def test_a_kept_event_channel_before_the_first_sample_goes_negative(
     plain = open_bundle(write_mixed("plain", recording=None))
     first_spike = int(plain.channels[2].events[0])
     assert 0 < first_spike < 500_000
-    copy = _rewrite(plain, tmp_path / "copy", keys=[1, 2])
+    copy = _rewrite(plain, tmp_path / "copy", indices=[1, 2])
     assert copy.channels[0].offset_us == 0
     np.testing.assert_array_equal(
         copy.channels[1].events[:], plain.channels[2].events[:] - 500_000
@@ -961,7 +959,7 @@ def test_a_rewrite_with_recording_meta_keeps_the_reference_time_and_every_offset
     assert bundle.recording.session_start_time > reference
     assert bundle.channels[1].offset_us == 500_000
     copy = _rewrite(
-        bundle, tmp_path / "copy", recording=recording_meta(bundle), keys=[1]
+        bundle, tmp_path / "copy", recording=recording_meta(bundle), indices=[1]
     )
     assert copy.channels[0].offset_us == 500_000
     assert copy.recording == bundle.recording
@@ -996,25 +994,26 @@ def test_recording_meta_is_none_without_recording_json(odd):
     assert recording_meta(odd) is None
 
 
-def test_bundle_sources_lists_each_kind_in_key_order(mixed):
+def test_bundle_sources_lists_each_kind_in_index_order(mixed):
     continuous, events = bundle_sources(mixed, [4, 1, 0, 2, 1])
     assert [source.id for source in continuous] == ["LA1", "LA2"]
     assert [source.id for source in events] == ["units", "hfo"]
 
 
-def test_bundle_sources_rejects_an_unknown_key(mixed):
+def test_bundle_sources_rejects_an_unknown_index(mixed):
     with pytest.raises(
-        KeyError, match="the bundle has no channel 5; its channel keys are 0, "
+        KeyError,
+        match="the bundle has no channel 5; its channel indices are 0, ",
     ):
         bundle_sources(mixed, [0, 5])
 
 
-def test_bundle_sources_lists_no_keys_for_a_bundle_without_channels():
+def test_bundle_sources_lists_no_indices_for_a_bundle_without_channels():
     root = _root()
     zarr.consolidate_metadata(root.store)
     with pytest.raises(KeyError) as raised:
         bundle_sources(open_bundle(root.store), [0])
-    assert raised.value.args[0].endswith("its channel keys are none")
+    assert raised.value.args[0].endswith("its channel indices are none")
 
 
 def test_bundle_sources_rejects_a_column_outside_event_column(mixed):

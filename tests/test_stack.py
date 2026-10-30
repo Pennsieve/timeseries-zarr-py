@@ -57,7 +57,7 @@ def _padded(values, length, fill):
 
 def _stack(units=("uV", "uV")):
     return Stack(
-        keys=(0, 3),
+        indices=(0, 3),
         names=("LA1", "LA2"),
         units=units,
         level=2,
@@ -96,9 +96,9 @@ def test_raw_stack_ignores_member(odd, member):
     assert stack.member is None
 
 
-def test_stack_holds_the_keys_names_and_units_in_the_order_given(odd):
+def test_stack_holds_the_indices_names_and_units_in_the_order_given(odd):
     stack = odd.stack([2, 0])
-    assert stack.keys == (2, 0)
+    assert stack.indices == (2, 0)
     assert stack.names == ("full", "short")
     assert stack.units == ("uV", "uV")
     np.testing.assert_array_equal(stack.values[0], odd.continuous[2].raw[:])
@@ -217,7 +217,7 @@ def test_time_us_counts_from_first_and_offset_us(odd):
 def test_time_us_at_30_khz_derives_each_time_from_its_own_index():
     period_us = 1e6 / 30000
     stack = Stack(
-        keys=(0,),
+        indices=(0,),
         names=("LA1",),
         units=("uV",),
         level=0,
@@ -233,7 +233,7 @@ def test_time_us_at_30_khz_derives_each_time_from_its_own_index():
     np.testing.assert_array_equal(stack.time_s, stack.time_us / 1e6)
 
 
-def test_columns_hold_time_us_then_one_row_per_decimal_key(odd):
+def test_columns_hold_time_us_then_one_row_per_decimal_index(odd):
     stack = odd.stack([2, 0], 0, 10_000)
     columns = stack.columns()
     assert list(columns) == [TIME_COLUMN, "2", "0"]
@@ -251,11 +251,11 @@ def test_stack_rejects_channels_of_different_rates(mixed):
         mixed.stack([0, 1], level=2)
 
 
-def _hand_channel(key, widths):
+def _hand_channel(index, widths):
     """Return a 512 Hz channel whose levels fold widths samples per bin."""
     channel = _hand_build(_hand_nodes(widths=widths))["0"]
     groups, arrays = descendants(channel)
-    return parse_continuous_channel(key, channel.attrs, groups, arrays)
+    return parse_continuous_channel(index, channel.attrs, groups, arrays)
 
 
 def test_stack_rejects_channels_whose_level_widths_differ():
@@ -328,29 +328,29 @@ def test_stack_rejects_a_window_that_ends_before_it_starts(odd):
         odd.stack([0, 2], 2_000_000, 1_000_000)
 
 
-def test_stack_rejects_a_key_given_twice(odd):
+def test_stack_rejects_an_index_given_twice(odd):
     message = "stack needs distinct channels, got channel 0 more than once"
     with pytest.raises(ValueError, match=re.escape(message)):
         odd.stack([0, 2, 0])
 
 
-def test_stack_rejects_an_empty_key_list(odd):
+def test_stack_rejects_an_empty_index_list(odd):
     with pytest.raises(ValueError, match="stack needs at least one channel"):
         odd.stack([])
 
 
-def test_stack_raises_key_error_for_an_unknown_key(odd):
+def test_stack_raises_index_error_for_an_unknown_index(odd):
     message = (
-        "the bundle has no channel 3; its continuous channel keys are "
+        "the bundle has no channel 3; its continuous channel indices are "
         "0, 2, 5, 7"
     )
     with pytest.raises(KeyError, match=re.escape(message)):
         odd.stack([0, 3])
 
 
-def test_stack_rejects_the_key_of_an_event_channel(mixed):
+def test_stack_rejects_the_index_of_an_event_channel(mixed):
     message = (
-        "channel 2 is an event channel; the continuous channel keys are 0, 1"
+        "channel 2 is an event channel; the continuous channel indices are 0, 1"
     )
     with pytest.raises(ValueError, match=re.escape(message)):
         mixed.stack([0, 2])
@@ -376,7 +376,7 @@ def test_stack_channels_matches_bundle_stack(odd):
     direct = stack_channels(channels, 0, 50_000, level=1, member="max")
     through = odd.stack([0, 2], 0, 50_000, level=1, member="max")
     np.testing.assert_array_equal(direct.values, through.values)
-    assert (direct.first, direct.keys) == (through.first, through.keys)
+    assert (direct.first, direct.indices) == (through.first, through.indices)
 
 
 def _wrap_reads(monkeypatch, before):
@@ -419,9 +419,9 @@ def test_stack_does_not_depend_on_max_workers(
     request, fixture, options, max_workers
 ):
     bundle = request.getfixturevalue(fixture)
-    keys = [0, 2] if fixture == "odd" else [0, 1]
-    serial = bundle.stack(keys, **options)
-    threaded = bundle.stack(keys, **options, max_workers=max_workers)
+    indices = [0, 2] if fixture == "odd" else [0, 1]
+    serial = bundle.stack(indices, **options)
+    threaded = bundle.stack(indices, **options, max_workers=max_workers)
     _assert_same_stack(threaded, serial)
 
 
@@ -443,16 +443,16 @@ def test_stack_accepts_a_numpy_integer_max_workers(odd):
 
 
 @pytest.mark.parametrize(
-    ("fixture", "keys", "member", "array"),
+    ("fixture", "indices", "member", "array"),
     [("odd", [0, 2], "max", "minmax"), ("pair", [0, 1], "count", "count")],
 )
 def test_stack_reads_one_array_per_channel(
-    request, monkeypatch, fixture, keys, member, array
+    request, monkeypatch, fixture, indices, member, array
 ):
     bundle = request.getfixturevalue(fixture)
     paths = _record_paths(monkeypatch)
-    bundle.stack(keys, level=1, member=member, max_workers=2)
-    assert sorted(paths) == [f"{key}/1/{array}" for key in keys]
+    bundle.stack(indices, level=1, member=member, max_workers=2)
+    assert sorted(paths) == [f"{index}/1/{array}" for index in indices]
 
 
 def test_stack_rejects_channels_before_it_reads(odd, monkeypatch):
@@ -462,28 +462,28 @@ def test_stack_rejects_channels_before_it_reads(odd, monkeypatch):
     assert paths == []
 
 
-def _fail_reads(monkeypatch, keys):
-    """Raise RuntimeError naming the channel for each read of a key in keys."""
+def _fail_reads(monkeypatch, indices):
+    """Raise RuntimeError naming the channel for each read of an index in indices."""
 
     def fail(array):
-        key = int(array.path.partition("/")[0])
-        if key in keys:
-            raise RuntimeError(f"read of channel {key} failed")
+        index = int(array.path.partition("/")[0])
+        if index in indices:
+            raise RuntimeError(f"read of channel {index} failed")
 
     _wrap_reads(monkeypatch, fail)
 
 
 @pytest.mark.parametrize(
-    ("keys", "failing", "raised"),
+    ("indices", "failing", "raised"),
     [([2, 0], {0, 2}, 2), ([0, 2], {0, 2}, 0), ([0, 2], {2}, 2)],
 )
-def test_threaded_stack_raises_the_first_failure_in_key_order(
-    odd, monkeypatch, keys, failing, raised
+def test_threaded_stack_raises_the_first_failure_in_index_order(
+    odd, monkeypatch, indices, failing, raised
 ):
     _fail_reads(monkeypatch, failing)
     message = f"read of channel {raised} failed"
     with pytest.raises(RuntimeError, match=message):
-        odd.stack(keys, max_workers=2)
+        odd.stack(indices, max_workers=2)
 
 
 def test_threaded_stack_reads_two_channels_at_once(odd, monkeypatch):
@@ -500,15 +500,15 @@ def test_stack_with_one_worker_reads_one_channel_at_a_time(odd, monkeypatch):
         odd.stack([0, 2], max_workers=1)
 
 
-@pytest.mark.parametrize(("keys", "max_workers"), [([0, 2], 1), ([2], 4)])
+@pytest.mark.parametrize(("indices", "max_workers"), [([0, 2], 1), ([2], 4)])
 def test_stack_with_one_worker_reads_on_the_calling_thread(
-    odd, monkeypatch, keys, max_workers
+    odd, monkeypatch, indices, max_workers
 ):
     threads = []
     _wrap_reads(
         monkeypatch, lambda array: threads.append(threading.get_ident())
     )
-    odd.stack(keys, max_workers=max_workers)
+    odd.stack(indices, max_workers=max_workers)
     assert threads
     assert set(threads) == {threading.get_ident()}
 
@@ -547,7 +547,7 @@ def test_stack_fields_are_frozen(odd):
         stack.first = 1
 
 
-def test_stack_to_dataframe_holds_one_column_per_key(pd, odd):
+def test_stack_to_dataframe_holds_one_column_per_index(pd, odd):
     stack = odd.stack([0, 2], 0, 100_000)
     frame = stack.to_dataframe()
     assert list(frame.columns) == ["0", "2"]

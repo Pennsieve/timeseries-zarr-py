@@ -201,7 +201,7 @@ def waveform_to_xarray(waveform: "Waveform") -> "xr.DataArray":
 def stack_to_dataframe(stack: "Stack") -> "pd.DataFrame":
     """Return the stack as a DataFrame indexed by time_us.
 
-    It holds one column per channel, named by its key as a decimal string.
+    It holds one column per channel, named by its index as a decimal string.
     The attrs of the DataFrame hold names, units, level, and member.
     """
     pandas = require(_PANDAS, _PANDAS)
@@ -220,7 +220,7 @@ def stack_to_dataframe(stack: "Stack") -> "pd.DataFrame":
 def stack_to_xarray(stack: "Stack") -> "xr.DataArray":
     """Return the stack as a DataArray of dimensions channel and time_us.
 
-    The channel coordinate holds the keys. The name and unit coordinates
+    The channel coordinate holds the indices. The name and unit coordinates
     hold the name and unit of each channel along channel. The attributes
     hold level, period_us, and offset_us, plus member when it is not None
     and units when every channel has the same unit.
@@ -236,7 +236,7 @@ def stack_to_xarray(stack: "Stack") -> "xr.DataArray":
     array: xr.DataArray = xarray.DataArray(
         stack.values,
         coords={
-            CHANNEL_DIMENSION: list(stack.keys),
+            CHANNEL_DIMENSION: list(stack.indices),
             _NAME: (CHANNEL_DIMENSION, list(stack.names)),
             _UNIT: (CHANNEL_DIMENSION, list(stack.units)),
             TIME_COLUMN: stack.time_us,

@@ -13,10 +13,10 @@ import pytest
 from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.bundle import (
     assign_indices,
-    channel_keys,
+    channel_indices,
     clear_output_path,
     indexed_channels,
-    max_key,
+    max_index,
     reference_us,
     write_all_channels,
     write_bundle,
@@ -44,7 +44,7 @@ def _write_all(root, indexed, opts=None):
         root,
         indexed,
         0 if reference is None else reference,
-        channel_keys(indexed),
+        channel_indices(indexed),
         opts or _OPTS,
     )
 
@@ -92,7 +92,7 @@ def _zeros(
     ]
 
 
-def test_assign_indices_gives_a_multi_channel_source_one_key_per_channel(
+def test_assign_indices_gives_a_multi_channel_source_one_index_per_channel(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
     event_source: type[ArrayEventSource],
@@ -105,7 +105,7 @@ def test_assign_indices_gives_a_multi_channel_source_one_key_per_channel(
     assert [source for _, source in indexed][::3] == [before, marks]
 
 
-def test_assign_indices_gives_a_multi_channel_source_without_channels_no_key(
+def test_assign_indices_gives_a_multi_channel_source_without_channels_no_index(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
 ) -> None:
@@ -116,7 +116,7 @@ def test_assign_indices_gives_a_multi_channel_source_without_channels_no_key(
     assert indexed[1][1] == after
 
 
-def test_indexed_channels_lists_each_channel_at_its_key(
+def test_indexed_channels_lists_each_channel_at_its_index(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
     event_source: type[ArrayEventSource],
@@ -171,11 +171,13 @@ def test_write_all_channels_returns_none(tmp_path, continuous_source):
     indexed = assign_indices(
         [continuous_source(np.arange(8, dtype=np.float32))], []
     )
-    result = write_all_channels(root, indexed, 0, channel_keys(indexed), _OPTS)
+    result = write_all_channels(
+        root, indexed, 0, channel_indices(indexed), _OPTS
+    )
     assert result is None
 
 
-def test_write_all_channels_resolves_event_channel_ids_through_the_keys(
+def test_write_all_channels_resolves_event_channel_ids_through_the_indices(
     tmp_path, continuous_source, event_source
 ):
     root = open_group(tmp_path / "bundle")
@@ -187,7 +189,7 @@ def test_write_all_channels_resolves_event_channel_ids_through_the_keys(
     assert channels.tolist() == [[2], [3]]
 
 
-def test_write_all_channels_writes_a_multi_channel_source_at_consecutive_keys(
+def test_write_all_channels_writes_a_multi_channel_source_at_consecutive_indices(
     tmp_path: Path,
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
@@ -565,7 +567,7 @@ def test_reference_us_may_be_negative_for_a_start_before_the_epoch(
     assert reference_us([_samples(continuous_source, -5)]) == -5
 
 
-def test_channel_keys_maps_every_id_to_its_index(
+def test_channel_indices_maps_every_id_to_its_index(
     continuous_source, event_source
 ):
     indexed = assign_indices(
@@ -575,10 +577,15 @@ def test_channel_keys_maps_every_id_to_its_index(
         ],
         [event_source([1], id="units"), event_source([1], id="marks")],
     )
-    assert channel_keys(indexed) == {"LA1": 0, "LA2": 1, "units": 2, "marks": 3}
+    assert channel_indices(indexed) == {
+        "LA1": 0,
+        "LA2": 1,
+        "units": 2,
+        "marks": 3,
+    }
 
 
-def test_channel_keys_maps_each_channel_of_a_multi_channel_source(
+def test_channel_indices_maps_each_channel_of_a_multi_channel_source(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
     event_source: type[ArrayEventSource],
@@ -586,14 +593,14 @@ def test_channel_keys_maps_each_channel_of_a_multi_channel_source(
     (solo,) = _zeros(continuous_source, "solo")
     many = multi_channel_source(_zeros(continuous_source, "m0", "m1"))
     indexed = assign_indices([solo, many], [event_source([1], id="marks")])
-    assert channel_keys(indexed) == {"solo": 0, "m0": 1, "m1": 2, "marks": 3}
+    assert channel_indices(indexed) == {"solo": 0, "m0": 1, "m1": 2, "marks": 3}
 
 
-def test_channel_keys_of_no_channels_is_empty():
-    assert channel_keys([]) == {}
+def test_channel_indices_of_no_channels_is_empty():
+    assert channel_indices([]) == {}
 
 
-def test_channel_keys_rejects_two_channels_with_one_id(continuous_source):
+def test_channel_indices_rejects_two_channels_with_one_id(continuous_source):
     indexed = assign_indices(
         [
             continuous_source(np.zeros(4, np.float32), id="same"),
@@ -605,10 +612,10 @@ def test_channel_keys_rejects_two_channels_with_one_id(continuous_source):
     with pytest.raises(
         ValueError, match="channels 0 and 2 share the id 'same'"
     ):
-        channel_keys(indexed)
+        channel_indices(indexed)
 
 
-def test_channel_keys_rejects_a_continuous_and_an_event_channel_sharing_an_id(
+def test_channel_indices_rejects_a_continuous_and_an_event_channel_sharing_an_id(
     continuous_source, event_source
 ):
     indexed = [
@@ -616,50 +623,50 @@ def test_channel_keys_rejects_a_continuous_and_an_event_channel_sharing_an_id(
         (1, event_source([1], id="x")),
     ]
     with pytest.raises(ValueError, match="share the id 'x'"):
-        channel_keys(indexed)
+        channel_indices(indexed)
 
 
-def test_channel_keys_rejects_two_channels_of_one_multi_channel_source_sharing_an_id(
+def test_channel_indices_rejects_two_channels_of_one_multi_channel_source_sharing_an_id(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
 ) -> None:
     many = multi_channel_source(_zeros(continuous_source, "x", "y", "x"))
     with pytest.raises(ValueError, match="channels 0 and 2 share the id 'x'"):
-        channel_keys(assign_indices([many], []))
+        channel_indices(assign_indices([many], []))
 
 
-def test_channel_keys_rejects_a_multi_channel_source_channel_sharing_an_id_with_a_single_source(
+def test_channel_indices_rejects_a_multi_channel_source_channel_sharing_an_id_with_a_single_source(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
 ) -> None:
     many = multi_channel_source(_zeros(continuous_source, "a", "b"))
     (twin,) = _zeros(continuous_source, "b")
     with pytest.raises(ValueError, match="channels 1 and 2 share the id 'b'"):
-        channel_keys(assign_indices([many, twin], []))
+        channel_indices(assign_indices([many, twin], []))
 
 
-def test_max_key_is_the_largest_index(continuous_source):
+def test_max_index_is_the_largest_index(continuous_source):
     sources = [continuous_source(np.zeros(4, np.float32)) for _ in range(5)]
-    assert max_key(assign_indices(sources, [])) == 4
+    assert max_index(assign_indices(sources, [])) == 4
 
 
-def test_max_key_does_not_assume_contiguous_keys(continuous_source):
+def test_max_index_does_not_assume_contiguous_indices(continuous_source):
     src = continuous_source(np.zeros(4, np.float32))
-    assert max_key([(2, src), (9, src), (5, src)]) == 9
+    assert max_index([(2, src), (9, src), (5, src)]) == 9
 
 
-def test_max_key_counts_every_channel_of_a_multi_channel_source(
+def test_max_index_counts_every_channel_of_a_multi_channel_source(
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
 ) -> None:
     many = multi_channel_source(_zeros(continuous_source, "a", "b", "c", "d"))
     (solo,) = _zeros(continuous_source, "solo")
-    assert max_key(assign_indices([many], [])) == 3
-    assert max_key(assign_indices([solo, many], [])) == 4
+    assert max_index(assign_indices([many], [])) == 3
+    assert max_index(assign_indices([solo, many], [])) == 4
 
 
-def test_max_key_of_no_channels_is_zero():
-    assert max_key([]) == 0
+def test_max_index_of_no_channels_is_zero():
+    assert max_index([]) == 0
 
 
 _SPEC_OPTS = WriteOpts(

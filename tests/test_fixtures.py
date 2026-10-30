@@ -450,7 +450,7 @@ def test_odd_bundle_channel_9_text_has_empty_rows_and_one_full_width_row(
     assert rows[1].tobytes() == b"e1\0\0\0"
 
 
-def test_odd_bundle_channel_9_channels_name_the_three_key_sets(odd_bundle):
+def test_odd_bundle_channel_9_channels_name_the_three_index_sets(odd_bundle):
     rows = _open(odd_bundle)["9"]["channels"][:]
     bits = np.unpackbits(rows, axis=1, bitorder="little")
     named = [tuple(np.flatnonzero(row).tolist()) for row in bits]

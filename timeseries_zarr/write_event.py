@@ -362,23 +362,23 @@ def write_text_array(
 def write_channels_array(
     group: ZarrGroup,
     source: EventChannelSource,
-    channel_keys: Mapping[str, int],
-    max_key: int,
+    channel_indices: Mapping[str, int],
+    max_index: int,
     sizing: ChunkShard,
     zstd_level: int,
 ) -> ZarrArray:
     """Create the channels array under group and stream the event bitmasks in.
 
     A uint8 array named "channels" shaped (num_events, M), with M the byte
-    width of a bitmask for keys up to max_key, and the dimension names "event"
-    and None. Row i has the bit of each channel key that event i applies to,
+    width of a bitmask for indices up to max_index, and the dimension names "event"
+    and None. Row i has the bit of each channel index that event i applies to,
     and a row of zeros names no channel. The source names channels by id.
 
     Args:
         group: Channel group to create the array in.
         source: Source of the channel ids of each event.
-        channel_keys: Channel key in the bundle, by channel id.
-        max_key: Largest channel key in the bundle.
+        channel_indices: Channel index in the bundle, by channel id.
+        max_index: Largest channel index in the bundle.
         sizing: Chunk and shard shapes of the (num_events, M) shape, with the
             width axis whole.
         zstd_level: Zstandard compression level.
@@ -387,11 +387,11 @@ def write_channels_array(
         The created array.
 
     Raises:
-        ValueError: If max_key is negative, an id is not in channel_keys, a
-            key is outside 0 to max_key, or the source returns a different
+        ValueError: If max_index is negative, an id is not in channel_indices, a
+            index is outside 0 to max_index, or the source returns a different
             number of id lists than requested.
     """
-    width = channels_width(max_key)
+    width = channels_width(max_index)
     array = create_array(
         group,
         CHANNELS_KEY,
@@ -411,13 +411,15 @@ def write_channels_array(
                 f"read_channel_ids returned {len(id_lists)} lists for "
                 f"{stop - start} events"
             )
-        key_lists = []
+        index_lists = []
         for ids in id_lists:
             for channel_id in ids:
-                if channel_id not in channel_keys:
+                if channel_id not in channel_indices:
                     raise ValueError(f"unknown channel id {channel_id!r}")
-            key_lists.append([channel_keys[channel_id] for channel_id in ids])
-        return channels_rows(key_lists, max_key)
+            index_lists.append(
+                [channel_indices[channel_id] for channel_id in ids]
+            )
+        return channels_rows(index_lists, max_index)
 
     _write_source_blocks(
         array, source.num_events(), sizing.shard_shape[0], read
@@ -770,15 +772,15 @@ def check_event_channel(
 
 def write_event_channel(
     parent: ZarrGroup,
-    key: int,
+    index: int,
     source: EventChannelSource,
     *,
     reference_us: int,
-    channel_keys: Mapping[str, int],
-    max_key: int,
+    channel_indices: Mapping[str, int],
+    max_index: int,
     opts: WriteOpts,
 ) -> None:
-    """Write one event channel as the subgroup named str(key).
+    """Write one event channel as the subgroup named str(index).
 
     The channel group carries the event attributes: kind, name, id, the unit,
     the source's provenance, and, when the source provides the column,
@@ -788,12 +790,12 @@ def write_event_channel(
 
     Args:
         parent: Group to create the channel group in.
-        key: Channel key, the name of the channel group.
+        index: Channel index, the name of the channel group.
         source: Source of the event channel.
         reference_us: Reference time in microseconds since the Unix epoch.
             Times are stored from it.
-        channel_keys: Channel key in the bundle, by channel id.
-        max_key: Largest channel key in the bundle, which sizes the channels
+        channel_indices: Channel index in the bundle, by channel id.
+        max_index: Largest channel index in the bundle, which sizes the channels
             bitmask.
         opts: Chunk and shard targets and compression level of every array.
 
@@ -809,7 +811,7 @@ def write_event_channel(
         raise ValueError("waveform_mean requires a labels column")
     group = create_group_with_attrs(
         parent,
-        str(key),
+        str(index),
         event_channel_attrs(
             source.name,
             source.id,
@@ -850,9 +852,9 @@ def write_event_channel(
         write_channels_array(
             group,
             source,
-            channel_keys,
-            max_key,
-            _row_sizing(total, channels_width(max_key), UINT8_BYTES, opts),
+            channel_indices,
+            max_index,
+            _row_sizing(total, channels_width(max_index), UINT8_BYTES, opts),
             opts.zstd_level,
         )
     if "waveform_mean" in columns:

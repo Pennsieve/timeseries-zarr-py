@@ -63,62 +63,62 @@ def text_rows(strings: Sequence[str], width: int) -> npt.NDArray[np.uint8]:
     return rows
 
 
-def channels_width(max_key: int) -> int:
-    """Return the byte width of a channel bitmask row for keys up to max_key.
+def channels_width(max_index: int) -> int:
+    """Return the byte width of a channel bitmask row for indices up to max_index.
 
-    One bit per channel key, so key 0 to 7 need 1 byte and key 8 needs a
+    One bit per channel index, so index 0 to 7 need 1 byte and index 8 needs a
     second.
 
     Args:
-        max_key: Largest channel key a row can hold.
+        max_index: Largest channel index a row can hold.
 
     Returns:
         The row width in bytes.
 
     Raises:
-        ValueError: max_key is negative.
+        ValueError: max_index is negative.
     """
-    if max_key < 0:
-        raise ValueError(f"max_key must be at least 0, got {max_key}")
-    return (max_key + 1 + 7) // 8
+    if max_index < 0:
+        raise ValueError(f"max_index must be at least 0, got {max_index}")
+    return (max_index + 1 + 7) // 8
 
 
 def channels_rows(
-    key_lists: Sequence[Iterable[int]], max_key: int
+    index_lists: Sequence[Iterable[int]], max_index: int
 ) -> npt.NDArray[np.uint8]:
-    """Encode the channel keys each event applies to as bitmask rows.
+    """Encode the channel indices each event applies to as bitmask rows.
 
     Row i has bit k mod 8 of byte k // 8 set, least significant bit first, for
-    each key k in key_lists[i]. An empty list gives a row of zeros, which
-    names no channel. A repeated key sets its bit once, and keys may come in
+    each index k in index_lists[i]. An empty list gives a row of zeros, which
+    names no channel. A repeated index sets its bit once, and indices may come in
     any order. An empty sequence yields zero
     rows.
 
     Args:
-        key_lists: The channel keys of each event.
-        max_key: Largest channel key allowed.
+        index_lists: The channel indices of each event.
+        max_index: Largest channel index allowed.
 
     Returns:
-        A uint8 array of shape (len(key_lists), channels_width(max_key)).
+        A uint8 array of shape (len(index_lists), channels_width(max_index)).
 
     Raises:
-        ValueError: max_key is negative, or a key is negative or above
-            max_key.
+        ValueError: max_index is negative, or an index is negative or above
+            max_index.
     """
-    width = channels_width(max_key)
-    lists = [np.fromiter(keys, dtype=np.int64) for keys in key_lists]
+    width = channels_width(max_index)
+    lists = [np.fromiter(indices, dtype=np.int64) for indices in index_lists]
     rows = np.zeros((len(lists), width), dtype=np.uint8)
     if not lists:
         return rows
-    keys = np.concatenate(lists)
-    if keys.size and (keys.min() < 0 or keys.max() > max_key):
+    indices = np.concatenate(lists)
+    if indices.size and (indices.min() < 0 or indices.max() > max_index):
         raise ValueError(
-            f"channel keys must lie between 0 and {max_key}, "
-            f"got {int(keys.min())} to {int(keys.max())}"
+            f"channel indices must lie between 0 and {max_index}, "
+            f"got {int(indices.min())} to {int(indices.max())}"
         )
     owner = np.repeat(np.arange(len(lists)), [len(row) for row in lists])
-    bits = (1 << (keys & 7)).astype(np.uint8)
-    np.bitwise_or.at(rows, (owner, keys >> 3), bits)
+    bits = (1 << (indices & 7)).astype(np.uint8)
+    np.bitwise_or.at(rows, (owner, indices >> 3), bits)
     return rows
 
 
@@ -205,10 +205,10 @@ def _decoded(
 
 
 def decode_channels_rows(rows: npt.NDArray[np.uint8]) -> list[list[int]]:
-    """Decode bitmask rows into the channel keys each row names.
+    """Decode bitmask rows into the channel indices each row names.
 
     Bit k mod 8 of byte k // 8, least significant bit first, names channel
-    key k. Row i gives its keys in ascending order. A row of zeros gives an
+    index k. Row i gives its indices in ascending order. A row of zeros gives an
     empty list, which names no channel. An array with no rows gives an empty
     list.
 
@@ -216,7 +216,7 @@ def decode_channels_rows(rows: npt.NDArray[np.uint8]) -> list[list[int]]:
         rows: Rank 2 uint8 array of bitmask rows.
 
     Returns:
-        The ascending channel keys of each row.
+        The ascending channel indices of each row.
 
     Raises:
         ValueError: rows is not a rank 2 uint8 array.

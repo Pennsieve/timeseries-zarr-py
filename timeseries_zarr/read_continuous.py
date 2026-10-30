@@ -258,7 +258,7 @@ class ContinuousChannel:
     """A continuous channel of a bundle.
 
     Attributes:
-        key: The name of the channel group.
+        index: The name of the channel group.
         name: The channel name.
         id: The channel id. None when the group omits it.
         unit: The unit of the samples.
@@ -272,7 +272,7 @@ class ContinuousChannel:
             none. The runs property reads it.
     """
 
-    key: int
+    index: int
     name: str
     id: str | None
     unit: str
@@ -319,7 +319,7 @@ class ContinuousChannel:
         if not self._runs_cache:
             table = np.asarray(self.runs_array[:], dtype=np.int64)
             check_runs_table(
-                f"channel {self.key}",
+                f"channel {self.index}",
                 table,
                 self.offset_us,
                 self.rate_hz,
@@ -352,9 +352,9 @@ class ContinuousChannel:
         )
 
     def __repr__(self) -> str:
-        """Return the key, name, sample rate, sample count, and level count."""
+        """Return the index, name, sample rate, sample count, and level count."""
         return (
-            f"ContinuousChannel(key={self.key}, name={self.name!r}, "
+            f"ContinuousChannel(index={self.index}, name={self.name!r}, "
             f"rate_hz={self.rate_hz!r}, num_samples={self.num_samples}, "
             f"levels={len(self.levels)})"
         )
@@ -566,7 +566,7 @@ class ContinuousChannel:
         for name in members:
             if name not in held:
                 raise ValueError(
-                    f"channel {self.key} level {number} has members {held!r}; "
+                    f"channel {self.index} level {number} has members {held!r}; "
                     f"members must name only these, got {name!r}"
                 )
             selected.add(name)
@@ -574,7 +574,7 @@ class ContinuousChannel:
 
     def _level_choices(self) -> str:
         """Return the error message for a level the channel does not hold."""
-        where = f"channel {self.key}"
+        where = f"channel {self.index}"
         raw = "0 or None for raw samples"
         count = len(self.levels)
         if count == 0:
@@ -628,7 +628,7 @@ class ContinuousChannel:
         values = read_rows(self.raw, first, stop)
         table = self.runs
         if table is not None:
-            check_outside_runs(f"channel {self.key}", values, first, table)
+            check_outside_runs(f"channel {self.index}", values, first, table)
         return values
 
     def _populated(
@@ -695,7 +695,7 @@ def read_entries(
     array = held.get(name)
     if array is None:
         raise ValueError(
-            f"channel {channel.key} level {number} has members "
+            f"channel {channel.index} level {number} has members "
             f"{tuple(held)!r}; name must be one of these, got {name!r}"
         )
     period_us = level_period_us(
@@ -787,7 +787,7 @@ def _member_expectation(shape: tuple[int, ...], *, integer: bool) -> str:
 
 
 def _parse_level(
-    key: int,
+    index: int,
     number: int,
     group: ZarrGroup,
     arrays: Mapping[str, ZarrArray],
@@ -795,7 +795,7 @@ def _parse_level(
     num_samples: int,
     previous: Level | None,
 ) -> Level:
-    """Return one level of channel key, given the level below it or None.
+    """Return one level of channel index, given the level below it or None.
 
     Raises:
         ValueError: If period_us is not a whole number of samples from 2 to
@@ -803,7 +803,7 @@ def _parse_level(
             of at least 2, if minmax is missing, or if a member has the wrong
             shape or dtype kind.
     """
-    where = f"channel {key} level {number}"
+    where = f"channel {index} level {number}"
     period_us = parse_level_attrs(group.attrs, where)
     width = period_us * rate_hz / MICROSECONDS_PER_SECOND
     samples_per_bin = nearest_integer(width) if math.isfinite(width) else 0
@@ -868,17 +868,17 @@ def _level_numbers(
 
 
 def parse_continuous_channel(
-    key: int,
+    index: int,
     attributes: Mapping[str, object],
     groups: Mapping[str, ZarrGroup],
     arrays: Mapping[str, ZarrArray],
 ) -> ContinuousChannel:
-    """Return the continuous channel that channel group key describes.
+    """Return the continuous channel that channel group index describes.
 
     The parser ignores unknown nodes and unknown tsz keys.
 
     Args:
-        key: The name of the channel group.
+        index: The name of the channel group.
         attributes: The attributes of the channel group.
         groups: The descendant groups, keyed by the path below the group,
             such as 1.
@@ -893,7 +893,7 @@ def parse_continuous_channel(
             number of samples or not an integer multiple of the level below
             it. The message names the channel and the level at fault.
     """
-    where = f"channel {key}"
+    where = f"channel {index}"
     fields = parse_continuous_attrs(attributes, where)
     numbers = _level_numbers(where, groups, arrays)
     raw = _parse_raw(where, arrays)
@@ -901,7 +901,7 @@ def parse_continuous_channel(
     previous: Level | None = None
     for number in numbers:
         previous = _parse_level(
-            key,
+            index,
             number,
             groups[str(number)],
             arrays,
@@ -911,7 +911,7 @@ def parse_continuous_channel(
         )
         levels[number] = previous
     return ContinuousChannel(
-        key=key,
+        index=index,
         name=fields.name,
         id=fields.id,
         unit=fields.unit,

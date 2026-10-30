@@ -824,14 +824,14 @@ def _write_many(
     tmp_path: Path,
     source: Any,
     opts: WriteOpts,
-    first_key: int = 0,
+    first_index: int = 0,
     reference_us: int = 0,
     name: str = "bundle",
 ) -> Any:
     """Write source below the root group at tmp_path / name and return it."""
     parent = open_group(tmp_path / name)
     write_continuous_channels(
-        parent, first_key, source, reference_us=reference_us, opts=opts
+        parent, first_index, source, reference_us=reference_us, opts=opts
     )
     return open_group(tmp_path / name)
 
@@ -917,7 +917,7 @@ def test_write_continuous_channels_stores_each_channels_raw_samples_unchanged(
         assert np.array_equal(stored, expected, equal_nan=True)
 
 
-def test_write_continuous_channels_names_the_groups_from_the_first_key_in_channel_order(
+def test_write_continuous_channels_names_the_groups_from_the_first_index_in_channel_order(
     tmp_path: Path,
     continuous_source: type[ArrayContinuousSource],
     multi_channel_source: type[ArrayMultiChannelSource],
@@ -935,7 +935,7 @@ def test_write_continuous_channels_names_the_groups_from_the_first_key_in_channe
         tmp_path,
         multi_channel_source(channels),
         _OPTS,
-        first_key=4,
+        first_index=4,
         reference_us=5,
     )
     assert sorted(root.group_keys()) == ["4", "5", "6"]
@@ -1167,7 +1167,7 @@ def test_write_continuous_channels_with_no_channels_writes_nothing_and_reads_no_
     tmp_path: Path,
 ) -> None:
     source = _WindowSource([], [])
-    root = _write_many(tmp_path, source, _OPTS, first_key=5)
+    root = _write_many(tmp_path, source, _OPTS, first_index=5)
     assert list(root.group_keys()) == []
     assert list(root.array_keys()) == []
     assert source.calls == 0
@@ -1215,7 +1215,7 @@ def test_write_continuous_channels_rejects_a_block_that_is_not_rank_one(
     with pytest.raises(
         ValueError, match=rf"channel 4 \('b'\) gives a block of rank {rank}"
     ):
-        _write_many(tmp_path, source, _OPTS, first_key=3)
+        _write_many(tmp_path, source, _OPTS, first_index=3)
 
 
 @pytest.mark.parametrize(
@@ -1251,7 +1251,7 @@ def test_write_continuous_channels_rejects_a_channel_with_too_few_samples(
     )
     with pytest.raises(ValueError, match=message):
         _write_many(
-            tmp_path, _WindowSource(channels, windows), _OPTS, first_key=2
+            tmp_path, _WindowSource(channels, windows), _OPTS, first_index=2
         )
 
 
@@ -1330,7 +1330,7 @@ def test_write_continuous_channels_creates_every_node_in_one_call(
     channels = [
         continuous_source(each, id=f"c{i}") for i, each in enumerate(samples)
     ]
-    _write_many(tmp_path, multi_channel_source(channels), _OPTS, first_key=5)
+    _write_many(tmp_path, multi_channel_source(channels), _OPTS, first_index=5)
     levels = len(plan_levels(1000, 32000.0, _OPTS.level_cap, _OPTS.min_bins))
     assert levels >= 2
     members = [COUNT_KEY, MEAN_KEY, MINMAX_KEY]
@@ -1520,7 +1520,7 @@ def test_write_continuous_channels_raises_a_failed_job_with_its_channel_label(
     source = multi_channel_source(channels, window_rows=100)
     opts = dataclasses.replace(_OPTS, max_workers=3)
     with pytest.raises(RuntimeError, match="disk full") as caught:
-        _write_many(tmp_path, source, opts, first_key=3)
+        _write_many(tmp_path, source, opts, first_index=3)
     assert caught.value.__notes__ == ["while writing channel 4 ('c1')"]
 
 

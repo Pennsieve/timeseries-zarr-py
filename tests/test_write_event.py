@@ -543,10 +543,10 @@ def _mask_sizing(width):
     return ChunkShard(chunk_shape=(4, width), shard_shape=(8, width))
 
 
-def _write_channels(tmp_path, source, max_key=9, keys=_KEYS):
+def _write_channels(tmp_path, source, max_index=9, keys=_KEYS):
     group = open_group(tmp_path / "bundle")
-    sizing = _mask_sizing(channels_rows([[]], max_key).shape[1])
-    write_channels_array(group, source, keys, max_key, sizing, 5)
+    sizing = _mask_sizing(channels_rows([[]], max_index).shape[1])
+    write_channels_array(group, source, keys, max_index, sizing, 5)
     return open_group(tmp_path / "bundle")
 
 
@@ -582,13 +582,15 @@ def test_write_channels_array_compresses_with_zstd(tmp_path, event_source):
     assert [codec["name"] for codec in inner] == ["bytes", "zstd"]
 
 
-def test_write_channels_array_width_follows_max_key(tmp_path, event_source):
+def test_write_channels_array_width_follows_max_index(tmp_path, event_source):
     source = event_source([1], channel_ids=[["a"]])
-    assert _write_channels(tmp_path, source, max_key=0)[CHANNELS_KEY].shape == (
+    assert _write_channels(tmp_path, source, max_index=0)[
+        CHANNELS_KEY
+    ].shape == (
         1,
         1,
     )
-    assert _write_channels(tmp_path / "w", source, max_key=16)[
+    assert _write_channels(tmp_path / "w", source, max_index=16)[
         CHANNELS_KEY
     ].shape == (1, 3)
 
@@ -646,12 +648,12 @@ def test_write_channels_array_rejects_an_unknown_id_in_a_later_block(
         _write_channels(tmp_path, source)
 
 
-def test_write_channels_array_rejects_a_key_above_max_key(
+def test_write_channels_array_rejects_an_index_above_max_index(
     tmp_path, event_source
 ):
     source = event_source([1], channel_ids=[["c"]])
     with pytest.raises(ValueError, match="between 0 and 5"):
-        _write_channels(tmp_path, source, max_key=5)
+        _write_channels(tmp_path, source, max_index=5)
 
 
 def test_write_channels_array_rejects_a_source_that_returns_too_few_lists(
@@ -1149,8 +1151,8 @@ def _write_channel(tmp_path, source, key=7, opts=_CHANNEL_OPTS):
         key,
         source,
         reference_us=_START_US,
-        channel_keys=_KEYS,
-        max_key=9,
+        channel_indices=_KEYS,
+        max_index=9,
         opts=opts,
     )
     return open_group(tmp_path / "bundle")
@@ -1383,8 +1385,8 @@ def test_write_event_channel_returns_none(tmp_path, event_source):
         1,
         _full(event_source),
         reference_us=_START_US,
-        channel_keys=_KEYS,
-        max_key=9,
+        channel_indices=_KEYS,
+        max_index=9,
         opts=_CHANNEL_OPTS,
     )
     assert result is None
@@ -1528,8 +1530,8 @@ def test_write_event_channel_rejects_a_bad_time_before_it_creates_a_node(
             0,
             source,
             reference_us=0,
-            channel_keys={},
-            max_key=0,
+            channel_indices={},
+            max_index=0,
             opts=_COUNT_OPTS,
         )
     assert list(group.members()) == []
