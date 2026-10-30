@@ -73,3 +73,7 @@ venv/
 # IntelliJ
 .idea/
 .vscode/
+
+# The bundles of conformance/ are built by scripts/build_fixtures.py.
+conformance/*
+!conformance/manifest.json

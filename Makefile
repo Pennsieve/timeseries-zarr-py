@@ -1,4 +1,4 @@
-.PHONY: help venv install test test-cov lint typecheck check pre-commit
+.PHONY: help venv install test test-cov lint typecheck check fixtures pre-commit
 
 VENV_DIR      ?= venv
 PYTHON        ?= python3
@@ -16,6 +16,7 @@ help:
 	@echo "make lint       - run linter + formatter with auto-fix"
 	@echo "make typecheck  - run mypy --strict"
 	@echo "make check      - run lint check, typecheck, and tests"
+	@echo "make fixtures   - rewrite the conformance fixtures in conformance/"
 
 venv:
 	$(PYTHON) -m venv $(VENV_DIR)
@@ -47,6 +48,9 @@ check:
 	$(VENV_DIR)/bin/ruff format --check timeseries_zarr/ tests/ scripts/
 	$(VENV_DIR)/bin/mypy timeseries_zarr/ scripts/
 	$(VENV_DIR)/bin/python -m pytest tests/
+
+fixtures:
+	$(VENV_DIR)/bin/python scripts/build_fixtures.py
 
 pre-commit:
 	$(VENV_DIR)/bin/pre-commit install
