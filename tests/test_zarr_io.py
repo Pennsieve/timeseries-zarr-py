@@ -1608,6 +1608,18 @@ def test_read_layout_accepts_a_one_byte_dtype(tmp_path):
     assert layout.dtype == np.dtype(np.uint8)
 
 
+def test_read_layout_returns_none_for_a_big_endian_dtype(tmp_path, monkeypatch):
+    array = sharded_array(tmp_path)
+    check_chain = zarr_io._check_chain
+
+    def big_endian(checked):
+        chain = check_chain(checked)
+        return chain._replace(dtype=np.dtype(">f4"))
+
+    monkeypatch.setattr(zarr_io, "_check_chain", big_endian)
+    assert read_layout(array) is None
+
+
 def _foreign_v2(tmp_path):
     return zarr.create_array(
         LocalStore(tmp_path / "v2"),

@@ -425,8 +425,8 @@ def _zstd_level(
 def read_layout(array: Array[Any]) -> ReadLayout | None:
     """Return the layout that read_rows needs to decode array, or None.
 
-    An array has a layout when it holds the chain that shard_layout writes. The
-    store may be read-only.
+    An array has a layout when it holds the chain that shard_layout writes and
+    its dtype is little-endian. The store may be read-only.
 
     Args:
         array: The array to read.
@@ -438,6 +438,8 @@ def read_layout(array: Array[Any]) -> ReadLayout | None:
     try:
         chain = _check_chain(array)
     except ValueError:
+        return None
+    if chain.dtype != chain.dtype.newbyteorder("<"):
         return None
     metadata = chain.metadata
     trailing = (0,) * (len(array.shape) - 1)
