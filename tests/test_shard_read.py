@@ -1,5 +1,7 @@
+import gc
 import struct
 import threading
+import time
 
 import google_crc32c
 import numpy as np
@@ -7,6 +9,7 @@ import pytest
 from numcodecs.zstd import Zstd
 
 from timeseries_zarr.shard_read import (
+    ShardIndexCache,
     _frame_content_size,
     chunk_span,
     decode_chunks,
@@ -490,3 +493,193 @@ def test_decode_runs_on_several_threads_into_separate_arrays():
 def test_frame_content_size_reads_every_header_form(header, expected):
     frame = bytes.fromhex(header)
     assert _frame_content_size(memoryview(frame)) == expected
+
+
+# shard index cache
+
+INDEX_512_BYTES = 16 * 512 + 4
+
+
+class Store:
+    """A stand-in for a store that Python can weakly reference."""
+
+
+class SlottedStore:
+    """A stand-in for a store that Python cannot weakly reference."""
+
+    __slots__ = ()
+
+
+def make_index(slots=512):
+    index = np.zeros((slots, 2), dtype=np.uint64)
+    index.setflags(write=False)
+    return index
+
+
+def test_cache_returns_the_index_that_it_stores():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    store = Store()
+    index = make_index()
+    cache.put(store, PATH, SHARD, index)
+    assert cache.get(store, PATH, SHARD) is index
+
+
+def test_cache_returns_none_for_a_key_it_does_not_hold():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    store = Store()
+    cache.put(store, PATH, SHARD, make_index())
+    assert cache.get(store, PATH, SHARD + 1) is None
+    assert cache.get(store, "other", SHARD) is None
+    assert cache.get(Store(), PATH, SHARD) is None
+
+
+def test_cache_counts_8196_bytes_for_an_index_of_512_slots():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    store = Store()
+    cache.put(store, PATH, SHARD, make_index(512))
+    assert cache.size_bytes == 8196
+    assert len(cache) == 1
+
+
+def test_cache_replaces_the_index_of_a_key_it_holds():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    store = Store()
+    cache.put(store, PATH, SHARD, make_index(512))
+    replacement = make_index(8)
+    cache.put(store, PATH, SHARD, replacement)
+    assert cache.get(store, PATH, SHARD) is replacement
+    assert cache.size_bytes == 16 * 8 + 4
+    assert len(cache) == 1
+
+
+def test_cache_evicts_the_least_recently_used_entry_over_budget():
+    cache = ShardIndexCache(3 * INDEX_512_BYTES)
+    store = Store()
+    for shard in range(3):
+        cache.put(store, PATH, shard, make_index())
+    assert cache.get(store, PATH, 0) is not None
+    cache.put(store, PATH, 3, make_index())
+    assert cache.get(store, PATH, 1) is None
+    assert cache.get(store, PATH, 0) is not None
+    assert cache.get(store, PATH, 2) is not None
+    assert cache.get(store, PATH, 3) is not None
+    assert cache.size_bytes == 3 * INDEX_512_BYTES
+
+
+def test_cache_evicts_several_small_entries_for_one_large_entry():
+    cache = ShardIndexCache(2 * INDEX_512_BYTES)
+    store = Store()
+    for shard in range(4):
+        cache.put(store, PATH, shard, make_index(256))
+    cache.put(store, PATH, 9, make_index(512))
+    assert cache.size_bytes <= cache.budget_bytes
+    assert cache.get(store, PATH, 9) is not None
+    assert len(cache) == 2
+
+
+def test_cache_does_not_store_an_index_larger_than_the_budget():
+    cache = ShardIndexCache(INDEX_512_BYTES - 1)
+    store = Store()
+    cache.put(store, PATH, SHARD, make_index(512))
+    assert cache.get(store, PATH, SHARD) is None
+    assert cache.size_bytes == 0
+
+
+def test_cache_stores_nothing_for_a_store_that_has_no_weak_reference():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    store = SlottedStore()
+    cache.put(store, PATH, SHARD, make_index())
+    assert cache.get(store, PATH, SHARD) is None
+    assert len(cache) == 0
+    assert cache.size_bytes == 0
+
+
+def test_cache_evicts_every_entry_of_one_store_and_none_of_another():
+    cache = ShardIndexCache(100 * INDEX_512_BYTES)
+    first, second = Store(), Store()
+    for shard in range(3):
+        cache.put(first, PATH, shard, make_index())
+        cache.put(first, "other", shard, make_index())
+        cache.put(second, PATH, shard, make_index())
+    cache.evict_store(first)
+    assert len(cache) == 3
+    assert cache.size_bytes == 3 * INDEX_512_BYTES
+    assert cache.get(first, PATH, 0) is None
+    assert cache.get(second, PATH, 0) is not None
+
+
+def test_cache_evicting_a_store_that_holds_nothing_has_no_effect():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    cache.evict_store(Store())
+    assert len(cache) == 0
+
+
+def test_cache_accepts_a_store_again_after_evicting_it():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    store = Store()
+    cache.put(store, PATH, SHARD, make_index())
+    cache.evict_store(store)
+    cache.put(store, PATH, SHARD, make_index())
+    assert cache.get(store, PATH, SHARD) is not None
+    del store
+    gc.collect()
+    assert len(cache) == 0
+
+
+def test_cache_drops_the_entries_of_a_store_that_is_collected():
+    cache = ShardIndexCache(10 * INDEX_512_BYTES)
+    kept = Store()
+    cache.put(kept, PATH, SHARD, make_index())
+    store = Store()
+    cache.put(store, PATH, SHARD, make_index())
+    cache.put(store, PATH, SHARD + 1, make_index())
+    del store
+    gc.collect()
+    assert len(cache) == 1
+    assert cache.size_bytes == INDEX_512_BYTES
+    assert cache.get(kept, PATH, SHARD) is not None
+
+
+def test_cache_never_returns_the_entry_of_a_collected_store_to_a_new_one():
+    cache = ShardIndexCache(100 * INDEX_512_BYTES)
+    for _ in range(50):
+        store = Store()
+        assert cache.get(store, PATH, SHARD) is None
+        cache.put(store, PATH, SHARD, make_index())
+        del store
+    gc.collect()
+    assert len(cache) == 0
+
+
+def test_cache_stays_within_the_budget_under_32_threads():
+    budget = 40 * INDEX_512_BYTES
+    cache = ShardIndexCache(budget)
+    stores = [Store() for _ in range(4)]
+    index = make_index()
+    errors = []
+    deadline = time.monotonic() + 1.0
+
+    def work(seed):
+        rng = np.random.default_rng(seed)
+        try:
+            while time.monotonic() < deadline:
+                for key in rng.integers(0, 10_000, 200):
+                    store = stores[int(key) % len(stores)]
+                    if rng.random() < 0.5:
+                        cache.put(store, PATH, int(key), index)
+                    else:
+                        cache.get(store, PATH, int(key))
+                    if key % 97 == 0:
+                        cache.evict_store(store)
+                    assert cache.size_bytes <= budget
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=work, args=(k,)) for k in range(32)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert cache.size_bytes <= budget
+    assert cache.size_bytes == len(cache) * INDEX_512_BYTES

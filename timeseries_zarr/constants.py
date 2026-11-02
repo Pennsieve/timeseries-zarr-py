@@ -78,6 +78,12 @@ LABEL_DIMENSION: Final = "label"
 DEFAULT_DECIMATION_FACTOR: Final = 4
 """Default ratio of the bin widths of consecutive levels."""
 
+SHARD_INDEX_CACHE_BYTES: Final = 64 * 2**20
+"""Bytes of shard indexes that the reader keeps in memory.
+
+The index of a shard with 512 chunk slots takes 8196 bytes.
+"""
+
 MIN_DECIMATION_FACTOR: Final = 2
 """Smallest ratio of the bin widths of consecutive levels."""
 

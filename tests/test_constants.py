@@ -30,6 +30,7 @@ from timeseries_zarr.constants import (
     RUNS_COLUMNS,
     RUNS_KEY,
     SAMPLES_PER_BIN_LIMIT,
+    SHARD_INDEX_CACHE_BYTES,
     TEXT_KEY,
     TIME_DIMENSION,
     TIME_LIMIT_US,
@@ -112,6 +113,10 @@ def test_event_count_and_level_width_limits_are_2_to_the_32():
 def test_default_decimation_factor_is_4_and_the_minimum_is_2():
     assert DEFAULT_DECIMATION_FACTOR == 4
     assert MIN_DECIMATION_FACTOR == 2
+
+
+def test_shard_index_cache_budget_is_64_mebibytes():
+    assert SHARD_INDEX_CACHE_BYTES == 64 * 1024 * 1024
 
 
 def test_max_labels_is_the_uint16_range():

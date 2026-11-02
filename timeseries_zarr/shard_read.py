@@ -7,6 +7,9 @@ of its rows, compressed with Zstd.
 """
 
 import struct
+import threading
+import weakref
+from collections import OrderedDict
 from collections.abc import Buffer
 from typing import Final
 
@@ -30,6 +33,8 @@ _ZSTD_SINGLE_SEGMENT: Final = 0x20
 _ZSTD_DICTIONARY_BYTES: Final = (0, 1, 2, 4)
 _ZSTD_CONTENT_SIZE_BYTES: Final = (1, 2, 4, 8)
 _ZSTD = Zstd()
+
+type _CacheKey = tuple[int, str, int]
 
 
 def parse_index(
@@ -181,6 +186,126 @@ def decode_chunks(
         _decode_chunk(
             view[start : start + length], target, chunk_bytes, slot, where
         )
+
+
+class ShardIndexCache:
+    """A least-recently-used map of shard indexes, bounded in bytes.
+
+    An entry costs the bytes of its index table plus the 4 bytes of its
+    checksum, so the index of a shard with 512 chunk slots costs 8196 bytes.
+    An entry is keyed by the identity of its store, the path of the array,
+    and the shard number. A weak-reference callback drops the entries of a
+    store when Python collects it. A store that Python cannot weakly reference
+    holds no entries, because nothing could drop them. Every method is safe to
+    call from several threads.
+
+    Attributes:
+        budget_bytes: The most bytes the entries may cost together.
+    """
+
+    def __init__(self, budget_bytes: int) -> None:
+        """Create an empty cache.
+
+        Args:
+            budget_bytes: The most bytes the entries may cost together.
+        """
+        self.budget_bytes = budget_bytes
+        self._lock = threading.RLock()
+        self._entries: OrderedDict[_CacheKey, ShardIndex] = OrderedDict()
+        self._bytes = 0
+        self._finalizers: dict[int, weakref.finalize[[int], object]] = {}
+
+    @property
+    def size_bytes(self) -> int:
+        """The bytes that the entries cost now."""
+        with self._lock:
+            return self._bytes
+
+    def __len__(self) -> int:
+        """Return the number of entries."""
+        with self._lock:
+            return len(self._entries)
+
+    def get(
+        self, store: object, array_path: str, shard: int
+    ) -> ShardIndex | None:
+        """Return the index of a shard and mark it as recently used.
+
+        Args:
+            store: The store that holds the array.
+            array_path: The path of the array in the store.
+            shard: The shard number along axis 0.
+
+        Returns:
+            The index, or None when the cache holds none.
+        """
+        key = (id(store), array_path, shard)
+        with self._lock:
+            index = self._entries.get(key)
+            if index is not None:
+                self._entries.move_to_end(key)
+            return index
+
+    def put(
+        self, store: object, array_path: str, shard: int, index: ShardIndex
+    ) -> None:
+        """Store the index of a shard and drop the oldest entries over budget.
+
+        An index that costs more than the budget is not stored. A store that
+        cannot be weakly referenced stores nothing.
+
+        Args:
+            store: The store that holds the array.
+            array_path: The path of the array in the store.
+            shard: The shard number along axis 0.
+            index: The index to keep.
+        """
+        cost = _entry_bytes(index)
+        if cost > self.budget_bytes:
+            return
+        key = (id(store), array_path, shard)
+        with self._lock:
+            if key[0] not in self._finalizers:
+                try:
+                    self._finalizers[key[0]] = weakref.finalize(
+                        store, self.evict_store_id, key[0]
+                    )
+                except TypeError:
+                    return
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._bytes -= _entry_bytes(previous)
+            self._entries[key] = index
+            self._bytes += cost
+            while self._bytes > self.budget_bytes:
+                _, oldest = self._entries.popitem(last=False)
+                self._bytes -= _entry_bytes(oldest)
+
+    def evict_store(self, store: object) -> None:
+        """Drop every entry of a store and leave the entries of others.
+
+        Args:
+            store: The store whose entries to drop.
+        """
+        self.evict_store_id(id(store))
+
+    def evict_store_id(self, store_id: int) -> None:
+        """Drop every entry of the store that id() names.
+
+        Args:
+            store_id: The identity of the store whose entries to drop.
+        """
+        with self._lock:
+            finalizer = self._finalizers.pop(store_id, None)
+            if finalizer is not None:
+                finalizer.detach()
+            for key in [key for key in self._entries if key[0] == store_id]:
+                self._bytes -= _entry_bytes(self._entries.pop(key))
+
+
+def _entry_bytes(index: ShardIndex) -> int:
+    """Return the bytes that an index costs in the cache."""
+    return index.nbytes + _CHECKSUM_BYTES
 
 
 def _check_slots(index: ShardIndex, first_slot: int, stop_slot: int) -> None:

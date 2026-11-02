@@ -1,7 +1,10 @@
+import gc
 import json
 import struct
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import google_crc32c
@@ -9,7 +12,7 @@ import numpy as np
 import pytest
 import zarr
 from zarr import Array, Group
-from zarr.abc.store import RangeByteRequest
+from zarr.abc.store import RangeByteRequest, Store
 from zarr.buffer import default_buffer_prototype
 from zarr.buffer.cpu import Buffer
 from zarr.codecs import (
@@ -30,11 +33,16 @@ from zarr.storage import (
     WrapperStore,
 )
 
+from tests.conftest import ArrayContinuousSource
+from tests.test_bundle import _SPEC_OPTS
 from timeseries_zarr import open_bundle
 from timeseries_zarr.attrs import root_attrs
+from timeseries_zarr.bundle import write_bundle
 from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.shards import ArrayWriter, BufferShardSink, FileShardSink
+from timeseries_zarr.types import WriteOpts
 from timeseries_zarr.zarr_io import (
+    _SHARD_INDEXES,
     _local_location,
     array_metadata,
     close_store,
@@ -1782,7 +1790,6 @@ def test_read_rows_sends_one_request_for_every_chunk_of_a_shard(tmp_path):
     read_rows(array, 250, 520)
     assert sorted(store.reads) == [
         "raw/c/0",
-        "raw/c/0",
         "raw/c/1",
         "raw/c/2",
         "raw/c/2",
@@ -1964,3 +1971,334 @@ def test_read_rows_names_the_array_and_shard_of_corrupt_data(corrupt, tmp_path):
     corrupt(array)
     with pytest.raises(ValueError, match=r"shard 1 of array raw"):
         read_rows(array, 0, 1000)
+
+
+class _CountingStore(_RecordingStore):
+    """Count the reads and the bytes returned, through async reads only.
+
+    A synchronous read raises TypeError, as FsspecStore does, so zarr reads
+    through the async methods that a remote store has. Ranged reads run
+    through get, so that each coalesced range counts as one request.
+    """
+
+    get_ranges = Store.get_ranges
+
+    def __init__(self, store):
+        super().__init__(store)
+        self.bytes = 0
+
+    def get_sync(self, key, *, prototype=None, byte_range=None):
+        raise TypeError("no synchronous get")
+
+    def reset(self):
+        self.reads.clear()
+        self.bytes = 0
+
+    async def get(self, key, prototype, byte_range=None):
+        result = await super().get(key, prototype, byte_range)
+        self.bytes += 0 if result is None else len(result)
+        return result
+
+    async def get_partial_values(self, prototype, key_ranges):
+        results = await super().get_partial_values(prototype, key_ranges)
+        self.bytes += sum(len(part) for part in results if part is not None)
+        return results
+
+
+def _local_store(path):
+    return LocalStore(path, read_only=True)
+
+
+def _memory_tree_store(path):
+    return _memory_store(path)
+
+
+STORE_KINDS = [
+    pytest.param(_local_store, id="local"),
+    pytest.param(_memory_tree_store, id="memory"),
+]
+
+
+def counting_array(make_store, tmp_path):
+    """Return a counting store over the array of filled_array, and the array."""
+    filled_array(tmp_path, 1000)
+    store = _CountingStore(make_store(tmp_path / "bundle"))
+    array = zarr.open_array(store, path="raw")
+    store.reset()
+    return store, array
+
+
+def zarr_cost(make_store, tmp_path, window, monkeypatch):
+    """Return the requests and bytes of a cold read of window through zarr."""
+    store, array = counting_array(make_store, tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr("timeseries_zarr.zarr_io.read_layout", lambda a: None)
+        read_rows(array, *window)
+    return len(store.reads), store.bytes
+
+
+@pytest.mark.parametrize("make_store", STORE_KINDS)
+def test_a_cold_read_inside_one_shard_sends_two_requests_and_a_warm_read_one(
+    make_store, tmp_path
+):
+    store, array = counting_array(make_store, tmp_path)
+    read_rows(array, 10, 20)
+    assert store.reads == ["raw/c/0", "raw/c/0"]
+    store.reset()
+    read_rows(array, 100, 110)
+    assert store.reads == ["raw/c/0"]
+
+
+@pytest.mark.parametrize("make_store", STORE_KINDS)
+def test_a_read_across_a_shard_edge_sends_four_requests_cold_and_two_warm(
+    make_store, tmp_path
+):
+    store, array = counting_array(make_store, tmp_path)
+    window = (SHARD_ROWS - 6, SHARD_ROWS + 4)
+    read_rows(array, *window)
+    assert sorted(store.reads) == ["raw/c/0", "raw/c/0", "raw/c/1", "raw/c/1"]
+    store.reset()
+    read_rows(array, *window)
+    assert sorted(store.reads) == ["raw/c/0", "raw/c/1"]
+
+
+@pytest.mark.parametrize("make_store", STORE_KINDS)
+def test_a_warm_read_of_every_chunk_of_a_shard_sends_one_request(
+    make_store, tmp_path
+):
+    store, array = counting_array(make_store, tmp_path)
+    read_rows(array, 10, 20)
+    store.reset()
+    rows = read_rows(array, 0, SHARD_ROWS)
+    assert store.reads == ["raw/c/0"]
+    assert store.bytes < INDEX_BYTES + rows.nbytes
+    assert_same(rows, zarr_rows(array, 0, SHARD_ROWS))
+
+
+@pytest.mark.parametrize("make_store", STORE_KINDS)
+@pytest.mark.parametrize(
+    "window",
+    [(10, 20), (0, SHARD_ROWS), (SHARD_ROWS - 6, SHARD_ROWS + 4), (0, 1000)],
+)
+def test_a_cold_read_sends_no_more_requests_or_bytes_than_zarr(
+    make_store, window, tmp_path, monkeypatch
+):
+    requests, size = zarr_cost(
+        make_store, tmp_path / "zarr", window, monkeypatch
+    )
+    store, array = counting_array(make_store, tmp_path / "direct")
+    read_rows(array, *window)
+    assert len(store.reads) <= requests
+    assert store.bytes <= size
+
+
+@pytest.mark.parametrize("make_store", STORE_KINDS)
+def test_a_warm_read_saves_the_index_bytes_of_the_zarr_read(
+    make_store, tmp_path, monkeypatch
+):
+    window = (70, 130)
+    requests, size = zarr_cost(
+        make_store, tmp_path / "zarr", window, monkeypatch
+    )
+    store, array = counting_array(make_store, tmp_path / "direct")
+    read_rows(array, 0, 10)
+    store.reset()
+    read_rows(array, *window)
+    assert len(store.reads) == requests - 1
+    assert store.bytes == size - INDEX_BYTES
+
+
+@pytest.mark.parametrize("make_store", STORE_KINDS)
+def test_a_second_array_of_the_store_reads_its_own_index(make_store, tmp_path):
+    filled_array(tmp_path, 1000, seed=1)
+    other = sharded_array(
+        tmp_path, (1000,), np.float32, name="other", chunks=(64,), shards=(256,)
+    )
+    other[:] = random_values(1000, np.float32, seed=2)
+    store = _CountingStore(make_store(tmp_path / "bundle"))
+    root = zarr.open_group(store, mode="r")
+    raw, other = root["raw"], root["other"]
+    read_rows(raw, 10, 20)
+    store.reset()
+    read_rows(other, 10, 20)
+    assert store.reads == ["other/c/0", "other/c/0"]
+
+
+def test_close_store_makes_the_next_read_of_the_same_store_fetch_its_index(
+    tmp_path,
+):
+    filled_array(tmp_path, 1000)
+    store = _CountingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    root = zarr.open_group(store, mode="r")
+    array = root["raw"]
+    read_rows(array, 10, 20)
+    store.reset()
+    read_rows(array, 10, 20)
+    assert store.reads == ["raw/c/0"]
+    close_store(root)
+    reopened = zarr.open_group(store, mode="r")["raw"]
+    store.reset()
+    read_rows(reopened, 10, 20)
+    assert store.reads == ["raw/c/0", "raw/c/0"]
+
+
+def test_close_store_keeps_the_indexes_of_another_store(tmp_path):
+    filled_array(tmp_path, 1000)
+    first = zarr.open_group(
+        LocalStore(tmp_path / "bundle", read_only=True), mode="r"
+    )
+    second = _CountingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    kept = zarr.open_group(second, mode="r")["raw"]
+    read_rows(first["raw"], 10, 20)
+    read_rows(kept, 10, 20)
+    close_store(first)
+    second.reset()
+    read_rows(kept, 10, 20)
+    assert second.reads == ["raw/c/0"]
+
+
+def test_a_new_bundle_on_the_same_path_fetches_the_indexes_again(tmp_path):
+    path = write_many_channels(tmp_path / "many", 2)
+    with open_bundle(path) as first:
+        read_rows(first.continuous[0].raw, 0, 10)
+        held = len(_SHARD_INDEXES)
+        assert held >= 1
+    with open_bundle(path) as second:
+        before = len(_SHARD_INDEXES)
+        read_rows(second.continuous[0].raw, 0, 10)
+        assert len(_SHARD_INDEXES) == before + 1
+
+
+@pytest.mark.parametrize("make_store", STORE_KINDS)
+def test_stack_sends_two_requests_per_channel_cold_and_one_warm(
+    make_store, tmp_path
+):
+    channels = 8
+    path = write_many_channels(tmp_path / "bundle", channels, WriteOpts())
+    store = _CountingStore(make_store(path))
+    with open_bundle(store) as bundle:
+        store.reset()
+        for expected in (2 * channels, channels):
+            bundle.stack(list(range(channels)), 0, 5_000_000, max_workers=4)
+            raw = [key for key in store.reads if key.endswith("/raw/c/0")]
+            assert len(raw) == expected
+            store.reset()
+
+
+def test_the_cache_drops_the_indexes_of_a_store_that_is_collected(tmp_path):
+    filled_array(tmp_path, 1000)
+    gc.collect()
+    before = len(_SHARD_INDEXES)
+    store = LocalStore(tmp_path / "bundle", read_only=True)
+    array = zarr.open_array(store, path="raw")
+    read_rows(array, 10, 20)
+    read_rows(array, 300, 310)
+    assert len(_SHARD_INDEXES) == before + 2
+    del array, store
+    gc.collect()
+    assert len(_SHARD_INDEXES) == before
+
+
+def test_a_collected_store_leaves_no_index_for_a_store_at_its_address(tmp_path):
+    filled_array(tmp_path, 1000)
+    for _ in range(20):
+        store = _CountingStore(LocalStore(tmp_path / "bundle", read_only=True))
+        array = zarr.open_array(store, path="raw")
+        store.reset()
+        read_rows(array, 10, 20)
+        assert store.reads == ["raw/c/0", "raw/c/0"]
+        del array, store
+        gc.collect()
+
+
+CHANNEL_COUNT = 64
+CHANNEL_SAMPLES = 12_000
+CHANNEL_RATE_HZ = 1000.0
+CONCURRENT_STACKS = 200
+CONCURRENT_SECONDS = 2.0
+THREAD_COUNT = 32
+
+
+def write_many_channels(path, count, opts=_SPEC_OPTS):
+    """Write count channels of random samples, several shards each by default."""
+    rng = np.random.default_rng(4)
+    sources = [
+        ArrayContinuousSource(
+            rng.standard_normal(CHANNEL_SAMPLES).astype(np.float32),
+            id=f"channel-{index}",
+            name=f"channel-{index}",
+            rate_hz=CHANNEL_RATE_HZ,
+        )
+        for index in range(count)
+    ]
+    write_bundle(sources, [], output_path=path, opts=opts)
+    return path
+
+
+@pytest.fixture(scope="module")
+def many_channels(tmp_path_factory):
+    return write_many_channels(
+        tmp_path_factory.mktemp("many") / "bundle", CHANNEL_COUNT
+    )
+
+
+def _fsspec_store(path):
+    wrapper = pytest.importorskip("fsspec.implementations.asyn_wrapper")
+    local = pytest.importorskip("fsspec.implementations.local")
+    filesystem = wrapper.AsyncFileSystemWrapper(
+        local.LocalFileSystem(), asynchronous=True
+    )
+    return FsspecStore(filesystem, path=str(path), read_only=True)
+
+
+CONCURRENT_STORES = [
+    pytest.param(_local_store, id="local"),
+    pytest.param(_fsspec_store, id="fsspec"),
+]
+
+
+@pytest.mark.parametrize("make_store", CONCURRENT_STORES)
+def test_stack_returns_the_same_bytes_at_32_threads_as_at_one(
+    make_store, many_channels
+):
+    rng = np.random.default_rng(8)
+    span_us = int(CHANNEL_SAMPLES * 1e6 / CHANNEL_RATE_HZ)
+    indices = list(range(CHANNEL_COUNT))
+    with open_bundle(make_store(many_channels)) as bundle:
+        for _ in range(CONCURRENT_STACKS):
+            start = int(rng.integers(0, span_us))
+            end = start + int(rng.integers(0, span_us // 3))
+            serial = bundle.stack(indices, start, end, max_workers=1)
+            parallel = bundle.stack(indices, start, end, max_workers=32)
+            assert_same(parallel.values, serial.values)
+
+
+@pytest.mark.parametrize("make_store", CONCURRENT_STORES)
+def test_32_threads_read_random_windows_of_one_channel_as_zarr_does(
+    make_store, many_channels
+):
+    errors = []
+    with open_bundle(make_store(many_channels)) as bundle:
+        raw = bundle.continuous[3].raw
+        whole = zarr_rows(raw, 0, raw.shape[0])
+        deadline = time.monotonic() + CONCURRENT_SECONDS
+
+        def work(seed):
+            rng = np.random.default_rng(seed)
+            try:
+                while time.monotonic() < deadline:
+                    start = int(rng.integers(0, whole.shape[0] + 5))
+                    stop = start + int(rng.integers(0, 3000))
+                    assert_same(read_rows(raw, start, stop), whole[start:stop])
+            except BaseException as error:
+                errors.append(error)
+
+        threads = [
+            threading.Thread(target=work, args=(seed,))
+            for seed in range(THREAD_COUNT)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+    assert errors == []
