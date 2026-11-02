@@ -383,9 +383,9 @@ def _wrap_reads(monkeypatch, before):
     """Call before with each array that read_continuous.read_rows reads."""
     read_rows = read_continuous.read_rows
 
-    def wrapped(array, start, stop):
+    def wrapped(array, start, stop, fetch=None):
         before(array)
-        return read_rows(array, start, stop)
+        return read_rows(array, start, stop, fetch)
 
     monkeypatch.setattr(read_continuous, "read_rows", wrapped)
 
