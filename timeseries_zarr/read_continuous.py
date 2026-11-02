@@ -63,7 +63,12 @@ from timeseries_zarr.windows import (
     time_axis,
     window_bounds,
 )
-from timeseries_zarr.zarr_io import ZarrArray, ZarrGroup, read_rows
+from timeseries_zarr.zarr_io import (
+    RowsFetch,
+    ZarrArray,
+    ZarrGroup,
+    read_rows,
+)
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -618,14 +623,22 @@ class ContinuousChannel:
             start_us, end_us, table, self.offset_us, period, length
         )
 
-    def _read_raw(self, first: int, stop: int) -> npt.NDArray[Any]:
+    def _read_raw(
+        self, first: int, stop: int, fetch: RowsFetch | None = None
+    ) -> npt.NDArray[Any]:
         """Return raw samples first through stop - 1.
+
+        Args:
+            first: The first sample.
+            stop: The sample after the last one to read.
+            fetch: The bytes that fetch_rows returned for these samples, or
+                None to fetch them here.
 
         Raises:
             ValueError: If the channel has runs and a sample outside every
                 run is not NaN.
         """
-        values = read_rows(self.raw, first, stop)
+        values = read_rows(self.raw, first, stop, fetch)
         table = self.runs
         if table is not None:
             check_outside_runs(f"channel {self.index}", values, first, table)
@@ -673,6 +686,77 @@ def member_arrays(level: Level) -> dict[str, ZarrArray]:
     return {name: array for name, array in present.items() if array is not None}
 
 
+@dataclass(frozen=True, slots=True)
+class EntryPlan:
+    """The array and rows that read_entries reads.
+
+    Attributes:
+        first: The index of the first entry.
+        stop: The index after the last entry.
+        period_us: The width of one entry in microseconds.
+        array: The array that holds the entries.
+    """
+
+    first: int
+    stop: int
+    period_us: float
+    array: ZarrArray
+
+
+def plan_entries(
+    channel: ContinuousChannel,
+    start_us: int | None,
+    end_us: int | None,
+    number: int,
+    name: str,
+) -> EntryPlan:
+    """Return what read_entries reads, without reading it.
+
+    Raises:
+        ValueError: If the channel lacks the level or the level lacks name.
+    """
+    if number != 0 and number not in channel.levels:
+        raise ValueError(channel._level_choices())
+    first, stop = channel._index_range(start_us, end_us, number)
+    if number == 0:
+        return EntryPlan(first, stop, channel.period_us, channel.raw)
+    held = member_arrays(channel.levels[number])
+    array = held.get(name)
+    if array is None:
+        raise ValueError(
+            f"channel {channel.index} level {number} has members "
+            f"{tuple(held)!r}; name must be one of these, got {name!r}"
+        )
+    period_us = level_period_us(
+        channel.rate_hz, channel.levels[number].samples_per_bin
+    )
+    return EntryPlan(first, stop, period_us, array)
+
+
+def read_planned(
+    channel: ContinuousChannel,
+    plan: EntryPlan,
+    fetch: RowsFetch | None = None,
+) -> tuple[int, float, npt.NDArray[Any]]:
+    """Return first, period_us, and the rows of a plan from plan_entries.
+
+    Args:
+        channel: The channel that plan_entries planned.
+        plan: The result of plan_entries.
+        fetch: The bytes that fetch_rows returned for the rows of plan, or
+            None to fetch them here.
+
+    Raises:
+        ValueError: If the channel has runs and a raw sample outside every
+            run is not NaN.
+    """
+    if plan.array is channel.raw:
+        rows = channel._read_raw(plan.first, plan.stop, fetch)
+    else:
+        rows = read_rows(plan.array, plan.first, plan.stop, fetch)
+    return plan.first, plan.period_us, rows
+
+
 def read_entries(
     channel: ContinuousChannel,
     start_us: int | None,
@@ -686,22 +770,8 @@ def read_entries(
     member of level number, and minmax returns rows of shape (n, 2). Raises
     ValueError if the channel lacks the level or the level lacks name.
     """
-    if number != 0 and number not in channel.levels:
-        raise ValueError(channel._level_choices())
-    first, stop = channel._index_range(start_us, end_us, number)
-    if number == 0:
-        return first, channel.period_us, channel._read_raw(first, stop)
-    held = member_arrays(channel.levels[number])
-    array = held.get(name)
-    if array is None:
-        raise ValueError(
-            f"channel {channel.index} level {number} has members "
-            f"{tuple(held)!r}; name must be one of these, got {name!r}"
-        )
-    period_us = level_period_us(
-        channel.rate_hz, channel.levels[number].samples_per_bin
-    )
-    return first, period_us, read_rows(array, first, stop)
+    plan = plan_entries(channel, start_us, end_us, number, name)
+    return read_planned(channel, plan)
 
 
 def _gap_us(gap_us: SupportsIndex) -> int:

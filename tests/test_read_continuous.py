@@ -31,13 +31,16 @@ from timeseries_zarr.constants import (
     VAR_KEY,
 )
 from timeseries_zarr.planning import level_bins, level_period_us
+from timeseries_zarr.read_bundle import open_bundle
 from timeseries_zarr.read_continuous import (
     Bins,
     Level,
     Samples,
     parse_continuous_channel,
+    plan_entries,
+    read_planned,
 )
-from timeseries_zarr.zarr_io import descendants, open_root
+from timeseries_zarr.zarr_io import descendants, fetch_rows, open_root
 
 _HAND_RATE_HZ = 512.0
 _HAND_SAMPLES = 64
@@ -1497,3 +1500,37 @@ def test_the_runs_bundle_end_is_the_exact_end_of_the_last_run(runs_bundle):
     assert len(channel.read(channel.start_us, channel.end_us)) == (
         RUNS_GRID_LENGTH
     )
+
+
+@pytest.mark.parametrize(("number", "name"), [(0, RAW_KEY), (1, MINMAX_KEY)])
+@pytest.mark.parametrize("window", [(None, None), (300_000, 900_000)])
+def test_read_planned_matches_read_entries(odd_bundle, number, name, window):
+    with open_bundle(odd_bundle) as bundle:
+        channel = bundle.continuous[0]
+        expected = read_continuous.read_entries(channel, *window, number, name)
+        plan = plan_entries(channel, *window, number, name)
+        [fetch] = fetch_rows([(plan.array, plan.first, plan.stop)])
+        for fetched in (None, fetch):
+            first, period_us, rows = read_planned(channel, plan, fetched)
+            assert (first, period_us) == expected[:2]
+            assert rows.tobytes() == expected[2].tobytes()
+
+
+def test_plan_entries_names_the_rows_without_reading_them(odd_bundle):
+    with open_bundle(odd_bundle) as bundle:
+        channel = bundle.continuous[0]
+        raw = plan_entries(channel, None, None, 0, RAW_KEY)
+        assert raw.array is channel.raw
+        assert (raw.first, raw.stop) == (0, channel.num_samples)
+        level = plan_entries(channel, None, None, 1, MINMAX_KEY)
+        assert level.array is channel.levels[1].minmax
+        assert level.period_us == level_period_us(
+            channel.rate_hz, channel.levels[1].samples_per_bin
+        )
+
+
+def test_plan_entries_rejects_a_level_the_channel_lacks(odd_bundle):
+    with open_bundle(odd_bundle) as bundle:
+        channel = bundle.continuous[0]
+        with pytest.raises(ValueError, match="has levels"):
+            plan_entries(channel, None, None, 99, MINMAX_KEY)
