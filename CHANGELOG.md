@@ -42,3 +42,10 @@ shard files in batches, which opens each file fewer times.
 
 `Bundle.stack` and `stack_channels` read one array per channel and take
 `max_workers`, the number of threads that read the channels.
+
+The reader reads shards without zarr's sharding codec. It fetches the index of a shard
+once, keeps it in memory, and fetches and decodes only the chunks a read needs. A read
+of a cached shard sends one request. `Bundle.stack` fetches the shards of every channel
+in one store call. Chunks decode with `numcodecs` Zstd, which releases the GIL, so the
+reader adds no dependency. A process that holds a bundle open across a rewrite reads
+stale indexes.
