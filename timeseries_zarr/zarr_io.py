@@ -1,6 +1,8 @@
 """Zarr v3 calls for the writer and the reader."""
 
-from collections.abc import Mapping, Sequence
+import asyncio
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 from urllib.parse import urlsplit
@@ -10,7 +12,7 @@ import numpy as np
 import numpy.typing as npt
 import zarr
 from zarr import Array, Group
-from zarr.abc.store import Store
+from zarr.abc.store import RangeByteRequest, Store, SuffixByteRequest
 from zarr.buffer import default_buffer_prototype
 from zarr.codecs import BytesCodec, Crc32cCodec, ShardingCodec
 from zarr.codecs.zstd import ZstdCodec
@@ -25,6 +27,12 @@ from zarr.storage import FsspecStore, LocalStore, StorePath, WrapperStore
 from zarr.storage._common import make_store_path
 
 from timeseries_zarr.extras import missing_extra_message
+from timeseries_zarr.shard_read import (
+    ShardIndex,
+    chunk_span,
+    decode_chunks,
+    parse_index,
+)
 from timeseries_zarr.shards import (
     BufferShardSink,
     FileShardSink,
@@ -42,6 +50,34 @@ _LOCAL_HOSTS = ("", "localhost")
 _LOCAL_PROTOCOLS = frozenset({"file", "local"})
 _FSSPEC = "fsspec"
 _REMOTE_EXTRA = "remote"
+_INDEX_ENTRY_BYTES = 16
+_INDEX_CHECKSUM_BYTES = 4
+
+
+@dataclass(frozen=True, slots=True)
+class ReadLayout:
+    """How read_rows decodes the shards of an array itself.
+
+    Attributes:
+        path: The path of the array in its store.
+        dtype: The element type.
+        chunk_rows: The rows of one inner chunk.
+        chunks_per_shard: The chunk slots of one shard.
+        trailing_shape: The shape of one row.
+        length: The rows of the array.
+        fill_value: The value of a row that no chunk holds.
+        shard_path: The store path of the shard object with a given number
+            along axis 0.
+    """
+
+    path: str
+    dtype: np.dtype[Any]
+    chunk_rows: int
+    chunks_per_shard: int
+    trailing_shape: tuple[int, ...]
+    length: int
+    fill_value: Any
+    shard_path: Callable[[int], StorePath]
 
 
 def open_group(path: Path, attrs: dict[str, object] | None = None) -> Group:
@@ -383,6 +419,41 @@ def _zstd_level(
     return int(level)
 
 
+def read_layout(array: Array[Any]) -> ReadLayout | None:
+    """Return the layout that read_rows needs to decode array, or None.
+
+    An array has a layout when it holds the chain that shard_layout writes. The
+    store may be read-only.
+
+    Args:
+        array: The array to read.
+
+    Returns:
+        The layout, or None when the array is anything else. The array then
+        reads through zarr.
+    """
+    try:
+        chain = _check_chain(array)
+    except ValueError:
+        return None
+    metadata = chain.metadata
+    trailing = (0,) * (len(array.shape) - 1)
+
+    def shard_path(index: int) -> StorePath:
+        return array.store_path / metadata.encode_chunk_key((index, *trailing))
+
+    return ReadLayout(
+        path=array.path,
+        dtype=chain.dtype,
+        chunk_rows=chain.chunk_rows,
+        chunks_per_shard=chain.chunks_per_shard,
+        trailing_shape=array.shape[1:],
+        length=array.shape[0],
+        fill_value=np.asarray(metadata.fill_value).item(),
+        shard_path=shard_path,
+    )
+
+
 def write_region(
     array: Array[Any], start: int, block: npt.NDArray[Any]
 ) -> None:
@@ -563,6 +634,9 @@ def read_rows(array: Array[Any], start: int, stop: int) -> npt.NDArray[Any]:
     """Return rows start through stop - 1 of array.
 
     A stop past the last row returns the rows that exist, which may be none.
+    An array that has a layout from read_layout decodes its chunks in the
+    calling thread, and the result is a view of the decoded chunks. Any other
+    array reads through zarr.
 
     Args:
         array: The array to read.
@@ -570,13 +644,105 @@ def read_rows(array: Array[Any], start: int, stop: int) -> npt.NDArray[Any]:
         stop: The row after the last one to read.
 
     Raises:
-        ValueError: If start is negative or stop is less than start.
+        ValueError: If start is negative or stop is less than start, or if
+            a shard of the array is corrupt. The message names the array and
+            the shard.
     """
     if start < 0 or stop < start:
         raise ValueError(
             f"row range must have 0 <= start <= stop, got [{start}, {stop})"
         )
-    return np.asarray(array[start:stop])
+    layout = read_layout(array)
+    if layout is None:
+        return np.asarray(array[start:stop])
+    return _read_direct(layout, start, stop)
+
+
+def _read_direct(layout: ReadLayout, start: int, stop: int) -> npt.NDArray[Any]:
+    """Return rows [start, stop) of the array of layout, decoded here."""
+    stop = min(stop, layout.length)
+    if start >= stop:
+        return np.empty((0, *layout.trailing_shape), dtype=layout.dtype)
+    chunk_rows = layout.chunk_rows
+    shard_rows = chunk_rows * layout.chunks_per_shard
+    runs: list[tuple[int, int, int]] = []
+    for shard in range(start // shard_rows, (stop - 1) // shard_rows + 1):
+        base = shard * shard_rows
+        first_slot = (max(start, base) - base) // chunk_rows
+        stop_slot = -(-(min(stop, base + shard_rows) - base) // chunk_rows)
+        runs.append((shard, first_slot, stop_slot))
+    first_row = runs[0][0] * shard_rows + runs[0][1] * chunk_rows
+    end_row = runs[-1][0] * shard_rows + runs[-1][2] * chunk_rows
+    fetched = sync(_fetch_shards(layout, runs))
+    out = np.empty((end_row - first_row, *layout.trailing_shape), layout.dtype)
+    for (shard, first_slot, stop_slot), found in zip(
+        runs, fetched, strict=True
+    ):
+        begin = shard * shard_rows + first_slot * chunk_rows - first_row
+        target = out[begin : begin + (stop_slot - first_slot) * chunk_rows]
+        if found is None:
+            target[...] = layout.fill_value
+            continue
+        index, data_offset, data = found
+        decode_chunks(
+            data,
+            data_offset,
+            index,
+            first_slot,
+            stop_slot,
+            target,
+            layout.fill_value,
+            chunk_rows,
+            layout.path,
+            shard,
+        )
+    return out[start - first_row : stop - first_row]
+
+
+type _FetchedShard = tuple[ShardIndex, int, npt.NDArray[np.uint8]]
+
+
+async def _fetch_shards(
+    layout: ReadLayout, runs: Sequence[tuple[int, int, int]]
+) -> list[_FetchedShard | None]:
+    """Fetch the bytes of every run at once, one coroutine for each shard."""
+    return await asyncio.gather(*(_fetch_shard(layout, *run) for run in runs))
+
+
+async def _fetch_shard(
+    layout: ReadLayout, shard: int, first_slot: int, stop_slot: int
+) -> _FetchedShard | None:
+    """Fetch the bytes that decode the chunks of a run from a shard object.
+
+    A run of every slot takes the whole object in one request. Any other run
+    takes the index first, then one range that holds its chunks.
+
+    Returns:
+        The index, the offset of the data in the shard object, and the data.
+        None when the shard object is absent.
+    """
+    path = layout.shard_path(shard)
+    prototype = default_buffer_prototype()
+    slots = layout.chunks_per_shard
+    table_bytes = _INDEX_ENTRY_BYTES * slots + _INDEX_CHECKSUM_BYTES
+    if first_slot == 0 and stop_slot == slots:
+        whole = await path.get(prototype)
+        if whole is None:
+            return None
+        data = whole.as_numpy_array()
+        index = parse_index(data[-table_bytes:], slots, layout.path, shard)
+        return index, 0, data
+    table = await path.get(prototype, SuffixByteRequest(table_bytes))
+    if table is None:
+        return None
+    index = parse_index(table.as_numpy_array(), slots, layout.path, shard)
+    span = chunk_span(index, first_slot, stop_slot)
+    if span is None:
+        return index, 0, np.empty(0, dtype=np.uint8)
+    chunks = await path.get(prototype, RangeByteRequest(*span))
+    if chunks is None:
+        return None
+    return index, span[0], chunks.as_numpy_array()
 
 
 def read_int(array: Array[Any], index: int) -> int:

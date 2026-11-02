@@ -1,13 +1,24 @@
 import json
+import struct
+import subprocess
 import sys
+from pathlib import Path
 
+import google_crc32c
 import numpy as np
 import pytest
 import zarr
 from zarr import Array, Group
+from zarr.abc.store import RangeByteRequest
 from zarr.buffer import default_buffer_prototype
 from zarr.buffer.cpu import Buffer
-from zarr.codecs import ShardingCodec, ZstdCodec
+from zarr.codecs import (
+    BloscCodec,
+    BytesCodec,
+    GzipCodec,
+    ShardingCodec,
+    ZstdCodec,
+)
 from zarr.core.sync import sync
 from zarr.errors import ContainsGroupError, GroupNotFoundError
 from zarr.storage import (
@@ -19,6 +30,7 @@ from zarr.storage import (
     WrapperStore,
 )
 
+from timeseries_zarr import open_bundle
 from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.shards import ArrayWriter, BufferShardSink, FileShardSink
@@ -36,6 +48,7 @@ from timeseries_zarr.zarr_io import (
     open_root,
     open_store_path,
     read_int,
+    read_layout,
     read_rows,
     read_store_text,
     shard_layout,
@@ -1422,3 +1435,532 @@ def test_create_nodes_works_in_a_memory_store():
     )
     assert handles["0/raw"].shape == (8,)
     assert root["0"]["raw"].shape == (8,)
+
+
+CHUNK_ROWS = 64
+SHARD_ROWS = 256
+SLOT_COUNT = SHARD_ROWS // CHUNK_ROWS
+INDEX_BYTES = 16 * SLOT_COUNT + 4
+MISSING = 2**64 - 1
+ROOT = Path(__file__).resolve().parent.parent
+BUILD_FIXTURES = ROOT / "scripts" / "build_fixtures.py"
+CONFORMANCE = ROOT / "conformance"
+CONFORMANCE_FIXTURES = json.loads(
+    (CONFORMANCE / "manifest.json").read_text("utf-8")
+)["fixtures"]
+READABLE_CONFORMANCE = [
+    name for name, entry in CONFORMANCE_FIXTURES.items() if "channels" in entry
+]
+WINDOWS_PER_ARRAY = 500
+MAXIMUM_WINDOW_ROWS = 2000
+
+
+def zarr_rows(array, start, stop):
+    """Read rows through zarr, the way read_rows does for a foreign array."""
+    return np.asarray(array[start:stop])
+
+
+def assert_same(actual, expected, where=""):
+    """Check the dtype, the shape, and every byte, so NaN payloads count."""
+    assert actual.dtype == expected.dtype, where
+    assert actual.shape == expected.shape, where
+    assert actual.tobytes() == expected.tobytes(), where
+
+
+def random_values(length, dtype, trailing=(), seed=0):
+    """Return rows of random bit patterns, which include NaN payloads."""
+    rng = np.random.default_rng(seed)
+    dtype = np.dtype(dtype)
+    size = length * int(np.prod(trailing, dtype=int)) * dtype.itemsize
+    raw = rng.integers(0, 256, size, dtype=np.uint8)
+    return raw.view(dtype).reshape(length, *trailing)
+
+
+def filled_array(tmp_path, length, dtype=np.float32, trailing=(), seed=0):
+    """Write random rows into a sharded array in a local store and return it."""
+    values = random_values(length, dtype, trailing, seed)
+    shape = (length, *trailing)
+    array = sharded_array(
+        tmp_path,
+        shape,
+        dtype,
+        chunks=(CHUNK_ROWS, *trailing),
+        shards=(SHARD_ROWS, *trailing),
+    )
+    array[:] = values
+    return array
+
+
+def edge_windows(length):
+    """Return windows at the edges of chunks, shards, and the array."""
+    return [
+        (0, 0),
+        (5, 5),
+        (5, 6),
+        (0, 1),
+        (max(0, length - 1), length),
+        (0, CHUNK_ROWS),
+        (CHUNK_ROWS, CHUNK_ROWS + 10),
+        (10, 2 * CHUNK_ROWS),
+        (SHARD_ROWS - 6, SHARD_ROWS + 4),
+        (SHARD_ROWS - 3, 2 * SHARD_ROWS + 3),
+        (0, length),
+        (max(0, length - 3), length + 50),
+        (length + 5, length + 9),
+    ]
+
+
+def random_windows(length, seed):
+    """Return WINDOWS_PER_ARRAY seeded windows that may pass either end."""
+    rng = np.random.default_rng(seed)
+    starts = rng.integers(0, length + 3, WINDOWS_PER_ARRAY)
+    widths = rng.integers(
+        0, min(length, MAXIMUM_WINDOW_ROWS) + 3, WINDOWS_PER_ARRAY
+    )
+    return [(int(a), int(a + b)) for a, b in zip(starts, widths, strict=True)]
+
+
+def shard_file(array, shard):
+    """Return the path of a shard file of a rank-1 array in a local store."""
+    return Path(array.store_path.store.root) / array.path / "c" / str(shard)
+
+
+def rewrite_index(array, shard, edit):
+    """Edit the index of a shard file and store it again with a valid checksum.
+
+    edit receives the (slots, 2) uint64 table and changes it in place.
+    """
+    path = shard_file(array, shard)
+    data = bytearray(path.read_bytes())
+    table = (
+        np.frombuffer(bytes(data[-INDEX_BYTES:-4]), dtype="<u8")
+        .reshape(-1, 2)
+        .copy()
+    )
+    edit(table)
+    body = table.astype("<u8").tobytes()
+    data[-INDEX_BYTES:] = body + struct.pack("<I", google_crc32c.value(body))
+    path.write_bytes(bytes(data))
+
+
+def fail_on_decode(monkeypatch):
+    """Make any call of the shard decoder fail the test."""
+
+    def fail(*args, **kwargs):
+        raise AssertionError("the direct path ran")
+
+    monkeypatch.setattr("timeseries_zarr.zarr_io.decode_chunks", fail)
+
+
+class _VanishingStore(WrapperStore):
+    """Answer every ranged read of a chunk as if the object had gone."""
+
+    async def get(self, key, prototype, byte_range=None):
+        if isinstance(byte_range, RangeByteRequest):
+            return None
+        return await super().get(key, prototype, byte_range)
+
+
+def test_read_layout_describes_a_rank_1_array(tmp_path):
+    layout = read_layout(sharded_array(tmp_path, level=7))
+    assert layout.path == "raw"
+    assert layout.dtype == np.dtype(np.float32)
+    assert layout.chunk_rows == CHUNK_ROWS
+    assert layout.chunks_per_shard == SLOT_COUNT
+    assert layout.trailing_shape == ()
+    assert layout.length == 1000
+    assert np.isnan(layout.fill_value)
+
+
+def test_read_layout_describes_a_rank_2_array(tmp_path):
+    layout = read_layout(sharded_array(tmp_path, (500, 2), np.uint32))
+    assert layout.trailing_shape == (2,)
+    assert layout.length == 500
+    assert layout.fill_value == 0
+
+
+def test_read_layout_names_the_shard_object_of_each_shard(tmp_path):
+    flat = read_layout(sharded_array(tmp_path))
+    assert flat.shard_path(3).path == "raw/c/3"
+    wide = read_layout(sharded_array(tmp_path, (500, 2), name="wide"))
+    assert wide.shard_path(1).path == "wide/c/1/0"
+
+
+def test_read_layout_accepts_a_read_only_store(tmp_path):
+    sharded_array(tmp_path)
+    array = zarr.open_array(
+        LocalStore(tmp_path / "bundle", read_only=True), path="raw"
+    )
+    assert read_layout(array) is not None
+
+
+def test_read_layout_accepts_a_one_byte_dtype(tmp_path):
+    layout = read_layout(sharded_array(tmp_path, (500, 3), np.uint8))
+    assert layout.dtype == np.dtype(np.uint8)
+
+
+def _foreign_v2(tmp_path):
+    return zarr.create_array(
+        LocalStore(tmp_path / "v2"),
+        name="raw",
+        shape=(1000,),
+        chunks=(64,),
+        dtype=np.float32,
+        zarr_format=2,
+    )
+
+
+def _foreign_unsharded(tmp_path):
+    return open_group(tmp_path / "unsharded").create_array(
+        name="raw", shape=(1000,), chunks=(64,), dtype=np.float32
+    )
+
+
+def _foreign_gzip(tmp_path):
+    return open_group(tmp_path / "gzip").create_array(
+        name="raw",
+        shape=(1000,),
+        chunks=(64,),
+        shards=(256,),
+        dtype=np.float32,
+        compressors=GzipCodec(),
+    )
+
+
+def _foreign_blosc(tmp_path):
+    return open_group(tmp_path / "blosc").create_array(
+        name="raw",
+        shape=(1000,),
+        chunks=(64,),
+        shards=(256,),
+        dtype=np.float32,
+        compressors=BloscCodec(),
+    )
+
+
+def _foreign_index_at_start(tmp_path):
+    return rewrite_metadata(
+        sharded_array(tmp_path),
+        lambda text: text.replace(
+            '"index_location": "end"', '"index_location": "start"'
+        ),
+    )
+
+
+def _foreign_index_without_checksum(tmp_path):
+    return open_group(tmp_path / "bundle").create_array(
+        name="raw",
+        shape=(1000,),
+        chunks=(SHARD_ROWS,),
+        dtype=np.float32,
+        serializer=ShardingCodec(
+            chunk_shape=(CHUNK_ROWS,),
+            codecs=[BytesCodec(endian="little"), ZstdCodec(level=3)],
+            index_codecs=[BytesCodec(endian="little")],
+        ),
+        compressors=None,
+    )
+
+
+def _foreign_big_endian(tmp_path):
+    def edit(text):
+        head, tail = text.split('"codecs": [', 1)
+        return (
+            head
+            + '"codecs": ['
+            + tail.replace('"endian": "little"', '"endian": "big"', 1)
+        )
+
+    return rewrite_metadata(sharded_array(tmp_path), edit)
+
+
+def _foreign_chunked_trailing_axis(tmp_path):
+    return create_array(
+        open_group(tmp_path / "bundle"),
+        "raw",
+        (1000, 4),
+        np.float32,
+        (64, 2),
+        (256, 4),
+        {},
+        3,
+    )
+
+
+FOREIGN_ARRAYS = [
+    pytest.param(_foreign_v2, id="v2"),
+    pytest.param(_foreign_unsharded, id="no-sharding"),
+    pytest.param(_foreign_gzip, id="gzip"),
+    pytest.param(_foreign_blosc, id="blosc"),
+    pytest.param(_foreign_index_at_start, id="index-at-start"),
+    pytest.param(_foreign_index_without_checksum, id="index-without-checksum"),
+    pytest.param(_foreign_big_endian, id="big-endian"),
+    pytest.param(_foreign_chunked_trailing_axis, id="chunked-trailing-axis"),
+]
+
+
+@pytest.mark.parametrize("build", FOREIGN_ARRAYS)
+def test_read_layout_returns_none_for_a_foreign_array(build, tmp_path):
+    assert read_layout(build(tmp_path)) is None
+
+
+@pytest.mark.parametrize("build", FOREIGN_ARRAYS)
+def test_read_rows_reads_a_foreign_array_through_zarr(
+    build, tmp_path, monkeypatch
+):
+    array = build(tmp_path)
+    values = random_values(1000, np.float32, array.shape[1:], seed=5)
+    array[:] = values
+    fail_on_decode(monkeypatch)
+    for start, stop in [(0, 1000), (100, 300), (990, 2000), (7, 7)]:
+        assert_same(read_rows(array, start, stop), values[start:stop])
+
+
+@pytest.mark.parametrize(
+    ("dtype", "trailing"),
+    [
+        (np.float32, ()),
+        (np.float32, (2,)),
+        (np.uint32, ()),
+        (np.int64, ()),
+        (np.uint16, (3,)),
+        (np.uint8, (5,)),
+    ],
+)
+@pytest.mark.parametrize(
+    "length",
+    [
+        CHUNK_ROWS,
+        CHUNK_ROWS + 1,
+        SHARD_ROWS,
+        SHARD_ROWS + 1,
+        3 * SHARD_ROWS + CHUNK_ROWS // 2,
+    ],
+)
+def test_read_rows_matches_zarr_on_edge_windows(
+    length, dtype, trailing, tmp_path
+):
+    array = filled_array(tmp_path, length, dtype, trailing)
+    assert read_layout(array) is not None
+    for start, stop in edge_windows(length):
+        assert_same(
+            read_rows(array, start, stop),
+            zarr_rows(array, start, stop),
+            f"rows [{start}, {stop})",
+        )
+
+
+def test_read_rows_returns_an_empty_window_without_a_request(tmp_path):
+    filled_array(tmp_path, 1000, np.uint32, (2,))
+    store = _RecordingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    array = zarr.open_array(store, path="raw")
+    store.reads.clear()
+    for start, stop in [(0, 0), (500, 500), (1000, 1000), (1200, 1300)]:
+        rows = read_rows(array, start, stop)
+        assert rows.dtype == np.dtype(np.uint32)
+        assert rows.shape == (0, 2)
+    assert store.reads == []
+
+
+def test_read_rows_sends_two_requests_for_part_of_a_shard(tmp_path):
+    filled_array(tmp_path, 1000)
+    store = _RecordingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    array = zarr.open_array(store, path="raw")
+    store.reads.clear()
+    read_rows(array, 10, 20)
+    assert store.reads == ["raw/c/0", "raw/c/0"]
+
+
+def test_read_rows_sends_one_request_for_every_chunk_of_a_shard(tmp_path):
+    filled_array(tmp_path, 1000)
+    store = _RecordingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    array = zarr.open_array(store, path="raw")
+    store.reads.clear()
+    read_rows(array, 0, SHARD_ROWS)
+    assert store.reads == ["raw/c/0"]
+    store.reads.clear()
+    read_rows(array, 250, 520)
+    assert sorted(store.reads) == [
+        "raw/c/0",
+        "raw/c/0",
+        "raw/c/1",
+        "raw/c/2",
+        "raw/c/2",
+    ]
+
+
+def test_read_rows_returns_a_view_of_whole_chunks(tmp_path):
+    array = filled_array(tmp_path, 1000)
+    rows = read_rows(array, 70, 80)
+    assert rows.base is not None
+    assert rows.base.shape[0] % CHUNK_ROWS == 0
+    assert_same(rows, zarr_rows(array, 70, 80))
+
+
+BUNDLE_FIXTURES = ["full_bundle", "mixed_bundle", "runs_bundle", "odd_bundle"]
+
+
+@pytest.mark.parametrize("fixture", BUNDLE_FIXTURES)
+def test_read_rows_matches_zarr_on_every_array_of_a_bundle(fixture, request):
+    root = open_root(request.getfixturevalue(fixture))
+    _, arrays = descendants(root)
+    assert arrays
+    try:
+        for path, array in arrays.items():
+            whole = zarr_rows(array, 0, array.shape[0])
+            length = array.shape[0]
+            windows = edge_windows(length) + random_windows(length, 11)
+            for start, stop in windows:
+                assert_same(
+                    read_rows(array, start, stop),
+                    whole[start:stop],
+                    f"{fixture}/{path} rows [{start}, {stop})",
+                )
+    finally:
+        close_store(root)
+
+
+def _read_everything(channel, windows):
+    """Return the arrays of a raw read of each window and of every level."""
+    results = [channel.read(start, stop).values for start, stop in windows]
+    for number in channel.levels:
+        bins = channel.read(level=number)
+        results.extend(
+            part
+            for part in (bins.min, bins.max, bins.mean, bins.var, bins.count)
+            if part is not None
+        )
+    return results
+
+
+@pytest.fixture(scope="module")
+def built_conformance(tmp_path_factory):
+    directory = tmp_path_factory.mktemp("conformance") / "conformance"
+    subprocess.run(
+        [sys.executable, str(BUILD_FIXTURES), str(directory)],
+        check=True,
+        capture_output=True,
+    )
+    return directory
+
+
+@pytest.mark.parametrize("name", READABLE_CONFORMANCE)
+def test_a_conformance_channel_reads_the_same_through_both_paths(
+    name, built_conformance, monkeypatch
+):
+    path = built_conformance / CONFORMANCE_FIXTURES[name]["path"]
+    rng = np.random.default_rng(3)
+    with open_bundle(path) as bundle:
+        for channel in bundle.continuous.values():
+            span = max(1, channel.raw.shape[0]) * int(1e6 / channel.rate_hz + 1)
+            starts = rng.integers(-span // 4, span, 100)
+            widths = rng.integers(0, span, 100)
+            windows = [(int(a), int(a + b)) for a, b in zip(starts, widths)]
+            windows.append((None, None))
+            direct = _read_everything(channel, windows)
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    "timeseries_zarr.zarr_io.read_layout", lambda array: None
+                )
+                expected = _read_everything(channel, windows)
+            assert len(direct) == len(expected)
+            for actual, wanted in zip(direct, expected, strict=True):
+                assert_same(actual, wanted, f"{name}/{channel.index}")
+
+
+def test_read_rows_fills_a_shard_object_that_is_absent(tmp_path):
+    array = filled_array(tmp_path, 1000)
+    shard_file(array, 1).unlink()
+    for start, stop in [(0, 1000), (260, 300), (200, 300)]:
+        assert_same(
+            read_rows(array, start, stop), zarr_rows(array, start, stop)
+        )
+    assert np.isnan(read_rows(array, 260, 300)).all()
+
+
+def test_read_rows_fills_a_chunk_slot_that_the_index_marks_missing(tmp_path):
+    array = filled_array(tmp_path, 1000, np.uint32)
+
+    def drop_second_slot(table):
+        table[1] = (MISSING, MISSING)
+
+    rewrite_index(array, 1, drop_second_slot)
+    rows = read_rows(array, 0, 1000)
+    assert_same(rows, zarr_rows(array, 0, 1000))
+    assert (
+        rows[SHARD_ROWS + CHUNK_ROWS : SHARD_ROWS + 2 * CHUNK_ROWS] == 0
+    ).all()
+
+
+def test_read_rows_fills_a_run_whose_slots_are_all_missing(tmp_path):
+    array = filled_array(tmp_path, 1000)
+
+    def drop_all(table):
+        table[:] = (MISSING, MISSING)
+
+    rewrite_index(array, 0, drop_all)
+    rows = read_rows(array, 10, 100)
+    assert_same(rows, zarr_rows(array, 10, 100))
+    assert np.isnan(rows).all()
+
+
+def test_read_rows_fills_rows_in_shards_the_writer_never_created(tmp_path):
+    values = random_values(1000, np.float32, seed=2)
+    group = open_group(tmp_path / "bundle")
+    array = create_array(
+        group, "raw", (1000,), np.float32, (CHUNK_ROWS,), (SHARD_ROWS,), {}, 3
+    )
+    write_region(array, 0, values[: 2 * SHARD_ROWS])
+    assert not shard_file(array, 2).exists()
+    rows = read_rows(array, 400, 1000)
+    assert_same(rows, zarr_rows(array, 400, 1000))
+    assert np.isnan(rows[2 * SHARD_ROWS - 400 :]).all()
+
+
+def test_read_rows_fills_a_shard_that_vanishes_between_its_requests(tmp_path):
+    filled_array(tmp_path, 1000)
+    store = _VanishingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    array = zarr.open_array(store, path="raw")
+    assert np.isnan(read_rows(array, 10, 20)).all()
+
+
+def _flip_index_bit(array):
+    path = shard_file(array, 1)
+    data = bytearray(path.read_bytes())
+    data[-10] ^= 0x01
+    path.write_bytes(bytes(data))
+
+
+def _truncate_shard(array):
+    path = shard_file(array, 1)
+    path.write_bytes(path.read_bytes()[:-1])
+
+
+def _push_entry_past_the_end(array):
+    def edit(table):
+        table[3, 1] += 100
+
+    rewrite_index(array, 1, edit)
+
+
+def _cut_a_frame_short(array):
+    def edit(table):
+        table[2, 1] -= 3
+
+    rewrite_index(array, 1, edit)
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(_flip_index_bit, id="flipped-index-bit"),
+        pytest.param(_truncate_shard, id="truncated-shard"),
+        pytest.param(_push_entry_past_the_end, id="entry-past-the-end"),
+        pytest.param(_cut_a_frame_short, id="short-frame"),
+    ],
+)
+def test_read_rows_names_the_array_and_shard_of_corrupt_data(corrupt, tmp_path):
+    array = filled_array(tmp_path, 1000)
+    corrupt(array)
+    with pytest.raises(ValueError, match=r"shard 1 of array raw"):
+        read_rows(array, 0, 1000)
