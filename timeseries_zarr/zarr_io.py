@@ -26,9 +26,11 @@ from zarr.core.sync import sync
 from zarr.storage import FsspecStore, LocalStore, StorePath, WrapperStore
 from zarr.storage._common import make_store_path
 
+from timeseries_zarr.constants import SHARD_INDEX_CACHE_BYTES
 from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.shard_read import (
     ShardIndex,
+    ShardIndexCache,
     chunk_span,
     decode_chunks,
     parse_index,
@@ -52,6 +54,7 @@ _FSSPEC = "fsspec"
 _REMOTE_EXTRA = "remote"
 _INDEX_ENTRY_BYTES = 16
 _INDEX_CHECKSUM_BYTES = 4
+_SHARD_INDEXES = ShardIndexCache(SHARD_INDEX_CACHE_BYTES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -714,8 +717,9 @@ async def _fetch_shard(
 ) -> _FetchedShard | None:
     """Fetch the bytes that decode the chunks of a run from a shard object.
 
-    A run of every slot takes the whole object in one request. Any other run
-    takes the index first, then one range that holds its chunks.
+    A run of every slot of a shard with no cached index takes the whole object
+    in one request. Any other run takes the index first, unless the cache holds
+    it, then one range that holds its chunks.
 
     Returns:
         The index, the offset of the data in the shard object, and the data.
@@ -725,17 +729,21 @@ async def _fetch_shard(
     prototype = default_buffer_prototype()
     slots = layout.chunks_per_shard
     table_bytes = _INDEX_ENTRY_BYTES * slots + _INDEX_CHECKSUM_BYTES
-    if first_slot == 0 and stop_slot == slots:
-        whole = await path.get(prototype)
-        if whole is None:
+    index = _SHARD_INDEXES.get(path.store, layout.path, shard)
+    if index is None:
+        if first_slot == 0 and stop_slot == slots:
+            whole = await path.get(prototype)
+            if whole is None:
+                return None
+            data = whole.as_numpy_array()
+            index = parse_index(data[-table_bytes:], slots, layout.path, shard)
+            _SHARD_INDEXES.put(path.store, layout.path, shard, index)
+            return index, 0, data
+        table = await path.get(prototype, SuffixByteRequest(table_bytes))
+        if table is None:
             return None
-        data = whole.as_numpy_array()
-        index = parse_index(data[-table_bytes:], slots, layout.path, shard)
-        return index, 0, data
-    table = await path.get(prototype, SuffixByteRequest(table_bytes))
-    if table is None:
-        return None
-    index = parse_index(table.as_numpy_array(), slots, layout.path, shard)
+        index = parse_index(table.as_numpy_array(), slots, layout.path, shard)
+        _SHARD_INDEXES.put(path.store, layout.path, shard, index)
     span = chunk_span(index, first_slot, stop_slot)
     if span is None:
         return index, 0, np.empty(0, dtype=np.uint8)
@@ -847,5 +855,9 @@ def _protocols(protocol: str | Sequence[str]) -> tuple[str, ...]:
 
 
 def close_store(group: Group) -> None:
-    """Close the store that holds group. A second call has no effect."""
+    """Close the store that holds group. A second call has no effect.
+
+    The reader drops the shard indexes it holds for the store.
+    """
+    _SHARD_INDEXES.evict_store(group.store)
     group.store.close()
