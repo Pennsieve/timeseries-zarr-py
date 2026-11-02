@@ -2,7 +2,7 @@
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
 
@@ -269,21 +269,8 @@ def shard_layout(array: Array[Any]) -> ShardLayout:
             codec chain is not the chain above, or if an axis after the first
             is split into several chunks or shards.
     """
-    metadata = array.metadata
-    if not isinstance(metadata, ArrayV3Metadata):
-        raise ValueError(
-            f"{array.path} must be a Zarr v3 array, got format "
-            f"{metadata.zarr_format}"
-        )
-    dtype = np.dtype(array.dtype)
-    zstd_level = _zstd_level(array.path, metadata, dtype)
-    chunks = array.chunks
-    shards = array.shards
-    if shards is None or not (chunks[1:] == shards[1:] == array.shape[1:]):
-        raise ValueError(
-            f"{array.path} must hold whole rows in every chunk and shard, "
-            f"got shape {array.shape}, chunks {chunks}, shards {shards}"
-        )
+    chain = _check_chain(array)
+    metadata = chain.metadata
     store = array.store_path.store
     if store.read_only:
         raise ValueError(f"the store of {array.path} is read-only")
@@ -303,14 +290,53 @@ def shard_layout(array: Array[Any]) -> ShardLayout:
         return BufferShardSink(save)
 
     return ShardLayout(
-        dtype=dtype,
-        chunk_rows=chunks[0],
-        chunks_per_shard=shards[0] // chunks[0],
+        dtype=chain.dtype,
+        chunk_rows=chain.chunk_rows,
+        chunks_per_shard=chain.chunks_per_shard,
         trailing_shape=array.shape[1:],
         length=array.shape[0],
-        zstd_level=zstd_level,
+        zstd_level=chain.zstd_level,
         fill_value=fill_value,
         open_sink=open_sink,
+    )
+
+
+class _Chain(NamedTuple):
+    """The facts of an array whose codec chain is the one shards.py writes."""
+
+    metadata: ArrayV3Metadata
+    dtype: np.dtype[Any]
+    zstd_level: int
+    chunk_rows: int
+    chunks_per_shard: int
+
+
+def _check_chain(array: Array[Any]) -> _Chain:
+    """Return the facts of array when it holds the chain shards.py writes.
+
+    The chain is v3 metadata and the codecs that _zstd_level checks, with whole
+    rows in every chunk and shard.
+
+    Raises:
+        ValueError: If the array is not that chain.
+    """
+    metadata = array.metadata
+    if not isinstance(metadata, ArrayV3Metadata):
+        raise ValueError(
+            f"{array.path} must be a Zarr v3 array, got format "
+            f"{metadata.zarr_format}"
+        )
+    dtype = np.dtype(array.dtype)
+    zstd_level = _zstd_level(array.path, metadata, dtype)
+    chunks = array.chunks
+    shards = array.shards
+    if shards is None or not (chunks[1:] == shards[1:] == array.shape[1:]):
+        raise ValueError(
+            f"{array.path} must hold whole rows in every chunk and shard, "
+            f"got shape {array.shape}, chunks {chunks}, shards {shards}"
+        )
+    return _Chain(
+        metadata, dtype, zstd_level, chunks[0], shards[0] // chunks[0]
     )
 
 
