@@ -271,6 +271,11 @@ invalid array shape, raises `ValueError` naming the channel. A channel group of 
 A location without a root `zarr.json` raises `FileNotFoundError`, and a location
 whose root is an array raises `ValueError`.
 
+The reader keeps the shard indexes of an open bundle in memory, up to 64 MiB
+(`SHARD_INDEX_CACHE_BYTES`). A read of a shard whose index it holds sends one request for
+the chunks it needs. A process that holds a bundle open across a rewrite of the same
+location reads stale indexes. Reopen the bundle after a rewrite.
+
 ## Times
 
 Every window bound is an integer count of microseconds from the reference time,

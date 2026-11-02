@@ -163,6 +163,16 @@ channels that share a grid into one array. `sources.py` wraps the channels of an
 bundle as writer sources for `write_bundle`, which then rewrites the bundle or a subset
 of it.
 
+`read_rows` in `zarr_io.py` reads every raw, level, and event column array. An array
+that holds the chain `shards.py` writes, which `read_layout` checks, reads through
+`shard_read.py`. The module parses the shard index, finds the byte range of the chunks
+a read needs, and decodes them in the calling thread with `numcodecs`. It never imports
+zarr. `zarr_io.py` fetches the range through the zarr store and keeps the shard indexes
+of an open bundle in a cache of `SHARD_INDEX_CACHE_BYTES`. `close_store` drops them. An
+array with any other chain, the `runs` array, and `read_int` read through zarr.
+`fetch_rows` fetches the shards of many reads in one store call. `stack_channels` plans
+every channel, fetches once, then decodes the channels on its thread pool.
+
 ## Validation
 
 `validator.py` holds `validate_bundle`, which checks a bundle against sections 8.3 and 8.4
