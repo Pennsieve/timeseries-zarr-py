@@ -8,7 +8,7 @@ import pytest
 
 from tests.conftest import ODD_OFFSET_US, write_pair_bundle
 from tests.test_read_continuous import _hand_build, _hand_nodes
-from timeseries_zarr import read_continuous
+from timeseries_zarr import read_continuous, zarr_io
 from timeseries_zarr.convert import CHANNEL_DIMENSION, TIME_COLUMN
 from timeseries_zarr.extras import missing_extra_message
 from timeseries_zarr.read_bundle import open_bundle
@@ -623,3 +623,74 @@ def test_stack_conversion_without_its_package_names_the_extra(
     with pytest.raises(ImportError, match=re.escape(message)) as info:
         getattr(_stack(), method)()
     assert info.value.name == package
+
+
+_PAIR_OPTIONS = [
+    {},
+    {"level": 1, "member": "min"},
+    {"level": 1, "member": "mean"},
+    {"level": 1, "member": "count"},
+]
+
+
+@pytest.mark.parametrize("max_workers", [1, 3])
+@pytest.mark.parametrize("options", _PAIR_OPTIONS)
+@pytest.mark.parametrize(
+    ("start_us", "end_us"),
+    [(None, None), (500_000, 2_500_000), (1_000_000, None)],
+)
+def test_stack_matches_the_zarr_path(
+    pair, monkeypatch, options, max_workers, start_us, end_us
+):
+    batched = pair.stack(
+        [0, 1], start_us, end_us, **options, max_workers=max_workers
+    )
+    monkeypatch.setattr(
+        "timeseries_zarr.zarr_io.read_layout", lambda array: None
+    )
+    expected = pair.stack(
+        [0, 1], start_us, end_us, **options, max_workers=max_workers
+    )
+    assert batched.values.tobytes() == expected.values.tobytes()
+    _assert_same_stack(batched, expected)
+
+
+@pytest.mark.parametrize("max_workers", [1, 4])
+def test_stack_waits_for_the_store_once(odd, monkeypatch, max_workers):
+    calls = []
+    real = zarr_io.sync
+
+    def counting(coroutine):
+        calls.append(coroutine)
+        return real(coroutine)
+
+    monkeypatch.setattr(zarr_io, "sync", counting)
+    odd.stack([0, 2], max_workers=max_workers)
+    assert len(calls) == 1
+
+
+def test_stack_of_one_channel_waits_for_the_store_once(odd, monkeypatch):
+    calls = []
+    real = zarr_io.sync
+
+    def counting(coroutine):
+        calls.append(coroutine)
+        return real(coroutine)
+
+    monkeypatch.setattr(zarr_io, "sync", counting)
+    odd.stack([2], level=1, member="max")
+    assert len(calls) == 1
+
+
+def test_stack_fetches_before_it_decodes(odd, monkeypatch):
+    events = []
+    real = zarr_io.sync
+
+    def recording(coroutine):
+        events.append("fetch")
+        return real(coroutine)
+
+    monkeypatch.setattr(zarr_io, "sync", recording)
+    _wrap_reads(monkeypatch, lambda array: events.append("decode"))
+    odd.stack([0, 2], max_workers=1)
+    assert events == ["fetch", "decode", "decode"]
