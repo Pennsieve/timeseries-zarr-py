@@ -633,7 +633,56 @@ def descendants(
     return groups, arrays
 
 
-def read_rows(array: Array[Any], start: int, stop: int) -> npt.NDArray[Any]:
+type _FetchedShard = tuple[ShardIndex, int, npt.NDArray[np.uint8]]
+
+
+@dataclass(frozen=True, slots=True)
+class _DirectPlan:
+    """The shards and slots that a row range touches.
+
+    Attributes:
+        start: The first row, clipped to the array.
+        stop: The row after the last one, clipped to the array.
+        runs: The shard number, first slot, and stop slot of each shard.
+        first_row: The first row of the first run.
+        end_row: The row after the last row of the last run.
+    """
+
+    start: int
+    stop: int
+    runs: tuple[tuple[int, int, int], ...]
+    first_row: int
+    end_row: int
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class RowsFetch:
+    """The shard bytes of one read_rows request, fetched ahead of the decode.
+
+    Attributes:
+        array: The array to read.
+        start: The first row of the request.
+        stop: The row after the last one of the request.
+        layout: The layout of array.
+        plan: The shards and slots the request touches, or None when the
+            request holds no rows.
+        shards: The fetched bytes of each run of plan, in order.
+    """
+
+    array: Array[Any]
+    start: int
+    stop: int
+    layout: ReadLayout
+    plan: _DirectPlan | None
+    shards: list[_FetchedShard | None]
+
+
+def read_rows(
+    array: Array[Any],
+    start: int,
+    stop: int,
+    fetch: RowsFetch | None = None,
+) -> npt.NDArray[Any]:
     """Return rows start through stop - 1 of array.
 
     A stop past the last row returns the rows that exist, which may be none.
@@ -645,27 +694,85 @@ def read_rows(array: Array[Any], start: int, stop: int) -> npt.NDArray[Any]:
         array: The array to read.
         start: The first row.
         stop: The row after the last one to read.
+        fetch: The bytes that fetch_rows returned for this array, start, and
+            stop. None fetches them here.
 
     Raises:
-        ValueError: If start is negative or stop is less than start, or if
-            a shard of the array is corrupt. The message names the array and
-            the shard.
+        ValueError: If start is negative or stop is less than start, if fetch
+            belongs to another request, or if a shard of the array is
+            corrupt. The message names the array and the shard.
     """
+    _check_row_range(start, stop)
+    if fetch is None:
+        layout = read_layout(array)
+        if layout is None:
+            return np.asarray(array[start:stop])
+        plan = _plan_direct(layout, start, stop)
+        shards = sync(_fetch_shards(layout, plan.runs)) if plan else []
+        fetch = RowsFetch(array, start, stop, layout, plan, shards)
+    elif fetch.array is not array or (fetch.start, fetch.stop) != (start, stop):
+        raise ValueError(
+            f"fetch holds rows [{fetch.start}, {fetch.stop}) of array "
+            f"{fetch.layout.path}, expected rows [{start}, {stop}) of array "
+            f"{array.path}"
+        )
+    return _decode_direct(fetch)
+
+
+def fetch_rows(
+    requests: Sequence[tuple[Array[Any], int, int]],
+) -> list[RowsFetch | None]:
+    """Fetch the shard bytes of several read_rows requests in one store call.
+
+    Each request is an array with the start and stop of read_rows. The fetches
+    of every request run together in one call to the store.
+
+    Args:
+        requests: The array, start, and stop of each read.
+
+    Returns:
+        One entry per request. An array with no layout from read_layout gets
+        None, and read_rows then reads it through zarr. Pass every other
+        entry to read_rows with the same array, start, and stop.
+
+    Raises:
+        ValueError: If a start is negative or a stop is less than its start,
+            or if a shard is corrupt. The message names the array and the
+            shard.
+    """
+    planned: list[
+        tuple[int, Array[Any], int, int, ReadLayout, _DirectPlan | None]
+    ] = []
+    for position, (array, start, stop) in enumerate(requests):
+        _check_row_range(start, stop)
+        layout = read_layout(array)
+        if layout is not None:
+            plan = _plan_direct(layout, start, stop)
+            planned.append((position, array, start, stop, layout, plan))
+    runs = [(item[4], item[5].runs) for item in planned if item[5] is not None]
+    fetched = iter(sync(_fetch_all(runs)) if runs else [])
+    results: list[RowsFetch | None] = [None] * len(requests)
+    for position, array, start, stop, layout, plan in planned:
+        shards = next(fetched) if plan is not None else []
+        results[position] = RowsFetch(array, start, stop, layout, plan, shards)
+    return results
+
+
+def _check_row_range(start: int, stop: int) -> None:
+    """Raise ValueError unless 0 <= start <= stop."""
     if start < 0 or stop < start:
         raise ValueError(
             f"row range must have 0 <= start <= stop, got [{start}, {stop})"
         )
-    layout = read_layout(array)
-    if layout is None:
-        return np.asarray(array[start:stop])
-    return _read_direct(layout, start, stop)
 
 
-def _read_direct(layout: ReadLayout, start: int, stop: int) -> npt.NDArray[Any]:
-    """Return rows [start, stop) of the array of layout, decoded here."""
+def _plan_direct(
+    layout: ReadLayout, start: int, stop: int
+) -> _DirectPlan | None:
+    """Return the shards that rows [start, stop) touch, or None if none."""
     stop = min(stop, layout.length)
     if start >= stop:
-        return np.empty((0, *layout.trailing_shape), dtype=layout.dtype)
+        return None
     chunk_rows = layout.chunk_rows
     shard_rows = chunk_rows * layout.chunks_per_shard
     runs: list[tuple[int, int, int]] = []
@@ -674,14 +781,29 @@ def _read_direct(layout: ReadLayout, start: int, stop: int) -> npt.NDArray[Any]:
         first_slot = (max(start, base) - base) // chunk_rows
         stop_slot = -(-(min(stop, base + shard_rows) - base) // chunk_rows)
         runs.append((shard, first_slot, stop_slot))
-    first_row = runs[0][0] * shard_rows + runs[0][1] * chunk_rows
-    end_row = runs[-1][0] * shard_rows + runs[-1][2] * chunk_rows
-    fetched = sync(_fetch_shards(layout, runs))
-    out = np.empty((end_row - first_row, *layout.trailing_shape), layout.dtype)
+    return _DirectPlan(
+        start,
+        stop,
+        tuple(runs),
+        runs[0][0] * shard_rows + runs[0][1] * chunk_rows,
+        runs[-1][0] * shard_rows + runs[-1][2] * chunk_rows,
+    )
+
+
+def _decode_direct(fetch: RowsFetch) -> npt.NDArray[Any]:
+    """Return the rows of a fetched request, decoded here."""
+    layout, plan = fetch.layout, fetch.plan
+    if plan is None:
+        return np.empty((0, *layout.trailing_shape), dtype=layout.dtype)
+    chunk_rows = layout.chunk_rows
+    shard_rows = chunk_rows * layout.chunks_per_shard
+    out = np.empty(
+        (plan.end_row - plan.first_row, *layout.trailing_shape), layout.dtype
+    )
     for (shard, first_slot, stop_slot), found in zip(
-        runs, fetched, strict=True
+        plan.runs, fetch.shards, strict=True
     ):
-        begin = shard * shard_rows + first_slot * chunk_rows - first_row
+        begin = shard * shard_rows + first_slot * chunk_rows - plan.first_row
         target = out[begin : begin + (stop_slot - first_slot) * chunk_rows]
         if found is None:
             target[...] = layout.fill_value
@@ -699,10 +821,7 @@ def _read_direct(layout: ReadLayout, start: int, stop: int) -> npt.NDArray[Any]:
             layout.path,
             shard,
         )
-    return out[start - first_row : stop - first_row]
-
-
-type _FetchedShard = tuple[ShardIndex, int, npt.NDArray[np.uint8]]
+    return out[plan.start - plan.first_row : plan.stop - plan.first_row]
 
 
 async def _fetch_shards(
@@ -710,6 +829,17 @@ async def _fetch_shards(
 ) -> list[_FetchedShard | None]:
     """Fetch the bytes of every run at once, one coroutine for each shard."""
     return await asyncio.gather(*(_fetch_shard(layout, *run) for run in runs))
+
+
+async def _fetch_all(
+    reads: Sequence[tuple[ReadLayout, Sequence[tuple[int, int, int]]]],
+) -> list[list[_FetchedShard | None]]:
+    """Fetch the runs of several arrays at once."""
+    return list(
+        await asyncio.gather(
+            *(_fetch_shards(layout, runs) for layout, runs in reads)
+        )
+    )
 
 
 async def _fetch_shard(
