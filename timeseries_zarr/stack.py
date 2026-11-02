@@ -31,9 +31,11 @@ from timeseries_zarr.convert import (
 from timeseries_zarr.read_continuous import (
     ContinuousChannel,
     member_arrays,
-    read_entries,
+    plan_entries,
+    read_planned,
 )
 from timeseries_zarr.windows import integer_argument, time_axis, window_bounds
+from timeseries_zarr.zarr_io import fetch_rows
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -272,8 +274,9 @@ def stack_channels(
         level: The level to read. Level 0 reads the raw samples and ignores
             member.
         member: The statistic to read from the bins of a level of at least 1.
-        max_workers: The number of threads that read the channels. 1 reads
-            them in order on the calling thread.
+        max_workers: The number of threads that decode the channels. 1
+            decodes them in order on the calling thread. One call to the store
+            fetches the bytes of every channel first.
 
     Raises:
         ValueError: If two channels share an index, if check_shared_grid rejects
@@ -289,20 +292,28 @@ def stack_channels(
     start, end = window_bounds(start_us, end_us)
     name, column = (RAW_KEY, None) if number == 0 else _MEMBER_ARRAYS[member]
 
-    def read_one(
-        channel: ContinuousChannel,
-    ) -> tuple[int, float, npt.NDArray[Any]]:
-        first, period_us, rows = read_entries(channel, start, end, number, name)
+    plans = [
+        plan_entries(channel, start, end, number, name) for channel in channels
+    ]
+    fetches = fetch_rows(
+        [(plan.array, plan.first, plan.stop) for plan in plans]
+    )
+
+    def read_one(position: int) -> tuple[int, float, npt.NDArray[Any]]:
+        first, period_us, rows = read_planned(
+            channels[position], plans[position], fetches[position]
+        )
         if column is not None:
             rows = rows[:, column]
         return first, period_us, rows
 
     workers = min(count, len(channels))
+    positions = range(len(channels))
     if workers == 1:
-        results = [read_one(channel) for channel in channels]
+        results = [read_one(position) for position in positions]
     else:
         with ThreadPoolExecutor(workers) as executor:
-            results = list(executor.map(read_one, channels))
+            results = list(executor.map(read_one, positions))
     rows = [row for _, _, row in results]
     # The channels share one grid and differ only in length. A channel that
     # ends before the window reads nothing, and every other read starts at

@@ -321,8 +321,9 @@ class Bundle:
                 is then None. A level of at least 1 reads member from the
                 bins of that level.
             member: The bin member to read at a level of at least 1.
-            max_workers: The number of threads that read the channels. 1 reads
-                them in order on the calling thread.
+            max_workers: The number of threads that decode the channels. 1
+                decodes them in order on the calling thread. One call to the
+                store fetches the bytes of every channel first.
 
         Returns:
             The stacked window.
