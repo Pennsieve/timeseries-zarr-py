@@ -885,16 +885,22 @@ def write_continuous_channels(
         batch: list[Window] = []
         rows = 0
         size = 0
-        for index, window in enumerate(source.iter_windows()):
-            # The copy of a rank-2 window runs while the last jobs encode.
-            blocks = _window_blocks(window, index, len(writers))
-            batch.append(blocks)
-            rows += max(_block_length(block) for block in blocks)
-            size += _window_bytes(blocks)
-            if rows >= WINDOW_BATCH_ROWS or size >= WINDOW_BATCH_BYTES:
-                _wait_for(jobs)
-                jobs = _dispatch(pool, writers, batch)
-                batch, rows, size = [], 0, 0
+        try:
+            for index, window in enumerate(source.iter_windows()):
+                # The copy of a rank-2 window runs while the last jobs encode.
+                blocks = _window_blocks(window, index, len(writers))
+                batch.append(blocks)
+                rows += max(_block_length(block) for block in blocks)
+                size += _window_bytes(blocks)
+                if rows >= WINDOW_BATCH_ROWS or size >= WINDOW_BATCH_BYTES:
+                    _wait_for(jobs)
+                    jobs = _dispatch(pool, writers, batch)
+                    batch, rows, size = [], 0, 0
+        except BaseException:
+            # Dispatched jobs finish, so the shards written do not depend on
+            # how many of them had started when the error arrived.
+            wait([future for _, future in jobs])
+            raise
         _wait_for(jobs)
         if batch:
             _wait_for(_dispatch(pool, writers, batch))
