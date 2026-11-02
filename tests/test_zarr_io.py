@@ -35,7 +35,7 @@ from zarr.storage import (
 
 from tests.conftest import ArrayContinuousSource
 from tests.test_bundle import _SPEC_OPTS
-from timeseries_zarr import open_bundle
+from timeseries_zarr import open_bundle, zarr_io
 from timeseries_zarr.attrs import root_attrs
 from timeseries_zarr.bundle import write_bundle
 from timeseries_zarr.extras import missing_extra_message
@@ -51,6 +51,7 @@ from timeseries_zarr.zarr_io import (
     create_group_with_attrs,
     create_nodes,
     descendants,
+    fetch_rows,
     group_metadata,
     open_group,
     open_root,
@@ -2302,3 +2303,213 @@ def test_32_threads_read_random_windows_of_one_channel_as_zarr_does(
         for thread in threads:
             thread.join()
     assert errors == []
+
+
+BATCH_SHAPES = [
+    (CHUNK_ROWS, np.float32, ()),
+    (SHARD_ROWS + 1, np.float32, (2,)),
+    (3 * SHARD_ROWS + CHUNK_ROWS // 2, np.uint32, ()),
+    (SHARD_ROWS, np.int64, ()),
+]
+
+
+def batch_arrays(tmp_path):
+    """Return one sharded array for each entry of BATCH_SHAPES."""
+    return [
+        filled_array(tmp_path / f"array{number}", length, dtype, trailing)
+        for number, (length, dtype, trailing) in enumerate(BATCH_SHAPES)
+    ]
+
+
+def read_through_fetch(requests):
+    """Return read_rows of each request that fetch_rows fetched together."""
+    fetches = fetch_rows(requests)
+    return [
+        read_rows(array, start, stop, fetch)
+        for (array, start, stop), fetch in zip(requests, fetches, strict=True)
+    ]
+
+
+def test_fetch_rows_matches_zarr_on_edge_windows(tmp_path):
+    arrays = batch_arrays(tmp_path)
+    for position in range(len(edge_windows(1000))):
+        requests = [
+            (array, *edge_windows(array.shape[0])[position]) for array in arrays
+        ]
+        for (array, start, stop), rows in zip(
+            requests, read_through_fetch(requests), strict=True
+        ):
+            assert_same(
+                rows,
+                zarr_rows(array, start, stop),
+                f"{array.path} rows [{start}, {stop})",
+            )
+
+
+def test_fetch_rows_matches_zarr_on_random_windows(tmp_path):
+    arrays = batch_arrays(tmp_path)
+    windows = [
+        random_windows(array.shape[0], 20 + n) for n, array in enumerate(arrays)
+    ]
+    for position in range(WINDOWS_PER_ARRAY):
+        requests = [
+            (array, *windows[number][position])
+            for number, array in enumerate(arrays)
+        ]
+        for (array, start, stop), rows in zip(
+            requests, read_through_fetch(requests), strict=True
+        ):
+            assert_same(rows, zarr_rows(array, start, stop))
+
+
+def test_fetch_rows_matches_zarr_on_one_array_in_many_windows(tmp_path):
+    array = filled_array(tmp_path, 1000)
+    requests = [(array, start, stop) for start, stop in edge_windows(1000)]
+    for (_, start, stop), rows in zip(
+        requests, read_through_fetch(requests), strict=True
+    ):
+        assert_same(rows, zarr_rows(array, start, stop))
+
+
+def test_fetch_rows_returns_nothing_for_a_foreign_array(tmp_path):
+    foreign = _foreign_gzip(tmp_path)
+    values = random_values(1000, np.float32, seed=5)
+    foreign[:] = values
+    sharded = filled_array(tmp_path / "sharded", 1000)
+    fetches = fetch_rows([(foreign, 10, 50), (sharded, 10, 50)])
+    assert fetches[0] is None
+    assert fetches[1] is not None
+    assert_same(read_rows(foreign, 10, 50), values[10:50])
+
+
+def test_fetch_rows_of_no_requests_returns_no_fetches():
+    assert fetch_rows([]) == []
+
+
+def test_fetch_rows_sends_no_request_for_an_empty_window(tmp_path):
+    filled_array(tmp_path, 1000, np.uint32, (2,))
+    store = _RecordingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    array = zarr.open_array(store, path="raw")
+    store.reads.clear()
+    requests = [(array, 0, 0), (array, 1000, 1000), (array, 1200, 1300)]
+    for rows in read_through_fetch(requests):
+        assert rows.dtype == np.dtype(np.uint32)
+        assert rows.shape == (0, 2)
+    assert store.reads == []
+
+
+def test_fetch_rows_waits_for_the_store_once(tmp_path, monkeypatch):
+    arrays = batch_arrays(tmp_path)
+    calls = []
+    real = zarr_io.sync
+
+    def counting(coroutine):
+        calls.append(coroutine)
+        return real(coroutine)
+
+    monkeypatch.setattr(zarr_io, "sync", counting)
+    requests = [(array, 10, array.shape[0]) for array in arrays]
+    fetches = fetch_rows(requests)
+    assert len(calls) == 1
+    for (array, start, stop), fetch in zip(requests, fetches, strict=True):
+        read_rows(array, start, stop, fetch)
+    assert len(calls) == 1
+
+
+def test_read_rows_with_a_fetch_sends_no_request(tmp_path):
+    filled_array(tmp_path, 1000)
+    store = _RecordingStore(LocalStore(tmp_path / "bundle", read_only=True))
+    array = zarr.open_array(store, path="raw")
+    [fetch] = fetch_rows([(array, 10, 700)])
+    store.reads.clear()
+    read_rows(array, 10, 700, fetch)
+    assert store.reads == []
+
+
+def test_read_rows_decodes_a_fetch_on_the_calling_thread(tmp_path):
+    array = filled_array(tmp_path, 1000)
+    [fetch] = fetch_rows([(array, 10, 700)])
+    threads = []
+
+    def decode():
+        threads.append(threading.get_ident())
+        return read_rows(array, 10, 700, fetch)
+
+    worker = threading.Thread(target=decode)
+    worker.start()
+    worker.join()
+    assert threads == [worker.ident]
+
+
+def test_fetch_rows_fills_a_shard_object_that_is_absent(tmp_path):
+    array = filled_array(tmp_path, 1000)
+    shard_file(array, 1).unlink()
+    requests = [(array, 0, 1000), (array, 260, 300)]
+    for (_, start, stop), rows in zip(
+        requests, read_through_fetch(requests), strict=True
+    ):
+        assert_same(rows, zarr_rows(array, start, stop))
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(_flip_index_bit, id="flipped-index-bit"),
+        pytest.param(_truncate_shard, id="truncated-shard"),
+    ],
+)
+def test_fetch_rows_names_the_array_and_shard_of_a_corrupt_index(
+    corrupt, tmp_path
+):
+    array = filled_array(tmp_path, 1000)
+    other = filled_array(tmp_path / "other", 1000)
+    corrupt(array)
+    with pytest.raises(ValueError, match=r"shard 1 of array raw"):
+        fetch_rows([(other, 0, 1000), (array, 0, 1000)])
+
+
+@pytest.mark.parametrize(
+    "corrupt",
+    [
+        pytest.param(_push_entry_past_the_end, id="entry-past-the-end"),
+        pytest.param(_cut_a_frame_short, id="short-frame"),
+    ],
+)
+def test_read_rows_names_the_array_and_shard_of_a_corrupt_chunk_after_a_fetch(
+    corrupt, tmp_path
+):
+    array = filled_array(tmp_path, 1000)
+    corrupt(array)
+    [fetch] = fetch_rows([(array, 0, 1000)])
+    with pytest.raises(ValueError, match=r"shard 1 of array raw"):
+        read_rows(array, 0, 1000, fetch)
+
+
+def test_fetch_rows_rejects_a_negative_start(tmp_path):
+    array = filled_array(tmp_path, 1000)
+    with pytest.raises(ValueError, match=r"0 <= start <= stop, got \[-2, 3\)"):
+        fetch_rows([(array, 0, 5), (array, -2, 3)])
+
+
+def test_fetch_rows_rejects_a_stop_below_the_start(tmp_path):
+    array = filled_array(tmp_path, 1000)
+    with pytest.raises(ValueError, match=r"got \[5, 4\)"):
+        fetch_rows([(array, 5, 4)])
+
+
+@pytest.mark.parametrize(
+    ("start", "stop"), [(10, 701), (11, 700), (0, 700), (10, 1000)]
+)
+def test_read_rows_rejects_a_fetch_of_other_rows(tmp_path, start, stop):
+    array = filled_array(tmp_path, 1000)
+    [fetch] = fetch_rows([(array, 10, 700)])
+    with pytest.raises(ValueError, match=r"fetch holds rows \[10, 700\)"):
+        read_rows(array, start, stop, fetch)
+
+
+def test_read_rows_rejects_a_fetch_of_another_array(tmp_path):
+    array = filled_array(tmp_path / "a", 1000)
+    other = filled_array(tmp_path / "b", 1000)
+    [fetch] = fetch_rows([(array, 10, 700)])
+    with pytest.raises(ValueError, match=r"fetch holds rows"):
+        read_rows(other, 10, 700, fetch)
