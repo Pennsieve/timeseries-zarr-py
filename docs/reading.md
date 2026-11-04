@@ -283,13 +283,19 @@ and a time before it is negative. The [numeric conventions](./spec.md#23-numeric
 the specification defines the reference time. A window bound, `level`, `bins`,
 and `gap_us` each take an `int` or a numpy integer. A `float` raises `TypeError`.
 
-A continuous read stores `offset_us`, `first`, and `period_us` in its result.
-Entry `i` of the result starts at `offset_us + (first + i) * period_us` microseconds
-on the sample grid, and `time_us` computes that for every entry. A raw read of a
-channel that has [runs](#runs) gives the exact time of each recorded sample instead.
+A continuous read stores `offset_us`, `first`, and `rate_hz` in its result. A
+level read and a stack also store `samples_per_bin`. The `period_us` of a result
+follows from these fields. Entry `i` of the result starts at the grid time of
+sample `(first + i) * samples_per_bin`, and `time_us` computes that for every
+entry. A raw read of a channel that has [runs](#runs) gives the exact time of
+each recorded sample instead.
 
-`time_us` is float64. A sample period of `1e6 / rate_hz` microseconds
-is rarely a whole number, and at 256 Hz it is 3906.25 microseconds.
+`time_us` is float64. For `n = (first + i) * samples_per_bin`, each time is
+`offset_us + ((n * 1e6) / rate_hz)`, the order that the
+[numeric conventions](./spec.md#23-numeric-conventions) of the specification
+give. Multiplying `n` by `period_us` instead can differ in the last bit. A
+sample period of `1e6 / rate_hz` microseconds is rarely a whole number, and at
+256 Hz it is 3906.25 microseconds.
 
 Event times are int64 microseconds, as stored. Every stored time, duration, and
 interval end lies in the open interval (-2^53, 2^53) microseconds. The reader raises
@@ -480,7 +486,8 @@ with open_bundle("example.zarr") as bundle:
     samples = channel.read(124_990_000, 125_010_000)
     print(samples.first, samples.values)
     indices = samples.first + np.arange(len(samples))
-    print(samples.time_us - (channel.offset_us + indices * channel.period_us))
+    grid_us = channel.offset_us + (indices * 1e6) / channel.rate_hz
+    print(samples.time_us - grid_us)
     print(channel.spans(level=0))
     print(channel.spans(level=1))
 ```
