@@ -1220,6 +1220,25 @@ def test_sample_times_are_exact_across_a_resume():
     assert samples.time_s[7] == 0.0067
 
 
+def test_sample_times_of_runs_follow_the_evaluation_order_of_the_spec():
+    rate_hz = 30_000.0
+    raw = np.zeros(400, np.float32)
+    raw[200:260] = np.nan
+    attributes = continuous_channel_attrs(
+        "fast", "fast-0", rate_hz, 0, "uV", None
+    )
+    nodes = {
+        RAW_KEY: raw,
+        RUNS_KEY: np.array([[0, 200, 0], [260, 140, 8690]], dtype=np.int64),
+    }
+    samples = _hand_parse(nodes, attributes).read()
+    expected = [
+        (i * 1e6) / rate_hz if i < 260 else 8690 + ((i - 260) * 1e6) / rate_hz
+        for i in range(400)
+    ]
+    assert samples.time_us.tolist() == expected
+
+
 def test_samples_in_the_gap_take_their_grid_time_and_stay_in_order():
     rows = ((0, 4, 0), (7, 3, 7300))
     times = _gap_channel(rows=rows).read().time_us

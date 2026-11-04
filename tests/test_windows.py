@@ -899,6 +899,23 @@ def test_run_time_axis_of_no_samples_is_empty():
     assert run_time_axis(4, 0, 0, 1000.0, _RUN_TABLE).shape == (0,)
 
 
+def test_run_time_axis_follows_the_evaluation_order_of_the_spec():
+    rate_hz = 30_000.0
+    table = np.array([[0, 100, 5], [150, 100, 5009]], dtype=np.int64)
+    axis = run_time_axis(0, 250, 10, rate_hz, table)
+    expected = [
+        5 + (i * 1e6) / rate_hz
+        if i < 100
+        else 10 + (i * 1e6) / rate_hz
+        if i < 150
+        else 5009 + ((i - 150) * 1e6) / rate_hz
+        for i in range(250)
+    ]
+    assert axis.tolist() == expected
+    rounded = 5 + np.arange(100) * (1e6 / rate_hz)
+    assert np.count_nonzero(axis[:100] != rounded) > 0
+
+
 def test_run_time_axis_is_strictly_increasing_across_a_late_resume():
     axis = run_time_axis(0, 10, 0, 1000.0, _LATE_TABLE)
     assert np.all(np.diff(axis) > 0)
