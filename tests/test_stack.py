@@ -64,7 +64,8 @@ def _stack(units=("uV", "uV")):
         member="mean",
         offset_us=500,
         first=4,
-        period_us=31250.0,
+        rate_hz=512.0,
+        samples_per_bin=16,
         values=np.array([[1.0, 2.0, 3.0], [4.0, np.nan, 6.0]], np.float32),
     )
 
@@ -214,8 +215,7 @@ def test_time_us_counts_from_first_and_offset_us(odd):
     np.testing.assert_array_equal(stack.time_us, expected)
 
 
-def test_time_us_at_30_khz_derives_each_time_from_its_own_index():
-    period_us = 1e6 / 30000
+def test_time_us_at_30_khz_follows_the_evaluation_order_of_the_spec():
     stack = Stack(
         indices=(0,),
         names=("LA1",),
@@ -224,13 +224,36 @@ def test_time_us_at_30_khz_derives_each_time_from_its_own_index():
         member=None,
         offset_us=123,
         first=7,
-        period_us=period_us,
+        rate_hz=30_000.0,
+        samples_per_bin=1,
         values=np.zeros((1, 1000), np.float32),
     )
-    np.testing.assert_array_equal(
-        stack.time_us, 123 + (7 + np.arange(1000)) * period_us
-    )
+    expected = [123 + (i * 1e6) / 30_000.0 for i in range(7, 1007)]
+    assert stack.time_us.tolist() == expected
     np.testing.assert_array_equal(stack.time_s, stack.time_us / 1e6)
+
+
+def test_time_us_of_a_level_starts_each_entry_at_its_first_sample():
+    stack = Stack(
+        indices=(0,),
+        names=("LA1",),
+        units=("uV",),
+        level=2,
+        member="mean",
+        offset_us=-40,
+        first=3,
+        rate_hz=24414.0625,
+        samples_per_bin=16,
+        values=np.zeros((1, 1000), np.float32),
+    )
+    expected = [-40 + ((16 * i) * 1e6) / 24414.0625 for i in range(3, 1003)]
+    assert stack.time_us.tolist() == expected
+
+
+def test_period_us_is_the_duration_of_one_entry():
+    raw = dataclasses.replace(_stack(), level=0, member=None, samples_per_bin=1)
+    assert raw.period_us == 1953.125
+    assert _stack().period_us == 31250.0
 
 
 def test_columns_hold_time_us_then_one_row_per_decimal_index(odd):

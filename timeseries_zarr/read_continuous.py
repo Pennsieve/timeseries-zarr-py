@@ -53,6 +53,7 @@ from timeseries_zarr.windows import (
     check_level_numbers,
     check_not_string,
     duration_us,
+    grid_time_axis,
     index_range,
     integer_argument,
     merge_spans,
@@ -60,7 +61,6 @@ from timeseries_zarr.windows import (
     run_index_range,
     run_time_axis,
     select_level,
-    time_axis,
     window_bounds,
 )
 from timeseries_zarr.zarr_io import (
@@ -83,14 +83,14 @@ _LEVEL_MEMBERS: Final = (MINMAX_KEY, MEAN_KEY, VAR_KEY, COUNT_KEY)
 class Samples:
     """Raw samples of a continuous channel in a window.
 
-    Sample first + i is values[i]. It is at offset_us + (first + i) *
-    period_us microseconds from the reference time, or at the time that runs
-    gives when the channel has runs. A NaN value is a gap.
+    Sample first + i is values[i]. Its time is the grid time of that sample
+    in microseconds from the reference time, or the time that runs gives when
+    the channel has runs. A NaN value is a gap.
 
     Attributes:
         offset_us: The time of sample 0 of the channel in microseconds.
         first: The index of the first sample in the window.
-        period_us: The spacing of the samples in microseconds.
+        rate_hz: The sample rate of the channel in hertz.
         values: The sample values.
         runs: The runs table of the channel, or None when the channel has
             none. It is an int64 array of shape (runs, 3) that holds the
@@ -100,9 +100,14 @@ class Samples:
 
     offset_us: int
     first: int
-    period_us: float
+    rate_hz: float
     values: npt.NDArray[np.floating[Any]]
     runs: npt.NDArray[np.int64] | None = None
+
+    @property
+    def period_us(self) -> float:
+        """The spacing of the samples in microseconds."""
+        return sample_period_us(self.rate_hz)
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
@@ -112,8 +117,8 @@ class Samples:
         is NaN and is at its grid time.
         """
         if self.runs is None:
-            return time_axis(
-                self.first, len(self), self.offset_us, self.period_us
+            return grid_time_axis(
+                self.first, len(self), self.offset_us, self.rate_hz
             )
         return run_time_axis(
             self.first, len(self), self.offset_us, self.period_us, self.runs
@@ -156,16 +161,17 @@ class Samples:
 class Bins:
     """Statistics of the bins of one level in a window.
 
-    Entry i describes bin first + i, which starts at offset_us + (first + i)
-    * period_us microseconds from the reference time. Every statistic covers
-    the finite samples of the bin. A bin with no finite sample has count 0 and
-    NaN statistics.
+    Entry i describes bin first + i, which starts at the grid time of sample
+    (first + i) * samples_per_bin in microseconds from the reference time.
+    Every statistic covers the finite samples of the bin. A bin with no
+    finite sample has count 0 and NaN statistics.
 
     Attributes:
         level: The level number.
         offset_us: The time of sample 0 of the channel in microseconds.
         first: The index of the first bin in the window.
-        period_us: The bin width in microseconds.
+        rate_hz: The sample rate of the channel in hertz.
+        samples_per_bin: The raw samples that each bin folds.
         min: The minimum of each bin, the first column of minmax.
         max: The maximum of each bin, the second column of minmax.
         mean: The mean of each bin. None when the level does not hold it or
@@ -179,7 +185,8 @@ class Bins:
     level: int
     offset_us: int
     first: int
-    period_us: float
+    rate_hz: float
+    samples_per_bin: int
     min: npt.NDArray[np.floating[Any]]
     max: npt.NDArray[np.floating[Any]]
     mean: npt.NDArray[np.floating[Any]] | None
@@ -187,9 +194,20 @@ class Bins:
     count: npt.NDArray[np.integer[Any]] | None
 
     @property
+    def period_us(self) -> float:
+        """The bin width in microseconds."""
+        return level_period_us(self.rate_hz, self.samples_per_bin)
+
+    @property
     def time_us(self) -> npt.NDArray[np.float64]:
         """Start time of each bin in microseconds from the reference time."""
-        return time_axis(self.first, len(self), self.offset_us, self.period_us)
+        return grid_time_axis(
+            self.first,
+            len(self),
+            self.offset_us,
+            self.rate_hz,
+            self.samples_per_bin,
+        )
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
@@ -424,7 +442,7 @@ class ContinuousChannel:
             return Samples(
                 offset_us=self.offset_us,
                 first=first,
-                period_us=self.period_us,
+                rate_hz=self.rate_hz,
                 values=self._read_raw(first, stop),
                 runs=self.runs,
             )
@@ -434,7 +452,8 @@ class ContinuousChannel:
             level=number,
             offset_us=self.offset_us,
             first=first,
-            period_us=level_period_us(self.rate_hz, chosen.samples_per_bin),
+            rate_hz=self.rate_hz,
+            samples_per_bin=chosen.samples_per_bin,
             min=minmax[:, 0],
             max=minmax[:, 1],
             mean=_read_member(chosen.mean, MEAN_KEY, selected, first, stop),
@@ -693,13 +712,13 @@ class EntryPlan:
     Attributes:
         first: The index of the first entry.
         stop: The index after the last entry.
-        period_us: The width of one entry in microseconds.
+        samples_per_bin: The raw samples that one entry spans.
         array: The array that holds the entries.
     """
 
     first: int
     stop: int
-    period_us: float
+    samples_per_bin: int
     array: ZarrArray
 
 
@@ -719,7 +738,7 @@ def plan_entries(
         raise ValueError(channel._level_choices())
     first, stop = channel._index_range(start_us, end_us, number)
     if number == 0:
-        return EntryPlan(first, stop, channel.period_us, channel.raw)
+        return EntryPlan(first, stop, 1, channel.raw)
     held = member_arrays(channel.levels[number])
     array = held.get(name)
     if array is None:
@@ -727,18 +746,16 @@ def plan_entries(
             f"channel {channel.index} level {number} has members "
             f"{tuple(held)!r}; name must be one of these, got {name!r}"
         )
-    period_us = level_period_us(
-        channel.rate_hz, channel.levels[number].samples_per_bin
-    )
-    return EntryPlan(first, stop, period_us, array)
+    width = channel.levels[number].samples_per_bin
+    return EntryPlan(first, stop, width, array)
 
 
 def read_planned(
     channel: ContinuousChannel,
     plan: EntryPlan,
     fetch: RowsFetch | None = None,
-) -> tuple[int, float, npt.NDArray[Any]]:
-    """Return first, period_us, and the rows of a plan from plan_entries.
+) -> tuple[int, int, npt.NDArray[Any]]:
+    """Return first, samples_per_bin, and the rows of a plan from plan_entries.
 
     Args:
         channel: The channel that plan_entries planned.
@@ -754,7 +771,7 @@ def read_planned(
         rows = channel._read_raw(plan.first, plan.stop, fetch)
     else:
         rows = read_rows(plan.array, plan.first, plan.stop, fetch)
-    return plan.first, plan.period_us, rows
+    return plan.first, plan.samples_per_bin, rows
 
 
 def read_entries(
@@ -763,8 +780,8 @@ def read_entries(
     end_us: int | None,
     number: int,
     name: str,
-) -> tuple[int, float, npt.NDArray[Any]]:
-    """Return first, period_us, and the rows of one array in a window.
+) -> tuple[int, int, npt.NDArray[Any]]:
+    """Return first, samples_per_bin, and the rows of one array in a window.
 
     number 0 reads the raw samples and ignores name. Otherwise name is the
     member of level number, and minmax returns rows of shape (n, 2). Raises

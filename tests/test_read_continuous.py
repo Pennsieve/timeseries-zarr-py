@@ -316,6 +316,30 @@ def test_read_places_30_khz_samples_and_bins_on_the_exact_grid():
     assert channel.read(4000, 8000, level=1).first == 30
 
 
+def test_read_times_follow_the_evaluation_order_of_the_spec():
+    rate_hz = 24414.0625
+    attributes = continuous_channel_attrs(
+        "fast", "fast-0", rate_hz, 250, "uV", None
+    )
+    nodes = {
+        RAW_KEY: np.zeros(5000, np.float32),
+        "1": level_group_attrs(level_period_us(rate_hz, 4)),
+        f"1/{MINMAX_KEY}": np.zeros((1250, 2), np.float32),
+    }
+    channel = _hand_parse(nodes, attributes)
+    samples = channel.read()
+    bins = channel.read(level=1)
+    assert samples.time_us.tolist() == [
+        250 + (i * 1e6) / rate_hz for i in range(5000)
+    ]
+    assert samples.time_us[4998] == 250 + 204718.08
+    assert bins.time_us.tolist() == [
+        250 + ((4 * i) * 1e6) / rate_hz for i in range(1250)
+    ]
+    assert bins.period_us == level_period_us(rate_hz, 4)
+    assert samples.period_us == 1e6 / rate_hz
+
+
 def test_read_before_the_channel_is_empty(odd_bundle):
     samples = _channel(odd_bundle, 5).read(0, 1_000_000)
     assert (samples.first, len(samples)) == (0, 0)
@@ -1302,10 +1326,10 @@ def test_a_value_between_two_runs_fails_a_stack_read_that_covers_it():
 
 def test_a_stack_read_of_raw_stays_on_the_grid_when_the_channel_has_runs():
     channel = _gap_channel()
-    first, period_us, rows = read_continuous.read_entries(
+    first, samples_per_bin, rows = read_continuous.read_entries(
         channel, 6700, 7700, 0, RAW_KEY
     )
-    assert (first, period_us, len(rows)) == (6, 1000.0, 2)
+    assert (first, samples_per_bin, len(rows)) == (6, 1, 2)
 
 
 def test_a_runs_array_of_the_wrong_dtype_fails_at_parse():
@@ -1511,8 +1535,8 @@ def test_read_planned_matches_read_entries(odd_bundle, number, name, window):
         plan = plan_entries(channel, *window, number, name)
         [fetch] = fetch_rows([(plan.array, plan.first, plan.stop)])
         for fetched in (None, fetch):
-            first, period_us, rows = read_planned(channel, plan, fetched)
-            assert (first, period_us) == expected[:2]
+            first, samples_per_bin, rows = read_planned(channel, plan, fetched)
+            assert (first, samples_per_bin) == expected[:2]
             assert rows.tobytes() == expected[2].tobytes()
 
 
@@ -1522,11 +1546,10 @@ def test_plan_entries_names_the_rows_without_reading_them(odd_bundle):
         raw = plan_entries(channel, None, None, 0, RAW_KEY)
         assert raw.array is channel.raw
         assert (raw.first, raw.stop) == (0, channel.num_samples)
+        assert raw.samples_per_bin == 1
         level = plan_entries(channel, None, None, 1, MINMAX_KEY)
         assert level.array is channel.levels[1].minmax
-        assert level.period_us == level_period_us(
-            channel.rate_hz, channel.levels[1].samples_per_bin
-        )
+        assert level.samples_per_bin == channel.levels[1].samples_per_bin
 
 
 def test_plan_entries_rejects_a_level_the_channel_lacks(odd_bundle):

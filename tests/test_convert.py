@@ -29,7 +29,7 @@ def _samples():
     return Samples(
         offset_us=1000,
         first=2,
-        period_us=1953.125,
+        rate_hz=512.0,
         values=np.array([1.5, np.nan, -2.0], dtype=np.float32),
     )
 
@@ -42,7 +42,8 @@ def _bins(*, full=True):
         level=2,
         offset_us=500,
         first=4,
-        period_us=31250.0,
+        rate_hz=512.0,
+        samples_per_bin=16,
         min=np.array([-1.0, np.nan], dtype=np.float32),
         max=np.array([3.0, np.nan], dtype=np.float32),
         mean=optional([0.5, np.nan], np.float32),

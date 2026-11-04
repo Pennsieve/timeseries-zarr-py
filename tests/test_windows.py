@@ -18,6 +18,7 @@ from timeseries_zarr.windows import (
     check_not_string,
     duration_us,
     entry_time,
+    grid_time_axis,
     index_range,
     integer_argument,
     merge_spans,
@@ -405,6 +406,46 @@ def test_time_axis_adds_the_offset():
 
 def test_time_axis_of_no_entries_is_empty():
     times = time_axis(5, 0, 0, 1953.125)
+    assert times.shape == (0,)
+    assert times.dtype == np.float64
+
+
+def test_grid_time_axis_multiplies_the_index_before_it_divides():
+    times = grid_time_axis(4998, 1, 0, 24414.0625)
+    assert times.tolist() == [204718.08]
+    assert 4998 * (1e6 / 24414.0625) != 204718.08
+
+
+@pytest.mark.parametrize("rate_hz", [30_000.0, 24414.0625, 32_000.0])
+def test_grid_time_axis_follows_the_evaluation_order_of_the_spec(rate_hz):
+    times = grid_time_axis(7, 1000, 123, rate_hz)
+    expected = [123 + (i * 1e6) / rate_hz for i in range(7, 1007)]
+    assert times.dtype == np.float64
+    assert times.tolist() == expected
+
+
+@pytest.mark.parametrize("rate_hz", [30_000.0, 24414.0625])
+def test_grid_time_axis_places_a_bin_at_the_time_of_its_first_sample(rate_hz):
+    times = grid_time_axis(3, 1000, -500, rate_hz, 16)
+    expected = [-500 + ((16 * i) * 1e6) / rate_hz for i in range(3, 1003)]
+    assert times.tolist() == expected
+
+
+def test_grid_time_axis_differs_from_the_rounded_period_at_30_khz():
+    times = grid_time_axis(0, 10_000, 0, 30_000.0)
+    rounded = np.arange(10_000) * (1e6 / 30_000.0)
+    assert np.count_nonzero(times != rounded) > 0
+    assert np.max(np.abs(times - rounded)) <= 1e-8
+
+
+@pytest.mark.parametrize("rate_hz", [512.0, 1000.0, 2000.0])
+def test_grid_time_axis_equals_the_multiple_of_an_exact_period(rate_hz):
+    times = grid_time_axis(0, 5000, 0, rate_hz, 4)
+    np.testing.assert_array_equal(times, np.arange(5000) * (4 * 1e6 / rate_hz))
+
+
+def test_grid_time_axis_of_no_entries_is_empty():
+    times = grid_time_axis(5, 0, 0, 30_000.0, 4)
     assert times.shape == (0,)
     assert times.dtype == np.float64
 
