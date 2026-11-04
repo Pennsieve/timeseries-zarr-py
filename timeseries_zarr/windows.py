@@ -3,7 +3,8 @@
 A grid holds equal-width entries. The raw samples of a channel form one grid,
 and so do the bins of each level and of each count level. Entry i of a grid
 starts at offset_us + i * period microseconds from the reference time. Index
-arithmetic is exact in Fraction, and a computed time axis is float64. The
+arithmetic is exact in Fraction. A computed time axis is float64 and follows
+the evaluation order of the specification. The
 module also checks the integer arguments of a read and parses the decimal
 names of channel groups and level groups. It checks a label range and a
 column name argument, and builds the error for an array of the wrong layout.
@@ -303,13 +304,40 @@ def run_time_axis(
     return np.where(inside, exact, grid)
 
 
+def grid_time_axis(
+    first: int,
+    count: int,
+    offset_us: int,
+    rate_hz: float,
+    samples_per_bin: int = 1,
+) -> npt.NDArray[np.float64]:
+    """Return the start time in microseconds of count grid entries.
+
+    Entry i starts at the grid time of sample samples_per_bin * i. Each time
+    derives from its own index and follows the evaluation order of section
+    2.3 of the specification, so a time can differ in the last bit from a
+    multiple of the rounded period.
+
+    Args:
+        first: The index of the first entry.
+        count: The number of entries.
+        offset_us: The time of sample 0 of the channel.
+        rate_hz: The sample rate of the channel in hertz.
+        samples_per_bin: The samples in one entry. It is 1 for raw samples.
+    """
+    indices = np.arange(first, first + count, dtype=np.float64)
+    scaled = indices * samples_per_bin * MICROSECONDS_PER_SECOND
+    return offset_us + scaled / rate_hz
+
+
 def time_axis(
     first: int, count: int, offset_us: int, period_us: float
 ) -> npt.NDArray[np.float64]:
     """Return the start time in microseconds of count entries from index first.
 
     Each time derives from its own index and carries no rounding error
-    accumulated along the axis.
+    accumulated along the axis. A grid whose period is a stored attribute
+    uses this function. A grid of samples or bins uses grid_time_axis.
 
     Args:
         first: The index of the first entry.

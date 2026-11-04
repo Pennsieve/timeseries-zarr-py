@@ -28,13 +28,18 @@ from timeseries_zarr.convert import (
     stack_to_dataframe,
     stack_to_xarray,
 )
+from timeseries_zarr.planning import level_period_us, sample_period_us
 from timeseries_zarr.read_continuous import (
     ContinuousChannel,
     member_arrays,
     plan_entries,
     read_planned,
 )
-from timeseries_zarr.windows import integer_argument, time_axis, window_bounds
+from timeseries_zarr.windows import (
+    grid_time_axis,
+    integer_argument,
+    window_bounds,
+)
 from timeseries_zarr.zarr_io import fetch_rows
 
 if TYPE_CHECKING:
@@ -62,9 +67,10 @@ _MEMBER_ARRAYS: Final[dict[BinMember, tuple[str, int | None]]] = {
 class Stack:
     """Windows of several continuous channels on one shared grid.
 
-    Entry j of a row is sample or bin first + j, which starts at offset_us +
-    (first + j) * period_us microseconds from the reference time. A row holds
-    NaN past the end of its channel, or 0 when member is count.
+    Entry j of a row is sample or bin first + j, which starts at the grid
+    time of sample (first + j) * samples_per_bin in microseconds from the
+    reference time. A row holds NaN past the end of its channel, or 0 when
+    member is count.
 
     Attributes:
         indices: The channel indices, one for each row of values.
@@ -75,7 +81,9 @@ class Stack:
         offset_us: The time of sample or bin 0, in microseconds from the
             reference time.
         first: The index of the first entry of each row.
-        period_us: The duration of one entry in microseconds.
+        rate_hz: The sample rate that the channels share, in hertz.
+        samples_per_bin: The raw samples that one entry spans. It is 1 at
+            level 0.
         values: One row for each channel, in the order of indices.
     """
 
@@ -86,13 +94,27 @@ class Stack:
     member: BinMember | None
     offset_us: int
     first: int
-    period_us: float
+    rate_hz: float
+    samples_per_bin: int
     values: npt.NDArray[Any]
+
+    @property
+    def period_us(self) -> float:
+        """The duration of one entry in microseconds."""
+        if self.samples_per_bin == 1:
+            return sample_period_us(self.rate_hz)
+        return level_period_us(self.rate_hz, self.samples_per_bin)
 
     @property
     def time_us(self) -> npt.NDArray[np.float64]:
         """Start time of each entry in microseconds from the reference time."""
-        return time_axis(self.first, len(self), self.offset_us, self.period_us)
+        return grid_time_axis(
+            self.first,
+            len(self),
+            self.offset_us,
+            self.rate_hz,
+            self.samples_per_bin,
+        )
 
     @property
     def time_s(self) -> npt.NDArray[np.float64]:
@@ -299,13 +321,13 @@ def stack_channels(
         [(plan.array, plan.first, plan.stop) for plan in plans]
     )
 
-    def read_one(position: int) -> tuple[int, float, npt.NDArray[Any]]:
-        first, period_us, rows = read_planned(
+    def read_one(position: int) -> tuple[int, int, npt.NDArray[Any]]:
+        first, samples_per_bin, rows = read_planned(
             channels[position], plans[position], fetches[position]
         )
         if column is not None:
             rows = rows[:, column]
-        return first, period_us, rows
+        return first, samples_per_bin, rows
 
     workers = min(count, len(channels))
     positions = range(len(channels))
@@ -333,6 +355,7 @@ def stack_channels(
         member=chosen,
         offset_us=channels[0].offset_us,
         first=first,
-        period_us=results[0][1],
+        rate_hz=channels[0].rate_hz,
+        samples_per_bin=results[0][1],
         values=values,
     )
