@@ -121,7 +121,7 @@ class Samples:
                 self.first, len(self), self.offset_us, self.rate_hz
             )
         return run_time_axis(
-            self.first, len(self), self.offset_us, self.period_us, self.runs
+            self.first, len(self), self.offset_us, self.rate_hz, self.runs
         )
 
     @property

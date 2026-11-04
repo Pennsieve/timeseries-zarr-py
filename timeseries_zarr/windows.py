@@ -278,19 +278,20 @@ def run_time_axis(
     first: int,
     count: int,
     offset_us: int,
-    period_us: float,
+    rate_hz: float,
     table: npt.NDArray[np.int64],
 ) -> npt.NDArray[np.float64]:
     """Return the start time in microseconds of count samples from first.
 
-    A sample inside a run starts at the time that the table gives, and any
-    other sample starts at its grid time.
+    A sample inside a run starts at the time that the table gives plus the
+    offset of the sample in the run. Any other sample starts at its grid time.
+    Both follow the evaluation order of section 2.3 of the specification.
 
     Args:
         first: The index of the first sample.
         count: The number of samples.
         offset_us: The time of sample 0 of the grid.
-        period_us: The microseconds one sample spans.
+        rate_hz: The sample rate of the channel in hertz.
         table: The runs table of the channel.
     """
     indices = np.arange(first, first + count, dtype=np.int64)
@@ -299,8 +300,9 @@ def run_time_axis(
     )
     firsts = table[rows, 0]
     inside = indices < firsts + table[rows, 1]
-    exact = table[rows, 2] + (indices - firsts).astype(np.float64) * period_us
-    grid = offset_us + indices.astype(np.float64) * period_us
+    elapsed = (indices - firsts).astype(np.float64) * MICROSECONDS_PER_SECOND
+    exact = table[rows, 2] + elapsed / rate_hz
+    grid = grid_time_axis(first, count, offset_us, rate_hz)
     return np.where(inside, exact, grid)
 
 
