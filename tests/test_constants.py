@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from timeseries_zarr.constants import (
     CANVAS_PIXELS,
@@ -42,6 +43,10 @@ from timeseries_zarr.constants import (
     VAR_KEY,
     WAVEFORM_MEAN_KEY,
     WAVEFORMS_KEY,
+    level_factors,
+    level_widths,
+    max_levels_for,
+    normalize_factors,
 )
 
 
@@ -161,3 +166,82 @@ def test_unit_to_uv_spelled_names_agree_with_symbols():
 def test_unit_to_uv_has_no_megavolt_key():
     assert "MV" not in UNIT_TO_UV
     assert "Mv" not in UNIT_TO_UV
+
+
+def test_max_levels_for_an_int_is_the_cap_of_a_one_element_ladder():
+    assert max_levels_for(4) == 15
+    for factor in (2, 3, 10, 1000):
+        assert max_levels_for(factor) == max_levels_for((factor,))
+
+
+def test_max_levels_for_counts_the_levels_of_a_ladder_that_fit_uint32():
+    assert max_levels_for((8, 4)) == 15
+    assert max_levels_for((3, 5)) == 14
+    assert max_levels_for((2**16, 2**15)) == 2
+
+
+def test_max_levels_for_stops_before_a_ladder_overflows_2_to_the_32():
+    assert max_levels_for((2**16, 2**16, 2)) == 1
+    assert max_levels_for((2**32,)) == 0
+
+
+@pytest.mark.parametrize("factors", [(1, 4), (4, 1), [0], -4, 1])
+def test_max_levels_for_rejects_a_ratio_below_2(factors):
+    with pytest.raises(ValueError, match="decimation_factor"):
+        max_levels_for(factors)
+
+
+def test_normalize_factors_returns_an_int_as_a_one_element_tuple():
+    assert normalize_factors(4, "decimation_factor") == (4,)
+
+
+@pytest.mark.parametrize("value", [[8, 4], (8, 4), range(8, 3, -4)])
+def test_normalize_factors_returns_a_sequence_as_a_tuple(value):
+    assert normalize_factors(value, "decimation_factor") == (8, 4)
+
+
+def test_normalize_factors_is_idempotent():
+    once = normalize_factors([8, 4], "decimation_factor")
+    assert normalize_factors(once, "decimation_factor") == once
+
+
+def test_normalize_factors_rejects_an_empty_sequence():
+    with pytest.raises(ValueError, match="my_field must hold at least one"):
+        normalize_factors([], "my_field")
+
+
+@pytest.mark.parametrize("value", [1, 0, -2, (4, 1), [1], (2, 4, 0)])
+def test_normalize_factors_rejects_a_ratio_below_2(value):
+    with pytest.raises(ValueError, match="my_field must .*2 or more"):
+        normalize_factors(value, "my_field")
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["48", b"48", True, 4.0, None, [4.0], [True, 4], ["4"], [[4]], [(8, 4)]],
+)
+def test_normalize_factors_rejects_a_value_that_is_not_an_int_or_ints(value):
+    with pytest.raises(TypeError, match="my_field must"):
+        normalize_factors(value, "my_field")
+
+
+def test_level_factors_repeats_the_last_ratio():
+    assert level_factors((8, 4), 5) == (8, 4, 4, 4, 4)
+    assert level_factors(4, 3) == (4, 4, 4)
+
+
+def test_level_factors_truncates_a_ladder_longer_than_the_levels():
+    assert level_factors((8, 4, 2), 2) == (8, 4)
+    assert level_factors((8, 4), 0) == ()
+
+
+def test_level_factors_rejects_a_negative_level_count():
+    with pytest.raises(ValueError, match="levels must be 0 or more"):
+        level_factors(4, -1)
+
+
+def test_level_widths_are_the_cumulative_products_of_the_ratios():
+    assert level_widths((8, 4), 5) == (8, 32, 128, 512, 2048)
+    assert level_widths(4, 4) == (4, 16, 64, 256)
+    assert level_widths((2, 3, 5), 3) == (2, 6, 30)
+    assert level_widths(4, 0) == ()

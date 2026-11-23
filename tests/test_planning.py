@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from timeseries_zarr.constants import level_widths
 from timeseries_zarr.planning import (
     level_bins,
     level_count,
@@ -263,3 +264,72 @@ def test_plan_levels_honors_max_levels_and_min_bins():
 def test_plan_levels_rejects_a_non_positive_rate(num_samples):
     with pytest.raises(ValueError, match="rate_hz"):
         plan_levels(num_samples, 0.0)
+
+
+def test_plan_levels_gives_each_level_the_width_of_a_mixed_ladder():
+    plan = plan_levels(
+        100_000, 1000.0, min_bins=1, decimation_factor=(8, 4), max_levels=4
+    )
+    assert [(lp.level, lp.bins, lp.period_us) for lp in plan] == [
+        (1, 12_500, 8000.0),
+        (2, 3125, 32_000.0),
+        (3, 782, 128_000.0),
+        (4, 196, 512_000.0),
+    ]
+
+
+def test_plan_levels_ladder_periods_come_from_the_widths():
+    n, rate_hz = 10_000_000, 32000.0
+    plan = plan_levels(n, rate_hz, decimation_factor=(8, 4))
+    for lp, width in zip(plan, level_widths((8, 4), len(plan)), strict=True):
+        assert lp.bins == level_bins(n, width)
+        assert lp.period_us == level_period_us(rate_hz, width)
+
+
+def test_level_count_gates_a_mixed_ladder_on_complete_bins_of_each_width():
+    ladder = (8, 4)
+    assert level_count(8 * 1024, 15, 1024, decimation_factor=ladder) == 1
+    assert level_count(8 * 1024 - 1, 15, 1024, decimation_factor=ladder) == 0
+    assert level_count(32 * 1024, 15, 1024, decimation_factor=ladder) == 2
+    assert level_count(32 * 1024 - 1, 15, 1024, decimation_factor=ladder) == 1
+    assert level_count(128 * 1024, 15, 1024, decimation_factor=ladder) == 3
+
+
+def test_level_count_gates_on_the_width_of_each_level_of_the_ladder():
+    assert level_count(10**6, 15, 100, decimation_factor=(100, 2)) == 7
+    assert level_count(10**6, 15, 100, decimation_factor=(2, 100)) == 2
+
+
+def test_level_count_lowers_max_levels_to_the_cap_of_the_ladder():
+    ladder = (2**16, 2**15)
+    assert max_levels_for(ladder) == 2
+    assert level_count(2**46, 15, 1, decimation_factor=ladder) == 2
+    assert level_count(2**46, None, 1, decimation_factor=ladder) == 2
+    assert level_count(2**46, 1, 1, decimation_factor=ladder) == 1
+
+
+def test_level_count_of_a_negative_max_levels_is_0():
+    assert level_count(10**6, -1, 1, decimation_factor=(8, 4)) == 0
+
+
+@pytest.mark.parametrize("factor", [2, 4, 10])
+def test_plan_levels_of_an_int_equals_that_of_a_one_element_tuple(factor):
+    kwargs = {"min_bins": 4}
+    assert plan_levels(
+        10**6, 512.0, decimation_factor=factor, **kwargs
+    ) == plan_levels(10**6, 512.0, decimation_factor=(factor,), **kwargs)
+    assert level_count(10**6, None, 4, decimation_factor=factor) == level_count(
+        10**6, None, 4, decimation_factor=(factor,)
+    )
+
+
+def test_plan_levels_of_a_ladder_of_one_ratio_equals_the_default():
+    assert plan_levels(
+        10**6, 512.0, decimation_factor=(4, 4, 4)
+    ) == plan_levels(10**6, 512.0)
+
+
+@pytest.mark.parametrize("ladder", [[], (4, 1), ["4"], "48"])
+def test_plan_levels_rejects_an_invalid_ladder(ladder):
+    with pytest.raises((TypeError, ValueError), match="decimation_factor"):
+        plan_levels(10**6, 512.0, decimation_factor=ladder)

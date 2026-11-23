@@ -1,5 +1,8 @@
 """Format constants for the pyramid bundle."""
 
+from collections.abc import Sequence
+from itertools import accumulate
+from operator import mul
 from typing import Final
 
 FORMAT_VERSION: Final = "1.0"
@@ -185,32 +188,124 @@ units. The spelled-out names are lowercase and match without regard to case.
 """
 
 
-def max_levels_for(decimation_factor: int) -> int:
-    """Return the most levels a channel can hold at a decimation factor.
+def normalize_factors(value: int | Sequence[int], name: str) -> tuple[int, ...]:
+    """Return a decimation factor or ladder as a tuple of ratios.
 
-    Raw is not a level. The bin width of level k is decimation_factor to the
-    power k, and a bin count is stored as uint32, so the width of the last
-    level is at most 2**32 - 1.
+    An int is a ladder of one ratio. A sequence is copied to a tuple, so the
+    result of a tuple is the tuple itself.
 
     Args:
-        decimation_factor: The ratio of the bin widths of consecutive levels,
-            at least MIN_DECIMATION_FACTOR.
+        value: One ratio, or the ratios of consecutive levels, each at least
+            MIN_DECIMATION_FACTOR.
+        name: The field name that the error messages report.
+
+    Returns:
+        The ratios, at least one.
+
+    Raises:
+        TypeError: value is not an int or a sequence of ints. A bool, a float,
+            a string, and a nested sequence are not ints.
+        ValueError: value is an empty sequence, or a ratio is below
+            MIN_DECIMATION_FACTOR.
+    """
+    if isinstance(value, bool | str | bytes) or not isinstance(
+        value, int | Sequence
+    ):
+        raise TypeError(
+            f"{name} must be an int or a sequence of ints, "
+            f"got {type(value).__name__} {value!r}"
+        )
+    if isinstance(value, int):
+        if value < MIN_DECIMATION_FACTOR:
+            raise ValueError(
+                f"{name} must be {MIN_DECIMATION_FACTOR} or more, got {value}"
+            )
+        return (value,)
+    ratios = tuple(value)
+    if not ratios:
+        raise ValueError(f"{name} must hold at least one ratio, got {value!r}")
+    for ratio in ratios:
+        if isinstance(ratio, bool) or not isinstance(ratio, int):
+            raise TypeError(
+                f"{name} must hold ints, got {type(ratio).__name__} "
+                f"{ratio!r} in {ratios!r}"
+            )
+    if min(ratios) < MIN_DECIMATION_FACTOR:
+        raise ValueError(
+            f"{name} must hold ratios of {MIN_DECIMATION_FACTOR} or more, "
+            f"got {ratios!r}"
+        )
+    return ratios
+
+
+def level_factors(factors: int | Sequence[int], levels: int) -> tuple[int, ...]:
+    """Return the ratios of the first levels of a ladder.
+
+    The last ratio of the ladder repeats for every level beyond its length.
+    Element k is the ratio of level k + 1 to level k, and element 0 is the
+    ratio of level 1 to raw.
+
+    Args:
+        factors: One ratio, or the ratios of consecutive levels.
+        levels: The number of ratios to return, 0 or more.
+
+    Returns:
+        Exactly levels ratios.
+
+    Raises:
+        TypeError: factors is not an int or a sequence of ints.
+        ValueError: A ratio is below MIN_DECIMATION_FACTOR, factors is empty,
+            or levels is negative.
+    """
+    if levels < 0:
+        raise ValueError(f"levels must be 0 or more, got {levels}")
+    ratios = normalize_factors(factors, "decimation_factor")
+    padded = ratios + (ratios[-1],) * (levels - len(ratios))
+    return padded[:levels]
+
+
+def level_widths(factors: int | Sequence[int], levels: int) -> tuple[int, ...]:
+    """Return the samples per bin of the first levels of a ladder.
+
+    Args:
+        factors: One ratio, or the ratios of consecutive levels.
+        levels: The number of levels, 0 or more.
+
+    Returns:
+        The width in raw samples of levels 1 through levels.
+
+    Raises:
+        TypeError: factors is not an int or a sequence of ints.
+        ValueError: A ratio is below MIN_DECIMATION_FACTOR, factors is empty,
+            or levels is negative.
+    """
+    return tuple(accumulate(level_factors(factors, levels), mul))
+
+
+def max_levels_for(factors: int | Sequence[int]) -> int:
+    """Return the most levels a channel can hold at a decimation ladder.
+
+    Raw is not a level. The bin width of level k is the product of the first k
+    ratios of the ladder, and a bin count is stored as uint32, so the width of
+    the last level is at most 2**32 - 1.
+
+    Args:
+        factors: One ratio, or the ratios of consecutive levels, each at least
+            MIN_DECIMATION_FACTOR. The last ratio repeats for further levels.
 
     Returns:
         The largest level number whose bin width fits.
 
     Raises:
-        ValueError: decimation_factor is below MIN_DECIMATION_FACTOR.
+        TypeError: factors is not an int or a sequence of ints.
+        ValueError: A ratio is below MIN_DECIMATION_FACTOR or factors is
+            empty.
     """
-    if decimation_factor < MIN_DECIMATION_FACTOR:
-        raise ValueError(
-            f"decimation_factor must be {MIN_DECIMATION_FACTOR} or more, "
-            f"got {decimation_factor}"
-        )
+    ratios = normalize_factors(factors, "decimation_factor")
     limit = 2**32 - 1
     levels = 0
-    width = decimation_factor
+    width = ratios[0]
     while width <= limit:
         levels += 1
-        width *= decimation_factor
+        width *= ratios[min(levels, len(ratios) - 1)]
     return levels

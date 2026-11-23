@@ -1,15 +1,18 @@
 """Pyramid level planning: level counts, shapes, and time resolutions.
 
-Raw samples are not a level. Levels are numbered from 1, and level k folds
-decimation_factor**k raw samples into each bin.
+Raw samples are not a level. Levels are numbered from 1. A bin of level k
+holds as many raw samples as the product of the first k ratios of the
+decimation ladder.
 """
 
 import math
+from collections.abc import Sequence
 
 from timeseries_zarr.constants import (
     DEFAULT_DECIMATION_FACTOR,
     MICROSECONDS_PER_SECOND,
     MIN_DECIMATION_FACTOR,
+    level_widths,
     max_levels_for,
 )
 from timeseries_zarr.types import LevelPlan
@@ -37,7 +40,7 @@ def level_count(
     max_levels: int | None = None,
     min_bins: int = 1024,
     *,
-    decimation_factor: int = DEFAULT_DECIMATION_FACTOR,
+    decimation_factor: int | Sequence[int] = DEFAULT_DECIMATION_FACTOR,
 ) -> int:
     """Return the number of levels for a channel of num_samples samples.
 
@@ -50,22 +53,26 @@ def level_count(
     Args:
         num_samples: Raw samples in the channel.
         max_levels: Most levels to return. None means the most that
-            max_levels_for allows at decimation_factor.
+            max_levels_for allows at decimation_factor. A larger value is
+            lowered to that limit.
         min_bins: Fewest complete bins a level must hold.
-        decimation_factor: The ratio of the bin widths of consecutive levels.
+        decimation_factor: One ratio of the bin widths of consecutive levels,
+            or a ladder of ratios. Element 0 is the ratio of level 1 to raw,
+            and the last element repeats for further levels.
 
     Returns:
         The number of levels.
 
     Raises:
-        ValueError: decimation_factor is below MIN_DECIMATION_FACTOR.
+        TypeError: decimation_factor is not an int or a sequence of ints.
+        ValueError: A ratio is below MIN_DECIMATION_FACTOR or the ladder is
+            empty.
     """
     cap = max_levels_for(decimation_factor)
-    if max_levels is None:
-        max_levels = cap
+    max_levels = cap if max_levels is None else max(0, min(max_levels, cap))
     count = 0
-    for level in range(1, max_levels + 1):
-        if num_samples // decimation_factor**level < min_bins:
+    for width in level_widths(decimation_factor, max_levels):
+        if num_samples // width < min_bins:
             break
         count += 1
     return count
@@ -130,7 +137,7 @@ def plan_levels(
     max_levels: int | None = None,
     min_bins: int = 1024,
     *,
-    decimation_factor: int = DEFAULT_DECIMATION_FACTOR,
+    decimation_factor: int | Sequence[int] = DEFAULT_DECIMATION_FACTOR,
 ) -> list[LevelPlan]:
     """Return the pyramid plan for a channel: one LevelPlan per level.
 
@@ -140,16 +147,18 @@ def plan_levels(
         max_levels: Most levels to plan. None means the most that
             max_levels_for allows at decimation_factor.
         min_bins: Fewest complete bins a level must hold.
-        decimation_factor: The ratio of the bin widths of consecutive levels.
-            Level k folds decimation_factor**k raw samples into each bin.
+        decimation_factor: One ratio of the bin widths of consecutive levels,
+            or a ladder of ratios. Element 0 is the ratio of level 1 to raw,
+            and the last element repeats for further levels.
 
     Returns:
         The plans numbered from 1. An empty list means the channel carries raw
         samples and no levels.
 
     Raises:
-        ValueError: rate_hz is not positive, even when no level fits, or
-            decimation_factor is below MIN_DECIMATION_FACTOR.
+        TypeError: decimation_factor is not an int or a sequence of ints.
+        ValueError: rate_hz is not positive, even when no level fits, a ratio
+            is below MIN_DECIMATION_FACTOR, or the ladder is empty.
     """
     _require_rate(rate_hz)
     count = level_count(
@@ -158,8 +167,10 @@ def plan_levels(
     return [
         LevelPlan(
             level=k,
-            bins=level_bins(num_samples, decimation_factor**k),
-            period_us=level_period_us(rate_hz, decimation_factor**k),
+            bins=level_bins(num_samples, width),
+            period_us=level_period_us(rate_hz, width),
         )
-        for k in range(1, count + 1)
+        for k, width in enumerate(
+            level_widths(decimation_factor, count), start=1
+        )
     ]
