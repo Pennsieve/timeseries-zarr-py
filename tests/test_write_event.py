@@ -1045,15 +1045,28 @@ def test_write_count_levels_follow_the_base_factor_without_an_override(
 
 
 def test_write_count_levels_stop_at_the_event_level_cap(tmp_path, event_source):
-    _, _, source = _dense(event_source)
     opts = dataclasses.replace(
         _COUNT_OPTS,
         continuous_decimation_factor=(2**16, 2**15),
         event_decimation_factor=2,
-        max_levels=2,
+        max_levels=None,
     )
+    assert opts.level_cap == 2
+    assert opts.event_level_cap > 2
+    times, _, source = _dense(event_source)
     group = _write_counts(tmp_path, source, opts=opts)
-    assert sorted(group.group_keys()) == ["1", "2"]
+    plans = plan_count_levels(
+        len(times),
+        int(times[0]),
+        int(times[-1]),
+        opts.event_level_cap,
+        opts.min_bins,
+        decimation_factor=2,
+    )
+    assert len(plans) > opts.level_cap
+    assert sorted(group.group_keys(), key=int) == [
+        str(plan.level) for plan in plans
+    ]
 
 
 def test_write_count_levels_groups_carry_the_period_and_one_count_array(
@@ -1676,6 +1689,53 @@ def test_check_event_channel_rejects_a_count_level_that_ends_past_the_limit(
 
     with pytest.raises(ValueError, match="end of the last bin of count level"):
         _check_event_channel(Dense([0]))
+
+
+_LAST_BIN_LIMIT_US = 9_005_199_254_740_991
+
+
+def _dense_until(event_source, last_us):
+    """Return a source of 100000 events at time 0 and one at last_us."""
+
+    class Dense(type(event_source([0]))):
+        def num_events(self):
+            return 100_000
+
+        def read_events(self, start, stop):
+            time_us = 0 if start == 0 else last_us
+            return np.full(stop - start, time_us, dtype=np.int64)
+
+    return Dense([0])
+
+
+@pytest.mark.parametrize(
+    ("base", "event", "accepted"), [(4, 3, True), (3, 4, False)]
+)
+def test_check_event_channel_plans_count_levels_at_the_event_factor(
+    event_source, base, event, accepted
+):
+    opts = dataclasses.replace(
+        _COUNT_OPTS, decimation_factor=base, event_decimation_factor=event
+    )
+    source = _dense_until(event_source, _LAST_BIN_LIMIT_US)
+    if accepted:
+        _check_event_channel(source, opts=opts)
+    else:
+        with pytest.raises(ValueError, match="end of the last bin"):
+            _check_event_channel(source, opts=opts)
+
+
+def test_check_event_channel_plans_count_levels_to_the_event_level_cap(
+    event_source,
+):
+    opts = dataclasses.replace(
+        _COUNT_OPTS, continuous_decimation_factor=(2**16, 2**15)
+    )
+    assert opts.level_cap == 2
+    assert opts.event_level_cap > opts.level_cap
+    source = _dense_until(event_source, 9_005_018_736_371_649)
+    with pytest.raises(ValueError, match="end of the last bin of count level"):
+        _check_event_channel(source, opts=opts)
 
 
 def test_write_event_channel_rejects_a_bad_time_before_it_creates_a_node(
