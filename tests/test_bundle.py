@@ -1250,6 +1250,46 @@ def test_write_bundle_writes_a_conforming_bundle_for_a_ladder(
     assert stack.values[0, : 6000 // 32].min() > 0
 
 
+def _file_bytes(root):
+    return {
+        file.relative_to(root).as_posix(): file.read_bytes()
+        for file in sorted(root.rglob("*"))
+        if file.is_file()
+    }
+
+
+def test_write_bundle_with_numpy_int_factors_matches_plain_int_factors(
+    tmp_path, continuous_source, event_source
+):
+    plain = dataclasses.replace(
+        _SPEC_OPTS,
+        decimation_factor=3,
+        continuous_decimation_factor=(8, 4),
+        event_decimation_factor=8,
+        min_bins=4,
+    )
+    numpy_ints = dataclasses.replace(
+        _SPEC_OPTS,
+        decimation_factor=np.int64(3),
+        continuous_decimation_factor=(np.int64(8), np.int32(4)),
+        event_decimation_factor=np.int64(8),
+        min_bins=4,
+    )
+    written = []
+    for name, opts in (("plain", plain), ("numpy", numpy_ints)):
+        output = tmp_path / name
+        sources = [
+            continuous_source(
+                _signal(6000, 1), id="c0", name="c0", rate_hz=512.0
+            )
+        ]
+        events = [event_source(list(range(0, 5000, 7)), id="e0")]
+        write_bundle(sources, events, output_path=output, opts=opts)
+        written.append(_file_bytes(output))
+    assert len(written[0]) > 20
+    assert written[0] == written[1]
+
+
 def test_write_bundle_with_max_levels_0_writes_no_level_and_conforms(
     tmp_path, continuous_source, event_source
 ):

@@ -43,6 +43,7 @@ from timeseries_zarr.constants import (
     VAR_KEY,
     WAVEFORM_MEAN_KEY,
     WAVEFORMS_KEY,
+    integer_like,
     level_factors,
     level_widths,
     max_levels_for,
@@ -223,6 +224,72 @@ def test_normalize_factors_rejects_a_ratio_below_2(value):
 def test_normalize_factors_rejects_a_value_that_is_not_an_int_or_ints(value):
     with pytest.raises(TypeError, match="my_field must"):
         normalize_factors(value, "my_field")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (np.int64(4), (4,)),
+        (np.int32(4), (4,)),
+        ((np.int64(8), np.int32(4)), (8, 4)),
+        ([np.int64(8), 4, np.uint8(2)], (8, 4, 2)),
+        ((8, 4), (8, 4)),
+    ],
+)
+def test_normalize_factors_returns_plain_ints_for_integer_like_values(
+    value, expected
+):
+    ratios = normalize_factors(value, "my_field")
+    assert ratios == expected
+    assert all(type(ratio) is int for ratio in ratios)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        True,
+        np.bool_(True),
+        4.0,
+        np.float64(4.0),
+        "4",
+        b"4",
+        [[4]],
+        [(8, 4)],
+        [np.float64(4.0)],
+        [np.bool_(True)],
+        np.array([8, 4]),
+        np.array(4),
+    ],
+)
+def test_normalize_factors_rejects_values_that_are_not_integer_like(value):
+    with pytest.raises(TypeError, match="my_field must"):
+        normalize_factors(value, "my_field")
+
+
+def test_normalize_factors_names_a_numpy_int_below_2_in_the_value_error():
+    with pytest.raises(ValueError, match="my_field must be 2 or more, got 1"):
+        normalize_factors(np.int64(1), "my_field")
+    with pytest.raises(ValueError, match="my_field must hold ratios of 2"):
+        normalize_factors([np.int64(8), np.int32(1)], "my_field")
+
+
+def test_integer_like_converts_what_operator_index_accepts():
+    assert type(integer_like(np.int64(4))) is int
+    assert integer_like(4) == 4
+    assert integer_like(True) is None
+    assert integer_like(4.0) is None
+    assert integer_like(None) is None
+
+
+def test_ladder_helpers_agree_for_numpy_ints_and_plain_ints():
+    plain = (8, 4)
+    numpy_ints = (np.int64(8), np.int32(4))
+    assert max_levels_for(numpy_ints) == max_levels_for(plain)
+    assert max_levels_for(np.int64(4)) == max_levels_for(4)
+    assert level_widths(numpy_ints, 5) == level_widths(plain, 5)
+    assert level_factors(numpy_ints, 5) == level_factors(plain, 5)
+    assert all(type(w) is int for w in level_widths(numpy_ints, 5))
+    assert all(type(f) is int for f in level_factors(np.int64(4), 3))
 
 
 def test_level_factors_repeats_the_last_ratio():
