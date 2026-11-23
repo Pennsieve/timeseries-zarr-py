@@ -160,6 +160,18 @@ def test_the_manifest_recording_matches_the_file_and_the_reader(name, built):
         assert bundle.recording.reference_time == reference
 
 
+def test_the_ladder_fixture_changes_the_ratio_between_levels():
+    channel = FIXTURES["continuous_ladder"]["channels"][0]
+    widths = [level["samples_per_bin"] for level in channel["levels"]]
+    assert widths == [8, 32, 96, 480, 2400]
+    ratios = [
+        later // earlier
+        for earlier, later in zip(widths, widths[1:], strict=False)
+    ]
+    assert ratios == [4, 3, 5, 5]
+    assert len(set(ratios)) > 1
+
+
 def _check_continuous(channel, expected):
     for key in ("name", "id", "unit", "rate_hz", "offset_us"):
         assert getattr(channel, key) == expected[key], key

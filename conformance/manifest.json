@@ -489,6 +489,218 @@
     }
    ]
   },
+  "continuous_ladder": {
+   "path": "continuous_ladder",
+   "exercises": "A channel whose ratio between consecutive levels differs. The ratios are 8, 4, 3, 5, and 5, so levels 1 through 5 hold 8, 32, 96, 480, and 2400 samples per bin, and no width is a power of 4 or a power of 2. Levels 2 through 5 end in a bin that holds fewer samples than the width of its level.",
+   "version": "1.0",
+   "recording_json": null,
+   "reader_must_reject": false,
+   "findings": [],
+   "channel_count": 1,
+   "channels": [
+    {
+     "index": 0,
+     "kind": "continuous",
+     "name": "continuous_ladder",
+     "id": "continuous_ladder",
+     "unit": "uV",
+     "rate_hz": 2000.0,
+     "offset_us": 0,
+     "num_samples": 10000,
+     "runs": null,
+     "samples": [
+      {
+       "index": 0,
+       "value": -95.82128143310547
+      },
+      {
+       "index": 1,
+       "value": 286.4582824707031
+      },
+      {
+       "index": 5000,
+       "value": -43.647762298583984
+      },
+      {
+       "index": 9999,
+       "value": 85.56904602050781
+      }
+     ],
+     "levels": [
+      {
+       "level": 1,
+       "samples_per_bin": 8,
+       "period_us": 4000.0,
+       "bins": 1250,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 8,
+         "min": -95.82128143310547,
+         "max": 286.4582824707031,
+         "mean": 53.40327379107475
+        },
+        {
+         "index": 625,
+         "count": 8,
+         "min": -173.3284454345703,
+         "max": 167.98716735839844,
+         "mean": -5.1776533126831055
+        },
+        {
+         "index": 1249,
+         "count": 8,
+         "min": -215.90525817871094,
+         "max": 140.40426635742188,
+         "mean": 14.419506967067719
+        }
+       ]
+      },
+      {
+       "level": 2,
+       "samples_per_bin": 32,
+       "period_us": 16000.0,
+       "bins": 313,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 32,
+         "min": -245.0382080078125,
+         "max": 286.4582824707031,
+         "mean": -9.674181438982487
+        },
+        {
+         "index": 156,
+         "count": 32,
+         "min": -192.35250854492188,
+         "max": 168.82823181152344,
+         "mean": 19.34403070807457
+        },
+        {
+         "index": 312,
+         "count": 16,
+         "min": -215.90525817871094,
+         "max": 140.40426635742188,
+         "mean": 11.194418042898178
+        }
+       ]
+      },
+      {
+       "level": 3,
+       "samples_per_bin": 96,
+       "period_us": 48000.0,
+       "bins": 105,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 96,
+         "min": -245.0382080078125,
+         "max": 286.4582824707031,
+         "mean": 0.9324649920066198
+        },
+        {
+         "index": 52,
+         "count": 96,
+         "min": -314.1153869628906,
+         "max": 168.82823181152344,
+         "mean": -4.070640832185745
+        },
+        {
+         "index": 104,
+         "count": 16,
+         "min": -215.90525817871094,
+         "max": 140.40426635742188,
+         "mean": 11.194418042898178
+        }
+       ]
+      },
+      {
+       "level": 4,
+       "samples_per_bin": 480,
+       "period_us": 240000.0,
+       "bins": 21,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 480,
+         "min": -321.57794189453125,
+         "max": 286.4582824707031,
+         "mean": -2.1797937087404233
+        },
+        {
+         "index": 10,
+         "count": 480,
+         "min": -314.1153869628906,
+         "max": 260.57781982421875,
+         "mean": -4.69822638767461
+        },
+        {
+         "index": 20,
+         "count": 400,
+         "min": -266.17144775390625,
+         "max": 301.470947265625,
+         "mean": 0.28238784506451337
+        }
+       ]
+      },
+      {
+       "level": 5,
+       "samples_per_bin": 2400,
+       "period_us": 1200000.0,
+       "bins": 5,
+       "members": [
+        "minmax",
+        "mean",
+        "count"
+       ],
+       "bin_values": [
+        {
+         "index": 0,
+         "count": 2400,
+         "min": -369.3267822265625,
+         "max": 340.03887939453125,
+         "mean": 0.17311925600127628
+        },
+        {
+         "index": 2,
+         "count": 2400,
+         "min": -374.2433166503906,
+         "max": 338.5525817871094,
+         "mean": -2.1207093848381193
+        },
+        {
+         "index": 4,
+         "count": 400,
+         "min": -266.17144775390625,
+         "max": 301.470947265625,
+         "mean": 0.28238784506451337
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
   "continuous_runs": {
    "path": "continuous_runs",
    "exercises": "A channel of three runs at 1000 Hz. A pause of 700 samples between the first two leaves NaN samples, so bins of levels 1 and 2 hold count 0 and one bin holds a partial count. The second run starts 0.4 sample periods off the grid. The third run starts 0.05 sample periods after the end of the second, which leaves no NaN sample.",
