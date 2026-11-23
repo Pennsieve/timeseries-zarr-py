@@ -694,6 +694,26 @@ def test_level_folder_folds_a_ladder_to_the_direct_fold_at_every_width(
         assert np.allclose(var, want[:, VAR_COLUMN], rtol=1e-6, equal_nan=True)
 
 
+@pytest.mark.parametrize(
+    ("factors", "length"), [((2, 8, 3, 5), 1077), ((8, 6, 5, 2), 1077)]
+)
+def test_level_folder_finish_folds_each_tail_with_the_ratio_of_its_level(
+    factors, length
+):
+    raw = _ladder_series(length)
+    chunks = _drive_ladder(raw, factors, 16)
+    for level, width in enumerate(_ladder_widths(factors), start=1):
+        got = _level_chunks(chunks, level)
+        want = _direct(raw, width)
+        minmax = np.concatenate([chunk.minmax for chunk in got])
+        count = np.concatenate([chunk.count for chunk in got])
+        assert minmax.shape[0] == want.shape[0]
+        assert np.array_equal(
+            minmax, want[:, :2].astype(np.float32), equal_nan=True
+        )
+        assert np.array_equal(count, want[:, COUNT_COLUMN])
+
+
 def test_level_folder_ladder_leaves_a_partial_bin_at_every_level():
     raw = _ladder_series(963)
     chunks = _drive_ladder(raw, _LADDER, 64)
