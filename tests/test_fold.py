@@ -563,7 +563,7 @@ def _whole_fold(raw, levels, factor=4):
 
 def _drive(raw, levels, inner_len, cuts, with_var=True, factor=4):
     """Push raw through a LevelFolder in blocks ending at cuts; return chunks."""
-    folder = LevelFolder(levels, inner_len, with_var, factor)
+    folder = LevelFolder(levels, inner_len, with_var, [factor] * levels)
     chunks = []
     previous = 0
     for cut in [*cuts, raw.shape[0]]:
@@ -625,6 +625,113 @@ def test_level_folder_at_another_factor_equals_the_whole_fold_at_every_level(
         assert np.array_equal(np.concatenate([c.count for c in got]), want[3])
 
 
+_LADDER = (8, 4, 2, 3)
+
+
+def _ladder_widths(factors):
+    """The samples per bin of each level of a ladder."""
+    return np.cumprod(factors).tolist()
+
+
+def _ladder_series(length):
+    """A series with NaN and infinite samples and one all-NaN stretch."""
+    raw = _gappy_series(length).copy()
+    raw[10] = np.nan
+    raw[100] = np.inf
+    raw[101] = -np.inf
+    raw[500:540] = np.nan
+    return raw
+
+
+def _odd_cuts(length, seed):
+    """Strictly increasing cut points that split a series in odd pieces."""
+    rng = np.random.default_rng(seed)
+    cuts = []
+    position = 0
+    while True:
+        position += int(rng.integers(0, 4)) * 2 + 1
+        position += int(rng.integers(0, 3)) * 37
+        if position >= length:
+            return cuts
+        cuts.append(position)
+
+
+def _drive_ladder(raw, factors, inner_len):
+    """Push raw through a LevelFolder in one block; return the chunks."""
+    folder = LevelFolder(len(factors), inner_len, True, factors)
+    return folder.push(raw) + folder.finish()
+
+
+@pytest.mark.parametrize("inner_len", [1, 5, 64])
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_level_folder_folds_a_ladder_to_the_direct_fold_at_every_width(
+    inner_len, seed
+):
+    length = 963
+    raw = _ladder_series(length)
+    folder = LevelFolder(4, inner_len, True, _LADDER)
+    chunks = []
+    previous = 0
+    for cut in [*_odd_cuts(length, seed), length]:
+        chunks += folder.push(raw[previous:cut])
+        previous = cut
+    chunks += folder.finish()
+    for level, width in enumerate(_ladder_widths(_LADDER), start=1):
+        got = _level_chunks(chunks, level)
+        want = _direct(raw, width)
+        assert sum(chunk.rows for chunk in got) == want.shape[0]
+        minmax = np.concatenate([chunk.minmax for chunk in got])
+        mean = np.concatenate([chunk.mean for chunk in got])
+        var = np.concatenate([chunk.var for chunk in got])
+        count = np.concatenate([chunk.count for chunk in got])
+        assert np.array_equal(
+            minmax, want[:, :2].astype(np.float32), equal_nan=True
+        )
+        assert np.array_equal(count, want[:, COUNT_COLUMN])
+        assert np.allclose(
+            mean, want[:, MEAN_COLUMN], rtol=1e-6, equal_nan=True
+        )
+        assert np.allclose(var, want[:, VAR_COLUMN], rtol=1e-6, equal_nan=True)
+
+
+def test_level_folder_ladder_leaves_a_partial_bin_at_every_level():
+    raw = _ladder_series(963)
+    chunks = _drive_ladder(raw, _LADDER, 64)
+    for level, width in enumerate(_ladder_widths(_LADDER), start=1):
+        assert 963 % width
+        got = _level_chunks(chunks, level)
+        assert sum(chunk.rows for chunk in got) == -(-963 // width)
+        assert 0 < got[-1].count[-1] < width
+
+
+def test_level_folder_ladder_emits_the_same_rows_for_any_block_sizes():
+    raw = _ladder_series(963)
+    whole = _drive_ladder(raw, _LADDER, 7)
+    folder = LevelFolder(4, 7, True, _LADDER)
+    pieces = []
+    for start in range(0, 963, 11):
+        pieces += folder.push(raw[start : start + 11])
+    pieces += folder.finish()
+    for level in range(1, 5):
+        for position in range(4):
+            one, two = (
+                np.concatenate(
+                    [
+                        _chunk_members(c)[position]
+                        for c in _level_chunks(c, level)
+                    ]
+                )
+                for c in (whole, pieces)
+            )
+            assert np.array_equal(one, two, equal_nan=True)
+
+
+def test_level_folder_ladder_keeps_the_pending_rows_bounded():
+    folder = LevelFolder(4, 16, True, _LADDER)
+    folder.push(_gappy_series(100_000))
+    assert all(rows <= 16 for rows in folder.pending_rows)
+
+
 def test_level_folder_stores_minmax_and_count_bit_identical_to_the_whole_fold():
     raw = _gappy_series(30_011)
     chunks, _ = _drive(raw, 5, 16, [5, 4099, 4100])
@@ -648,7 +755,7 @@ def test_level_folder_emits_inner_len_rows_except_in_the_last_chunk():
 
 
 def test_level_folder_emits_a_chunk_as_soon_as_it_fills():
-    folder = LevelFolder(2, 8, True, 4)
+    folder = LevelFolder(2, 8, True, [4, 4])
     assert folder.push(np.ones(31, dtype=np.float32)) == []
     emitted = folder.push(np.ones(1, dtype=np.float32))
     assert [(chunk.level, chunk.rows) for chunk in emitted] == [(1, 8)]
@@ -656,7 +763,7 @@ def test_level_folder_emits_a_chunk_as_soon_as_it_fills():
 
 
 def test_level_folder_holds_at_most_one_chunk_per_level_for_a_huge_block():
-    folder = LevelFolder(4, 16, True, 4)
+    folder = LevelFolder(4, 16, True, [4] * 4)
     chunks = folder.push(_gappy_series(100_000))
     assert all(rows <= 16 for rows in folder.pending_rows)
     assert {chunk.level for chunk in chunks} == {1, 2, 3, 4}
@@ -676,7 +783,7 @@ def test_level_folder_omits_the_variance_when_asked():
 
 
 def test_level_folder_ignores_an_empty_block():
-    folder = LevelFolder(2, 8, True, 4)
+    folder = LevelFolder(2, 8, True, [4, 4])
     assert folder.push(np.empty(0, dtype=np.float32)) == []
     assert folder.finish() == []
 
@@ -693,23 +800,29 @@ def test_level_folder_keeps_the_variance_exact_on_a_large_offset():
 
 def test_level_folder_rejects_a_block_that_is_not_rank_1():
     with pytest.raises(ValueError, match="rank 1"):
-        LevelFolder(1, 8, True, 4).push(np.zeros((4, 2), dtype=np.float32))
+        LevelFolder(1, 8, True, [4]).push(np.zeros((4, 2), dtype=np.float32))
 
 
 @pytest.mark.parametrize(("levels", "inner_len"), [(0, 8), (1, 0)])
 def test_level_folder_rejects_a_count_below_1(levels, inner_len):
     with pytest.raises(ValueError, match="at least 1"):
-        LevelFolder(levels, inner_len, True, 4)
+        LevelFolder(levels, inner_len, True, [4] * levels)
 
 
 @pytest.mark.parametrize("factor", [1, 0, -4])
-def test_level_folder_rejects_a_decimation_factor_below_2(factor):
-    with pytest.raises(ValueError, match="decimation_factor"):
-        LevelFolder(1, 8, True, factor)
+def test_level_folder_rejects_a_factor_below_2(factor):
+    with pytest.raises(ValueError, match="at least 2"):
+        LevelFolder(2, 8, True, [4, factor])
+
+
+@pytest.mark.parametrize("factors", [[], [4], [4, 4, 4]])
+def test_level_folder_rejects_a_factor_count_other_than_the_levels(factors):
+    with pytest.raises(ValueError, match="2 entries"):
+        LevelFolder(2, 8, True, factors)
 
 
 def test_level_folder_rejects_a_push_after_finish():
-    folder = LevelFolder(1, 8, True, 4)
+    folder = LevelFolder(1, 8, True, [4])
     folder.finish()
     with pytest.raises(RuntimeError, match="after finish"):
         folder.push(np.zeros(4, dtype=np.float32))

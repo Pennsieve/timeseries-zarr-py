@@ -415,9 +415,9 @@ class LevelFolder:
     Level 1 folds the raw samples. Each later level folds the float64
     statistics of the level below, never its stored float32 members, so the
     variance keeps its full precision. A level holds at most inner_len pending
-    rows plus the fewer than decimation_factor unfolded input rows of an
-    unfinished block, so the state does not grow with the length of the
-    channel.
+    rows plus the unfolded input rows of an unfinished block, which are fewer
+    than the factor of that level. The state does not grow with the length of
+    the channel.
 
     A level emits a chunk of exactly inner_len rows each time its pending rows
     fill. finish emits the last chunk of each level, which holds the
@@ -430,7 +430,7 @@ class LevelFolder:
         levels: int,
         inner_len: int,
         with_var: bool,
-        decimation_factor: int,
+        factors: Sequence[int],
     ) -> None:
         """Create a folder.
 
@@ -438,24 +438,31 @@ class LevelFolder:
             levels: The number of levels to fold, at least 1.
             inner_len: The rows of one emitted chunk, at least 1.
             with_var: Whether the emitted chunks carry the variance.
-            decimation_factor: The number of rows of a level that fold into
-                one row of the next, at least 2.
+            factors: One entry for each level, each at least 2. Entry i is
+                the number of input rows that fold into one row of level
+                i + 1. The input of level 1 is the raw samples, and the
+                input of every later level is the level below.
 
         Raises:
-            ValueError: levels or inner_len is less than 1, or
-                decimation_factor is less than 2.
+            ValueError: levels or inner_len is less than 1, factors does not
+                have one entry for each level, or an entry is less than 2.
         """
         if levels < 1:
             raise ValueError(f"levels must be at least 1, got {levels}")
         if inner_len < 1:
             raise ValueError(f"inner_len must be at least 1, got {inner_len}")
-        if decimation_factor < MIN_DECIMATION_FACTOR:
+        if len(factors) != levels:
             raise ValueError(
-                "decimation_factor must be at least "
-                f"{MIN_DECIMATION_FACTOR}, got {decimation_factor}"
+                f"factors must have {levels} entries, got {len(factors)}"
             )
+        for factor in factors:
+            if factor < MIN_DECIMATION_FACTOR:
+                raise ValueError(
+                    "each factor must be at least "
+                    f"{MIN_DECIMATION_FACTOR}, got {factor}"
+                )
         self._inner_len = inner_len
-        self._decimation_factor = decimation_factor
+        self._factors = tuple(factors)
         self._with_var = with_var
         self._levels = [_Level(inner_len) for _ in range(levels)]
         self._finished = False
@@ -500,12 +507,12 @@ class LevelFolder:
         self._finished = True
         for index, level in enumerate(self._levels):
             if index == 0 and level.carry_raw is not None:
-                tail = fold_raw(level.carry_raw, self._decimation_factor)
+                tail = fold_raw(level.carry_raw, self._factors[0])
                 level.carry_raw = None
                 self._append(0, tail)
             elif index > 0 and level.carry_statistics is not None:
                 tail = fold_statistics(
-                    level.carry_statistics, self._decimation_factor
+                    level.carry_statistics, self._factors[index]
                 )
                 level.carry_statistics = None
                 self._append(index, tail)
@@ -521,7 +528,7 @@ class LevelFolder:
 
     def _feed_raw(self, block: npt.NDArray[np.float32]) -> None:
         """Fold block into level 1 behind the carried samples."""
-        factor = self._decimation_factor
+        factor = self._factors[0]
         level = self._levels[0]
         start = 0
         if level.carry_raw is not None:
@@ -541,7 +548,7 @@ class LevelFolder:
 
     def _feed_statistics(self, index: int, rows: Statistics) -> None:
         """Fold the rows of level index to the level above it."""
-        factor = self._decimation_factor
+        factor = self._factors[index + 1]
         level = self._levels[index + 1]
         start = 0
         carry = level.carry_statistics

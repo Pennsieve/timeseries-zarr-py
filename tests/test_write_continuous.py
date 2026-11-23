@@ -16,6 +16,7 @@ from timeseries_zarr.constants import (
     MINMAX_KEY,
     RAW_KEY,
     VAR_KEY,
+    level_widths,
 )
 from timeseries_zarr.planning import level_period_us, plan_levels
 from timeseries_zarr.shards import ArrayWriter, FileShardSink
@@ -612,6 +613,72 @@ def test_write_continuous_channel_members_equal_the_direct_definition_at_another
         assert _close(level[MEAN_KEY][:], want[:, 2]), plan.level
         if opts.write_var:
             assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
+
+
+def test_write_continuous_channel_writes_the_levels_of_a_ladder(
+    tmp_path, continuous_source, wide_opts
+):
+    samples = _series(8199)
+    opts = dataclasses.replace(wide_opts, continuous_decimation_factor=(8, 4))
+    group = _write(tmp_path, continuous_source(samples), opts)
+    plans = plan_levels(
+        8199,
+        32000.0,
+        opts.level_cap,
+        opts.min_bins,
+        decimation_factor=(8, 4),
+    )
+    widths = level_widths((8, 4), len(plans))
+    assert widths[:3] == (8, 32, 128)
+    assert len(plans) >= 4
+    assert sorted(group.group_keys(), key=int) == [
+        str(plan.level) for plan in plans
+    ]
+    for plan, width in zip(plans, widths, strict=True):
+        want = _direct(samples, width)
+        level = group[str(plan.level)]
+        assert dict(level.attrs) == {
+            "tsz": {"period_us": level_period_us(32000.0, width)}
+        }
+        assert level[MINMAX_KEY].shape == (plan.bins, 2)
+        assert np.array_equal(
+            level[MINMAX_KEY][:], want[:, :2].astype(np.float32), equal_nan=True
+        )
+        assert np.array_equal(level[COUNT_KEY][:], want[:, 4])
+        assert _close(level[MEAN_KEY][:], want[:, 2]), plan.level
+        if opts.write_var:
+            assert _close(level[VAR_KEY][:], want[:, 3]), plan.level
+
+
+def _tree_bytes(root):
+    """Map the relative path of every file under root to its bytes."""
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"continuous_decimation_factor": (4,)},
+        {"continuous_decimation_factor": 4},
+        {"decimation_factor": 4},
+        {"decimation_factor": 4, "event_decimation_factor": 10},
+    ],
+)
+def test_write_continuous_channel_writes_the_same_bytes_for_a_default_ladder(
+    tmp_path, continuous_source, wide_opts, override
+):
+    samples = _series(8199)
+    default = dataclasses.replace(wide_opts, decimation_factor=4)
+    changed = dataclasses.replace(default, **override)
+    _write(tmp_path, continuous_source(samples), default, name="default")
+    _write(tmp_path, continuous_source(samples), changed, name="changed")
+    want = _tree_bytes(tmp_path / "default")
+    assert any(key.endswith(COUNT_KEY + "/c/0") for key in want)
+    assert _tree_bytes(tmp_path / "changed") == want
 
 
 def test_write_continuous_channel_at_2x_gets_more_than_15_levels_by_default(
