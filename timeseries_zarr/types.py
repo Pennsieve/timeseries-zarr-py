@@ -10,6 +10,7 @@ from timeseries_zarr.constants import (
     DEFAULT_DECIMATION_FACTOR,
     INNER_CHUNK_SAMPLES,
     TARGET_SHARD_BYTES,
+    integer_like,
     max_levels_for,
     normalize_factors,
 )
@@ -147,14 +148,21 @@ class ChunkShard:
     shard_shape: tuple[int, ...]
 
 
-def _require_int_factor(name: str, value: int) -> None:
-    """Raise TypeError unless value is a plain int, and ValueError below 2."""
-    if isinstance(value, bool) or not isinstance(value, int):
+def _require_int_factor(name: str, value: object) -> int:
+    """Return value as a plain int.
+
+    Raises:
+        TypeError: value is not integer-like.
+        ValueError: value is below MIN_DECIMATION_FACTOR.
+    """
+    factor = integer_like(value)
+    if factor is None:
         raise TypeError(
             f"{name} must be an int, got {type(value).__name__} {value!r}; "
             "set continuous_decimation_factor for a ladder of ratios"
         )
-    normalize_factors(value, name)
+    normalize_factors(factor, name)
+    return factor
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,17 +174,20 @@ class WriteOpts:
         decimation_factor: The base ratio of the bin widths of consecutive
             levels, an int of at least MIN_DECIMATION_FACTOR. It sets the
             ratio of every level of a continuous channel and of an event
-            channel unless an override below applies.
+            channel unless an override below applies. Any integer-like value
+            is accepted, such as a numpy integer, except a bool. The field
+            stores an int.
         continuous_decimation_factor: Overrides decimation_factor for
             continuous channels. An int sets one ratio. A sequence is a
             ladder: element 0 is the number of samples in a bin of level 1,
             element k is the ratio of level k + 1 to level k, and the last
             element repeats for further levels. Each ratio is at least
-            MIN_DECIMATION_FACTOR. None uses decimation_factor. A sequence is
-            stored as a tuple.
+            MIN_DECIMATION_FACTOR. None uses decimation_factor. A ratio may be
+            any integer-like value. The field stores an int or a tuple of
+            ints.
         event_decimation_factor: Overrides decimation_factor for the count
             levels of event channels, at least MIN_DECIMATION_FACTOR. None
-            uses decimation_factor.
+            uses decimation_factor. The field stores an int.
         max_levels: The most levels to write, 0 through the larger of the
             level limits of continuous and event channels at their factors. A
             value of 0 writes the raw samples and event arrays with no
@@ -259,16 +270,24 @@ class WriteOpts:
             TypeError: A decimation factor has the wrong type.
             ValueError: A setting lies outside its range.
         """
-        _require_int_factor("decimation_factor", self.decimation_factor)
+        object.__setattr__(
+            self,
+            "decimation_factor",
+            _require_int_factor("decimation_factor", self.decimation_factor),
+        )
         if self.event_decimation_factor is not None:
-            _require_int_factor(
-                "event_decimation_factor", self.event_decimation_factor
+            object.__setattr__(
+                self,
+                "event_decimation_factor",
+                _require_int_factor(
+                    "event_decimation_factor", self.event_decimation_factor
+                ),
             )
         override = self.continuous_decimation_factor
         if override is not None:
             ladder = normalize_factors(override, "continuous_decimation_factor")
-            if not isinstance(override, int):
-                object.__setattr__(self, "continuous_decimation_factor", ladder)
+            stored = ladder[0] if integer_like(override) is not None else ladder
+            object.__setattr__(self, "continuous_decimation_factor", stored)
         if self.max_workers is not None and self.max_workers < 1:
             raise ValueError(
                 f"max_workers must be 1 or more, got {self.max_workers}"

@@ -3,6 +3,7 @@ import os
 from datetime import UTC, datetime
 from typing import get_args
 
+import numpy as np
 import pytest
 
 from timeseries_zarr.constants import (
@@ -359,6 +360,91 @@ def test_writeopts_type_errors_point_to_the_continuous_ladder():
         WriteOpts(decimation_factor=[8, 4])
     with pytest.raises(TypeError, match="continuous_decimation_factor"):
         WriteOpts(event_decimation_factor=(8, 4))
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "other"),
+    [
+        ("decimation_factor", np.int64(4), {}),
+        ("decimation_factor", np.int32(3), {"decimation_factor": 3}),
+        (
+            "event_decimation_factor",
+            np.int64(8),
+            {"event_decimation_factor": 8},
+        ),
+        (
+            "continuous_decimation_factor",
+            np.int64(8),
+            {"continuous_decimation_factor": 8},
+        ),
+    ],
+)
+def test_writeopts_stores_a_numpy_int_factor_as_an_int(field, value, other):
+    opts = WriteOpts(**{field: value})
+    plain = WriteOpts(**other)
+    assert opts == plain
+    assert hash(opts) == hash(plain)
+    assert type(getattr(opts, field)) is int
+    again = dataclasses.replace(opts, min_bins=8)
+    assert type(getattr(again, field)) is int
+    assert dataclasses.replace(again, min_bins=1024) == opts
+
+
+def test_writeopts_stores_a_numpy_int_ladder_as_a_tuple_of_ints():
+    opts = WriteOpts(continuous_decimation_factor=(np.int64(8), np.int32(4)))
+    assert opts.continuous_decimation_factor == (8, 4)
+    assert all(type(r) is int for r in opts.continuous_decimation_factor)
+    assert opts == WriteOpts(continuous_decimation_factor=(8, 4))
+    assert all(type(r) is int for r in opts.continuous_factors)
+
+
+def test_writeopts_derived_factors_are_plain_ints():
+    opts = WriteOpts(
+        decimation_factor=np.int64(3),
+        continuous_decimation_factor=np.int64(8),
+        event_decimation_factor=np.int64(10),
+    )
+    assert type(opts.event_factor) is int
+    assert all(type(r) is int for r in opts.continuous_factors)
+    assert (
+        opts.level_cap
+        == WriteOpts(
+            continuous_decimation_factor=8, event_decimation_factor=10
+        ).level_cap
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "decimation_factor",
+        "event_decimation_factor",
+        "continuous_decimation_factor",
+    ],
+)
+def test_writeopts_rejects_a_numpy_int_below_2(field):
+    with pytest.raises(ValueError, match=f"{field} must be 2 or more"):
+        WriteOpts(**{field: np.int64(1)})
+
+
+def test_writeopts_rejects_a_numpy_int_ladder_ratio_below_2():
+    with pytest.raises(
+        ValueError, match="continuous_decimation_factor must .*2 or more"
+    ):
+        WriteOpts(continuous_decimation_factor=(np.int64(8), np.int32(1)))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [np.float64(4.0), np.bool_(True), np.array([8, 4]), np.array(4)],
+)
+def test_writeopts_rejects_a_numpy_value_that_is_not_an_integer(value):
+    with pytest.raises(TypeError, match="decimation_factor must be an int"):
+        WriteOpts(decimation_factor=value)
+    with pytest.raises(TypeError, match="event_decimation_factor must be"):
+        WriteOpts(event_decimation_factor=value)
+    with pytest.raises(TypeError, match="continuous_decimation_factor must"):
+        WriteOpts(continuous_decimation_factor=value)
 
 
 @pytest.mark.parametrize(

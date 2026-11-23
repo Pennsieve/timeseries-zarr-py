@@ -1,9 +1,11 @@
 """Format constants for the pyramid bundle."""
 
+import operator
 from collections.abc import Sequence
 from itertools import accumulate
-from operator import mul
-from typing import Final
+from typing import Final, SupportsIndex
+
+import numpy as np
 
 FORMAT_VERSION: Final = "1.0"
 """TS-Zarr specification version the writer produces (root tsz.version)."""
@@ -188,57 +190,88 @@ units. The spelled-out names are lowercase and match without regard to case.
 """
 
 
-def normalize_factors(value: int | Sequence[int], name: str) -> tuple[int, ...]:
+def integer_like(value: object) -> int | None:
+    """Return value as a plain int, or None when it is not integer-like.
+
+    An integer-like value is anything that operator.index accepts, such as an
+    int or a numpy integer scalar. A bool, a numpy bool, a float, a string,
+    bytes, and an array are not integer-like.
+
+    Args:
+        value: The value to convert.
+
+    Returns:
+        The value as an int, or None.
+    """
+    if isinstance(value, bool | np.bool_ | str | bytes | np.ndarray):
+        return None
+    try:
+        return operator.index(value)  # type: ignore[arg-type]
+    except TypeError:
+        return None
+
+
+def normalize_factors(
+    value: SupportsIndex | Sequence[SupportsIndex], name: str
+) -> tuple[int, ...]:
     """Return a decimation factor or ladder as a tuple of ratios.
 
-    An int is a ladder of one ratio. A sequence is copied to a tuple, so the
-    result of a tuple is the tuple itself.
+    An integer-like value is a ladder of one ratio. A sequence is copied to a
+    tuple. Each ratio in the result is a plain int.
 
     Args:
         value: One ratio, or the ratios of consecutive levels, each at least
-            MIN_DECIMATION_FACTOR.
+            MIN_DECIMATION_FACTOR. A ratio is an int or another integer-like
+            value, such as a numpy integer.
         name: The field name that the error messages report.
 
     Returns:
         The ratios, at least one.
 
     Raises:
-        TypeError: value is not an int or a sequence of ints. A bool, a float,
-            a string, and a nested sequence are not ints.
+        TypeError: value is not an integer-like value or a sequence of them. A
+            bool, a float, a string, an array, and a nested sequence are not
+            integer-like.
         ValueError: value is an empty sequence, or a ratio is below
             MIN_DECIMATION_FACTOR.
     """
-    if isinstance(value, bool | str | bytes) or not isinstance(
-        value, int | Sequence
-    ):
+    single = integer_like(value)
+    if single is not None:
+        if single < MIN_DECIMATION_FACTOR:
+            raise ValueError(
+                f"{name} must be {MIN_DECIMATION_FACTOR} or more, got {single}"
+            )
+        return (single,)
+    if isinstance(
+        value, bool | np.bool_ | str | bytes | np.ndarray
+    ) or not isinstance(value, Sequence):
         raise TypeError(
             f"{name} must be an int or a sequence of ints, "
             f"got {type(value).__name__} {value!r}"
         )
-    if isinstance(value, int):
-        if value < MIN_DECIMATION_FACTOR:
-            raise ValueError(
-                f"{name} must be {MIN_DECIMATION_FACTOR} or more, got {value}"
-            )
-        return (value,)
-    ratios = tuple(value)
-    if not ratios:
+    given = tuple(value)
+    if not given:
         raise ValueError(f"{name} must hold at least one ratio, got {value!r}")
-    for ratio in ratios:
-        if isinstance(ratio, bool) or not isinstance(ratio, int):
+    ratios: list[int] = []
+    for ratio in given:
+        converted = integer_like(ratio)
+        if converted is None:
             raise TypeError(
                 f"{name} must hold ints, got {type(ratio).__name__} "
-                f"{ratio!r} in {ratios!r}"
+                f"{ratio!r} in {given!r}"
             )
+        ratios.append(converted)
     if min(ratios) < MIN_DECIMATION_FACTOR:
         raise ValueError(
             f"{name} must hold ratios of {MIN_DECIMATION_FACTOR} or more, "
-            f"got {ratios!r}"
+            f"got {tuple(ratios)!r}"
         )
-    return ratios
+    return tuple(ratios)
 
 
-def level_factors(factors: int | Sequence[int], levels: int) -> tuple[int, ...]:
+def level_factors(
+    factors: SupportsIndex | Sequence[SupportsIndex], levels: int
+) -> tuple[int, ...]:
     """Return the ratios of the first levels of a ladder.
 
     The last ratio of the ladder repeats for every level beyond its length.
@@ -253,7 +286,7 @@ def level_factors(factors: int | Sequence[int], levels: int) -> tuple[int, ...]:
         Exactly levels ratios.
 
     Raises:
-        TypeError: factors is not an int or a sequence of ints.
+        TypeError: factors is not integer-like or a sequence of them.
         ValueError: A ratio is below MIN_DECIMATION_FACTOR, factors is empty,
             or levels is negative.
     """
@@ -264,7 +297,9 @@ def level_factors(factors: int | Sequence[int], levels: int) -> tuple[int, ...]:
     return padded[:levels]
 
 
-def level_widths(factors: int | Sequence[int], levels: int) -> tuple[int, ...]:
+def level_widths(
+    factors: SupportsIndex | Sequence[SupportsIndex], levels: int
+) -> tuple[int, ...]:
     """Return the samples per bin of the first levels of a ladder.
 
     Args:
@@ -275,14 +310,14 @@ def level_widths(factors: int | Sequence[int], levels: int) -> tuple[int, ...]:
         The width in raw samples of levels 1 through levels.
 
     Raises:
-        TypeError: factors is not an int or a sequence of ints.
+        TypeError: factors is not integer-like or a sequence of them.
         ValueError: A ratio is below MIN_DECIMATION_FACTOR, factors is empty,
             or levels is negative.
     """
-    return tuple(accumulate(level_factors(factors, levels), mul))
+    return tuple(accumulate(level_factors(factors, levels), operator.mul))
 
 
-def max_levels_for(factors: int | Sequence[int]) -> int:
+def max_levels_for(factors: SupportsIndex | Sequence[SupportsIndex]) -> int:
     """Return the most levels a channel can hold at a decimation ladder.
 
     Raw is not a level. The bin width of level k is the product of the first k
@@ -297,7 +332,7 @@ def max_levels_for(factors: int | Sequence[int]) -> int:
         The largest level number whose bin width fits.
 
     Raises:
-        TypeError: factors is not an int or a sequence of ints.
+        TypeError: factors is not integer-like or a sequence of them.
         ValueError: A ratio is below MIN_DECIMATION_FACTOR or factors is
             empty.
     """

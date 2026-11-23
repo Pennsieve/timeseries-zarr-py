@@ -7,9 +7,9 @@
 | Field | Description | Default |
 |---|---|---|
 | `zstd_level` | Zstd compression level | 5 |
-| `decimation_factor` | base ratio between the bin widths of consecutive levels, an int of at least 2 | 4 |
-| `continuous_decimation_factor` | an int, or a sequence of ints that is a ladder, for continuous channels; `None` uses `decimation_factor` | `None` |
-| `event_decimation_factor` | an int of at least 2 for the count levels of event channels; `None` uses `decimation_factor` | `None` |
+| `decimation_factor` | base ratio between the bin widths of consecutive levels, an integer of at least 2 | 4 |
+| `continuous_decimation_factor` | an integer, or a sequence of integers that is a ladder, for continuous channels; `None` uses `decimation_factor` | `None` |
+| `event_decimation_factor` | an integer of at least 2 for the count levels of event channels; `None` uses `decimation_factor` | `None` |
 | `max_levels` | most levels; `None` is the most the factors allow, 15 at a factor of 4 | `None` |
 | `min_bins` | fewest bins a level may hold | 1024 |
 | `inner_len` | inner Zarr chunk length in samples | 8192 |
@@ -17,6 +17,10 @@
 | `write_var` | include per-bin variance | `False` |
 | `voltage_policy` | `"convert"` or `"require_uv"` | `"convert"` |
 | `max_workers` | threads that fold and encode the channels of a window | available CPUs |
+
+Each factor field accepts any integer-like value, such as a numpy integer, and
+stores a Python `int`. A `bool`, a float, a string, and an array raise
+`TypeError`.
 
 `max_levels=0` writes the raw samples and the event arrays with no levels or count
 levels.
