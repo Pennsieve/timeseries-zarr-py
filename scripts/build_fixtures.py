@@ -388,9 +388,9 @@ def _build_ladder(out: Path) -> Entry:
         name,
         "A channel whose ratio between consecutive levels differs. The "
         "ratios are 8, 4, 3, 5, and 5, so levels 1 through 5 hold 8, 32, 96, "
-        "480, and 2400 samples per bin, and no width is a power of 4 or a "
-        "power of 2. Levels 2 through 5 end in a bin that holds fewer "
-        "samples than the width of its level.",
+        "480, and 2400 samples per bin, and no width is a power of 4. Levels "
+        "2 through 5 end in a bin that holds fewer samples than the width of "
+        "its level.",
         grid,
         rate_hz=RATE_2KHZ,
         probes=(9999,),
