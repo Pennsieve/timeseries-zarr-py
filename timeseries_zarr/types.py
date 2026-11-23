@@ -1,6 +1,7 @@
 """Shared value types for the writer."""
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -8,9 +9,9 @@ from typing import Literal
 from timeseries_zarr.constants import (
     DEFAULT_DECIMATION_FACTOR,
     INNER_CHUNK_SAMPLES,
-    MIN_DECIMATION_FACTOR,
     TARGET_SHARD_BYTES,
     max_levels_for,
+    normalize_factors,
 )
 
 
@@ -146,19 +147,42 @@ class ChunkShard:
     shard_shape: tuple[int, ...]
 
 
+def _require_int_factor(name: str, value: int) -> None:
+    """Raise TypeError unless value is a plain int, and ValueError below 2."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(
+            f"{name} must be an int, got {type(value).__name__} {value!r}; "
+            "set continuous_decimation_factor for a ladder of ratios"
+        )
+    normalize_factors(value, name)
+
+
 @dataclass(frozen=True, slots=True)
 class WriteOpts:
     """Tunable settings shared by the channel writers.
 
     Attributes:
         zstd_level: The Zstandard compression level.
-        decimation_factor: The ratio of the bin widths of consecutive levels,
-            at least MIN_DECIMATION_FACTOR. Every level the writer produces
-            uses the same ratio.
-        max_levels: The most levels to write, 0 through the level_cap for
-            decimation_factor. A value of 0 writes the raw samples and event
-            arrays with no levels. None writes as many levels as level_cap
-            allows.
+        decimation_factor: The base ratio of the bin widths of consecutive
+            levels, an int of at least MIN_DECIMATION_FACTOR. It sets the
+            ratio of every level of a continuous channel and of an event
+            channel unless an override below applies.
+        continuous_decimation_factor: Overrides decimation_factor for
+            continuous channels. An int sets one ratio. A sequence is a
+            ladder: element 0 is the number of samples in a bin of level 1,
+            element k is the ratio of level k + 1 to level k, and the last
+            element repeats for further levels. Each ratio is at least
+            MIN_DECIMATION_FACTOR. None uses decimation_factor. A sequence is
+            stored as a tuple.
+        event_decimation_factor: Overrides decimation_factor for the count
+            levels of event channels, at least MIN_DECIMATION_FACTOR. None
+            uses decimation_factor.
+        max_levels: The most levels to write, 0 through the larger of the
+            level limits of continuous and event channels at their factors. A
+            value of 0 writes the raw samples and event arrays with no
+            levels. None writes as many levels as level_cap and
+            event_level_cap allow. A channel kind with a lower limit stops at
+            that limit.
         min_bins: The fewest bins a level may hold, at least 1.
         inner_len: The inner chunk length in rows, at least 1.
         target_shard_bytes: The target size of an outer shard in bytes, at
@@ -173,11 +197,15 @@ class WriteOpts:
             The bytes written do not depend on it.
 
     Raises:
+        TypeError: If a decimation factor has the wrong type. A sequence is
+            valid only in continuous_decimation_factor.
         ValueError: If a setting lies outside its range, as stated above.
     """
 
     zstd_level: int = 5
     decimation_factor: int = DEFAULT_DECIMATION_FACTOR
+    continuous_decimation_factor: int | Sequence[int] | None = None
+    event_decimation_factor: int | None = None
     max_levels: int | None = None
     min_bins: int = 1024
     inner_len: int = INNER_CHUNK_SAMPLES
@@ -192,28 +220,77 @@ class WriteOpts:
         return self.max_workers or _available_cpus()
 
     @property
+    def continuous_factors(self) -> tuple[int, ...]:
+        """The decimation ladder of a continuous channel."""
+        override = self.continuous_decimation_factor
+        if override is None:
+            return (self.decimation_factor,)
+        if isinstance(override, int):
+            return (override,)
+        return tuple(override)
+
+    @property
+    def event_factor(self) -> int:
+        """The decimation factor of the count levels of an event channel."""
+        if self.event_decimation_factor is None:
+            return self.decimation_factor
+        return self.event_decimation_factor
+
+    @property
     def level_cap(self) -> int:
-        """The most levels to write: max_levels, or the most that fits."""
+        """The most levels of a continuous channel."""
+        cap = max_levels_for(self.continuous_factors)
         if self.max_levels is None:
-            return max_levels_for(self.decimation_factor)
-        return self.max_levels
+            return cap
+        return min(self.max_levels, cap)
+
+    @property
+    def event_level_cap(self) -> int:
+        """The most count levels of an event channel."""
+        cap = max_levels_for(self.event_factor)
+        if self.max_levels is None:
+            return cap
+        return min(self.max_levels, cap)
 
     def __post_init__(self) -> None:
-        """Raise ValueError on a setting outside its range."""
+        """Raise on a setting outside its type or range.
+
+        Raises:
+            TypeError: A decimation factor has the wrong type.
+            ValueError: A setting lies outside its range.
+        """
+        _require_int_factor("decimation_factor", self.decimation_factor)
+        if self.event_decimation_factor is not None:
+            _require_int_factor(
+                "event_decimation_factor", self.event_decimation_factor
+            )
+        override = self.continuous_decimation_factor
+        if override is not None:
+            ladder = normalize_factors(override, "continuous_decimation_factor")
+            if not isinstance(override, int):
+                object.__setattr__(self, "continuous_decimation_factor", ladder)
         if self.max_workers is not None and self.max_workers < 1:
             raise ValueError(
                 f"max_workers must be 1 or more, got {self.max_workers}"
             )
-        if self.decimation_factor < MIN_DECIMATION_FACTOR:
-            raise ValueError(
-                f"decimation_factor must be {MIN_DECIMATION_FACTOR} or more, "
-                f"got {self.decimation_factor}"
-            )
-        cap = max_levels_for(self.decimation_factor)
+        cap = max(
+            max_levels_for(self.continuous_factors),
+            max_levels_for(self.event_factor),
+        )
         if self.max_levels is not None and not 0 <= self.max_levels <= cap:
+            if (
+                self.continuous_decimation_factor is None
+                and self.event_decimation_factor is None
+            ):
+                where = f"decimation_factor {self.decimation_factor}"
+            else:
+                where = (
+                    f"continuous factors {self.continuous_factors} and "
+                    f"event factor {self.event_factor}"
+                )
             raise ValueError(
-                f"max_levels must be 0 through {cap} at decimation_factor "
-                f"{self.decimation_factor}, got {self.max_levels}"
+                f"max_levels must be 0 through {cap} at {where}, "
+                f"got {self.max_levels}"
             )
         for name, value in (
             ("min_bins", self.min_bins),

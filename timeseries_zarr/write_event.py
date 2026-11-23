@@ -613,7 +613,7 @@ def write_count_levels(
     offset_us, with one uint32 array "count" shaped (bins, L). L is the label
     count, or 1 without labels, and the bin axis is named "time". Level 1 is
     counted from the source's event times and labels, streamed in blocks of
-    events; every level above it sums decimation_factor rows of the stored
+    events; every level above it sums opts.event_factor rows of the stored
     level below, one shard at a time, after the rows that precede its bin 0 are
     padded with zeros so the two grids align. Channels with too few events, or
     whose level 1 would hold fewer than opts.min_bins bins, get no levels and
@@ -634,12 +634,12 @@ def write_count_levels(
         return
     first_event_us = int(source.read_events(0, 1)[0]) - reference_us
     last_event_us = int(source.read_events(total - 1, total)[0]) - reference_us
-    factor = opts.decimation_factor
+    factor = opts.event_factor
     plans = plan_count_levels(
         total,
         first_event_us,
         last_event_us,
-        opts.level_cap,
+        opts.event_level_cap,
         opts.min_bins,
         decimation_factor=factor,
     )
@@ -776,9 +776,9 @@ def check_event_channel(
         total,
         first_event_us,
         last_event_us,
-        opts.level_cap,
+        opts.event_level_cap,
         opts.min_bins,
-        decimation_factor=opts.decimation_factor,
+        decimation_factor=opts.event_factor,
     )
 
 

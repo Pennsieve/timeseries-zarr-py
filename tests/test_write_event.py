@@ -972,7 +972,7 @@ def test_write_count_levels_at_another_factor_equal_the_direct_count_at_every_le
         len(times),
         int(times[0]),
         int(times[-1]),
-        opts.level_cap,
+        opts.event_level_cap,
         opts.min_bins,
         decimation_factor=factor,
     )
@@ -985,6 +985,75 @@ def test_write_count_levels_at_another_factor_equal_the_direct_count_at_every_le
         assert level.attrs["tsz"]["period_us"] == plan.period_us
         want = _direct_counts(times, labels, 3, plan)
         assert np.array_equal(level[COUNT_KEY][:], want)
+
+
+def _level_periods(group):
+    return {
+        key: group[key].attrs["tsz"]["period_us"]
+        for key in sorted(group.group_keys(), key=int)
+    }
+
+
+def test_write_count_levels_use_the_event_decimation_factor(
+    tmp_path, event_source
+):
+    times, labels, source = _dense(event_source)
+    opts = dataclasses.replace(_COUNT_OPTS, event_decimation_factor=2)
+    group = _write_counts(tmp_path, source, opts=opts)
+    plans = plan_count_levels(
+        len(times),
+        int(times[0]),
+        int(times[-1]),
+        opts.event_level_cap,
+        opts.min_bins,
+        decimation_factor=2,
+    )
+    assert len(plans) >= 2
+    periods = _level_periods(group)
+    assert list(periods.values()) == [p.period_us for p in plans]
+    for below, above in zip(plans, plans[1:], strict=False):
+        assert above.period_us == 2 * below.period_us
+    for plan in plans:
+        want = _direct_counts(times, labels, 3, plan)
+        assert np.array_equal(group[str(plan.level)][COUNT_KEY][:], want)
+
+
+def test_write_count_levels_ignore_the_continuous_decimation_factor(
+    tmp_path, event_source
+):
+    _, _, source = _dense(event_source)
+    base = _write_counts(tmp_path / "base", source)
+    opts = dataclasses.replace(_COUNT_OPTS, continuous_decimation_factor=(8, 2))
+    ladder = _write_counts(tmp_path / "ladder", source, opts=opts)
+    assert _level_periods(ladder) == _level_periods(base)
+    for key in base.group_keys():
+        assert np.array_equal(
+            ladder[key][COUNT_KEY][:], base[key][COUNT_KEY][:]
+        )
+
+
+def test_write_count_levels_follow_the_base_factor_without_an_override(
+    tmp_path, event_source
+):
+    _, _, source = _dense(event_source)
+    opts = dataclasses.replace(_COUNT_OPTS, decimation_factor=10)
+    periods = list(
+        _level_periods(_write_counts(tmp_path, source, opts=opts)).values()
+    )
+    assert len(periods) >= 2
+    assert periods[1] == 10 * periods[0]
+
+
+def test_write_count_levels_stop_at_the_event_level_cap(tmp_path, event_source):
+    _, _, source = _dense(event_source)
+    opts = dataclasses.replace(
+        _COUNT_OPTS,
+        continuous_decimation_factor=(2**16, 2**15),
+        event_decimation_factor=2,
+        max_levels=2,
+    )
+    group = _write_counts(tmp_path, source, opts=opts)
+    assert sorted(group.group_keys()) == ["1", "2"]
 
 
 def test_write_count_levels_groups_carry_the_period_and_one_count_array(
