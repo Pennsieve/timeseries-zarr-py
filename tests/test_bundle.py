@@ -21,7 +21,9 @@ from timeseries_zarr.bundle import (
     write_all_channels,
     write_bundle,
 )
+from timeseries_zarr.read_bundle import open_bundle
 from timeseries_zarr.recording import RECORDING_FILE, epoch_us
+from timeseries_zarr.stack import stack_channels
 from timeseries_zarr.types import RecordingMeta, WriteOpts
 from timeseries_zarr.validator import validate_bundle
 from timeseries_zarr.zarr_io import open_group
@@ -1210,6 +1212,42 @@ def test_write_bundle_writes_the_levels_of_the_decimation_factor(
         assert level.attrs["tsz"]["period_us"] == width * 1e6 / 512.0
         assert level["count"].shape == (-(-6000 // width),)
         assert int(level["count"][:].sum()) == 6000 - 40
+
+
+def test_write_bundle_writes_a_conforming_bundle_for_a_ladder(
+    tmp_path, continuous_source
+):
+    sources = [
+        continuous_source(
+            _signal(6000 + 100 * index, index),
+            id=f"c{index}",
+            name=f"c{index}",
+            rate_hz=512.0,
+        )
+        for index in range(2)
+    ]
+    output = tmp_path / "bundle"
+    opts = dataclasses.replace(
+        _SPEC_OPTS, continuous_decimation_factor=(8, 4), min_bins=4
+    )
+    write_bundle(sources, [], output_path=output, opts=opts)
+    assert validate_bundle(output, full=True) == []
+    bundle = open_bundle(output)
+    for channel in bundle.continuous.values():
+        widths = [level.samples_per_bin for level in channel.levels.values()]
+        assert widths[:3] == [8, 32, 128]
+        assert len(widths) >= 4
+    stack = stack_channels(
+        [bundle.continuous[0], bundle.continuous[1]],
+        None,
+        None,
+        level=2,
+        member="count",
+    )
+    assert stack.level == 2
+    assert stack.samples_per_bin == 32
+    assert stack.values.shape == (2, -(-6100 // 32))
+    assert stack.values[0, : 6000 // 32].min() > 0
 
 
 def test_write_bundle_with_max_levels_0_writes_no_level_and_conforms(

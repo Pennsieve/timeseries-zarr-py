@@ -274,6 +274,20 @@ def test_channel_writer_bytes_counts_the_level_cap_of_the_factor():
     )
 
 
+def test_channel_writer_bytes_counts_the_level_cap_of_a_ladder():
+    none = channel_writer_bytes(WriteOpts(max_levels=0))
+    per_level = channel_writer_bytes(WriteOpts(max_levels=1)) - none
+    ladder = WriteOpts(continuous_decimation_factor=(256, 16))
+    assert ladder.level_cap == 6
+    assert channel_writer_bytes(ladder) == none + 6 * per_level
+
+
+def test_channel_writer_bytes_ignores_the_event_factor():
+    assert channel_writer_bytes(
+        WriteOpts(event_decimation_factor=2)
+    ) == channel_writer_bytes(WriteOpts())
+
+
 def test_channel_writer_bytes_scales_with_the_chunk_length():
     def estimate(inner_len):
         opts = WriteOpts(

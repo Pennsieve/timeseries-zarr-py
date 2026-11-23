@@ -43,6 +43,7 @@ from timeseries_zarr.constants import (
     VAR_KEY,
     WINDOW_BATCH_BYTES,
     WINDOW_BATCH_ROWS,
+    level_factors,
 )
 from timeseries_zarr.fold import LevelChunk, LevelFolder
 from timeseries_zarr.planning import plan_levels, raw_shape, sample_period_us
@@ -386,7 +387,7 @@ class ChannelWriter:
         levels: Sequence[LevelMembers[ShardLayout]],
         factor: float,
         inner_len: int,
-        decimation_factor: int,
+        factors: Sequence[int],
         executor: Executor | None = None,
         placement: Placement | None = None,
     ) -> None:
@@ -399,8 +400,9 @@ class ChannelWriter:
             levels: The layout of each level's members, in level order.
             factor: The multiplier applied to every sample.
             inner_len: The rows of one chunk of a level.
-            decimation_factor: The ratio of the bin widths of consecutive
-                levels.
+            factors: One ratio for each level. The first is the samples per
+                bin of level 1, and each later one is the ratio of a level
+                to the level below.
             executor: Encodes the chunks of a large push in groups. A worker
                 of the executor may call push while another worker is idle.
                 Chunks encode in the calling thread when None.
@@ -436,7 +438,7 @@ class ChannelWriter:
                 len(levels),
                 inner_len,
                 bool(levels) and levels[0].var is not None,
-                decimation_factor,
+                factors,
             )
             if levels
             else None
@@ -576,7 +578,7 @@ def _add_channel_nodes(
         channel.rate_hz(),
         opts.level_cap,
         opts.min_bins,
-        decimation_factor=opts.decimation_factor,
+        decimation_factor=opts.continuous_factors,
     )
     nodes[str(index)] = _channel_group_metadata(
         channel, reference_us=reference_us, unit=resolved.unit
@@ -663,7 +665,7 @@ def _channel_writer(
         levels,
         factor,
         opts.inner_len,
-        opts.decimation_factor,
+        level_factors(opts.continuous_factors, len(levels)),
         executor,
         placement,
     )
