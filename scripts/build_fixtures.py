@@ -73,6 +73,7 @@ REFERENCE_TIME = SESSION_START.astimezone(UTC)
 RATE_30KHZ = 30000.0
 RATE_TDT_HZ = 24414.0625
 RATE_1KHZ = 1000.0
+RATE_2KHZ = 2000.0
 
 type Entry = dict[str, Any]
 type Build = Callable[[Path], Entry]
@@ -104,13 +105,21 @@ def _noise(
     return values.astype(np.float32)
 
 
-def _level_widths(length: int) -> list[int]:
+def _level_widths(length: int, ladder: Sequence[int] = (FACTOR,)) -> list[int]:
     """Return the samples per bin of each level the writer keeps.
 
-    Level k stays while it holds at least one bin, up to MAX_LEVELS levels.
+    The ratio between consecutive levels comes from ladder, and its last ratio
+    repeats. Level k stays while it holds at least one bin, up to MAX_LEVELS
+    levels and below 2^32 samples per bin.
     """
-    widths = (FACTOR**level for level in range(1, MAX_LEVELS + 1))
-    return [width for width in widths if width <= length]
+    widths: list[int] = []
+    width = 1
+    for level in range(MAX_LEVELS):
+        width *= ladder[min(level, len(ladder) - 1)]
+        if width > length or width >= 2**32:
+            break
+        widths.append(width)
+    return widths
 
 
 class SignalSource:
@@ -302,17 +311,32 @@ def _write_continuous(
     rate_hz: float,
     probes: Sequence[int] = (),
     with_var: bool = False,
+    ladder: Sequence[int] | None = None,
 ) -> Entry:
-    """Write a bundle of one continuous channel through the writer."""
+    """Write a bundle of one continuous channel through the writer.
+
+    Args:
+        out: The directory that holds the bundle directory.
+        name: The fixture and channel name.
+        exercises: The manifest text of what the fixture exercises.
+        grid: The samples of the channel.
+        rate_hz: The sample rate.
+        probes: Sample indices to report beside the first, middle, and last.
+        with_var: Whether each level holds var.
+        ladder: The ratios of consecutive levels, or None for FACTOR at every
+            level.
+    """
     source = SignalSource(grid, name, rate_hz)
     opts = replace(WRITE_OPTS, write_var=with_var)
+    if ladder is not None:
+        opts = replace(opts, continuous_decimation_factor=tuple(ladder))
     write_bundle([source], [], output_path=out / name, opts=opts)
     channel = _continuous_entry(
         0,
         grid,
         name=name,
         rate_hz=rate_hz,
-        widths=_level_widths(int(grid.shape[0])),
+        widths=_level_widths(int(grid.shape[0]), ladder or (FACTOR,)),
         probes=probes,
         with_var=with_var,
     )
@@ -348,6 +372,29 @@ def _build_tdt(out: Path) -> Entry:
         grid,
         rate_hz=RATE_TDT_HZ,
         probes=(4999,),
+    )
+
+
+LADDER = (8, 4, 3, 5)
+"""The ratios of the mixed-ladder channel. The last ratio repeats."""
+
+
+def _build_ladder(out: Path) -> Entry:
+    """Write the channel whose ratio changes from level to level."""
+    name = "continuous_ladder"
+    grid = _noise(name, 10000, 0.0, 100.0)
+    return _write_continuous(
+        out,
+        name,
+        "A channel whose ratio between consecutive levels differs. The "
+        "ratios are 8, 4, 3, 5, and 5, so levels 1 through 5 hold 8, 32, 96, "
+        "480, and 2400 samples per bin, and no width is a power of 4 or a "
+        "power of 2. Levels 2 through 5 end in a bin that holds fewer "
+        "samples than the width of its level.",
+        grid,
+        rate_hz=RATE_2KHZ,
+        probes=(9999,),
+        ladder=LADDER,
     )
 
 
@@ -1004,6 +1051,7 @@ def _build_time_limit(out: Path) -> Entry:
 BUILDERS: list[Build] = [
     _build_30khz,
     _build_tdt,
+    _build_ladder,
     _build_runs,
     _build_dropout,
     _build_dc_offset,
