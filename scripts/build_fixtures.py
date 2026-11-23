@@ -393,7 +393,6 @@ def _build_ladder(out: Path) -> Entry:
         "its level.",
         grid,
         rate_hz=RATE_2KHZ,
-        probes=(9999,),
         ladder=LADDER,
     )
 

@@ -253,6 +253,8 @@ def test_normalize_factors_returns_plain_ints_for_integer_like_values(
         np.float64(4.0),
         "4",
         b"4",
+        bytearray(b"\x08\x04"),
+        memoryview(b"\x08\x04"),
         [[4]],
         [(8, 4)],
         [np.float64(4.0)],
