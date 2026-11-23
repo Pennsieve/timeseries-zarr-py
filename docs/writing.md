@@ -7,8 +7,10 @@
 | Field | Description | Default |
 |---|---|---|
 | `zstd_level` | Zstd compression level | 5 |
-| `decimation_factor` | samples per bin of level 1, and the ratio between consecutive levels; at least 2 | 4 |
-| `max_levels` | most levels; `None` is the most the factor allows, 15 at 4x | `None` |
+| `decimation_factor` | base ratio between the bin widths of consecutive levels, an int of at least 2 | 4 |
+| `continuous_decimation_factor` | an int, or a sequence of ints that is a ladder, for continuous channels; `None` uses `decimation_factor` | `None` |
+| `event_decimation_factor` | an int of at least 2 for the count levels of event channels; `None` uses `decimation_factor` | `None` |
+| `max_levels` | most levels; `None` is the most the factors allow, 15 at a factor of 4 | `None` |
 | `min_bins` | fewest bins a level may hold | 1024 |
 | `inner_len` | inner Zarr chunk length in samples | 8192 |
 | `target_shard_bytes` | target outer shard size in bytes | 16 MiB |
@@ -18,6 +20,9 @@
 
 `max_levels=0` writes the raw samples and the event arrays with no levels or count
 levels.
+A positive `max_levels` caps continuous levels and count levels separately. It
+must not exceed the larger of the two limits that the factors allow, and a
+channel kind with a lower limit stops at that limit.
 
 `max_workers` is 1 or more. `None` uses the CPUs that the process may run on: the CPU
 affinity where the platform reports it, and `os.cpu_count()` elsewhere. The bytes written
@@ -48,6 +53,83 @@ scales `waveform_mean`. An event channel with no `unit` stays without one.
 `nV`, before `write_bundle` clears `output_path`.
 `timeseries_zarr.UNIT_TO_UV` maps each voltage unit name to its factor to microvolts.
 The writer keeps every other unit as given.
+
+### Decimation ladder
+
+A continuous channel folds each level from the level below it, and the ratio can
+differ from level to level. Set `continuous_decimation_factor` to a sequence of
+ints to write such a ladder. Element 0 is the ratio of level 1 to the raw
+samples, which is the number of samples in a bin of level 1. Each later element
+is the ratio of a level to the level below it. The last element repeats for
+every further level, so `(8, 4)` gives bins of 8, 32, 128, 512, 2048 samples,
+and so on. An int is a ladder of one element, so `4` gives 4, 16, 64 samples,
+the same as the default. Every ratio is at least 2, and the width of a level
+stays below 2^32 samples.
+
+`continuous_decimation_factor` is the only field that accepts a sequence.
+`decimation_factor` and `event_decimation_factor` raise `TypeError` for one.
+`event_decimation_factor` sets the ratio between the periods of the count levels
+of event channels and leaves the continuous levels alone.
+`continuous_decimation_factor` leaves the count levels alone. Each falls back to
+`decimation_factor` when unset.
+
+This example writes 2,000,000 samples at 1000 Hz with a ladder of `(8, 4)` and a
+factor of 8 for count levels. The channel has four levels, because the writer
+stops when the next level would hold fewer than `min_bins` bins. The example has
+no event channel, so the event factor has no effect on it.
+
+```python
+from pathlib import Path
+
+import numpy as np
+
+from timeseries_zarr import WriteOpts, open_bundle, write_bundle
+
+
+class NoiseChannel:
+    id = "noise-0"
+    name = "noise"
+    unit = "uV"
+
+    def __init__(self):
+        rng = np.random.default_rng(0)
+        self._samples = rng.normal(0.0, 50.0, size=2_000_000).astype(np.float32)
+
+    def rate_hz(self):
+        return 1000.0
+
+    def start_us(self):
+        return 0
+
+    def num_samples(self):
+        return self._samples.shape[0]
+
+    def read_samples(self, start, stop):
+        return self._samples[start:stop]
+
+
+write_bundle(
+    [NoiseChannel()],
+    [],
+    output_path=Path("ladder.zarr"),
+    opts=WriteOpts(
+        continuous_decimation_factor=(8, 4),
+        event_decimation_factor=8,
+    ),
+)
+
+with open_bundle("ladder.zarr") as bundle:
+    channel = bundle.continuous[0]
+    for number, level in channel.levels.items():
+        print(number, level.samples_per_bin)
+```
+
+The example prints `1 8`, `2 32`, `3 128`, and `4 512`.
+
+The writer applies one ladder to every continuous channel of a bundle, so a
+level has the same width in samples on every channel that holds it.
+`stack_channels` at a level of 1 or more needs channels whose level has the same
+width in samples.
 
 ## Times
 

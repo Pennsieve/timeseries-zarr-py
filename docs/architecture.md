@@ -32,13 +32,17 @@ sources in `tests/conftest.py`.
 
 `planning.py`, `sizing.py`, `counts.py`, `columns.py`, and `units.py` are pure functions
 with no I/O. `planning.py` decides how many levels a continuous channel gets, numbered from 1, and each
-level's bin count and `period_us`. `sizing.py` decides the inner chunk and outer shard
+level's bin count and `period_us`. The width of level k is the product of the
+first k ratios of the channel's decimation ladder, and the last ratio repeats.
+`sizing.py` decides the inner chunk and outer shard
 shapes for one array. Every member of a level takes the row counts of its `minmax` array.
 
 `counts.py` plans the count levels of a dense event channel. Level 1 takes an integer
-period from a ladder of `1000 * decimation_factor^j` microseconds, and each level above
-it spans `decimation_factor` times the time. Every count level carries an `offset_us`
-that is a multiple of its period.
+period from a ladder of `1000 * event_factor^j` microseconds, and each level
+above it spans `event_factor` times the time. `event_factor` is
+`event_decimation_factor` of `WriteOpts`, or `decimation_factor` when that is
+unset. A count level takes one factor and never a ladder. Every count level
+carries an `offset_us` that is a multiple of its period.
 `columns.py` encodes the fixed-width `text` rows and the `channels` bitmask rows. An
 event that names no channel gets a row of zero bytes.
 `units.py` resolves the factor and stored unit of a channel. It matches `V`, `mV`, `uV`, and
@@ -55,7 +59,10 @@ without touching a store.
 
 ## Numeric core
 
-`fold.py` reduces one level to the next over disjoint blocks of `decimation_factor` rows.
+`fold.py` reduces one level to the next over disjoint blocks of rows.
+`LevelFolder` takes one ratio per level. Level 1 folds the raw samples in blocks
+of the first ratio, and each higher level folds the level below it in blocks of
+its own ratio.
 `Statistics` holds the minimum, maximum, mean, population variance, and count of the
 finite samples of consecutive bins, as one float64 array each. A bin with no finite
 sample has a count of 0 and NaN in the other four. `fold_raw` and
