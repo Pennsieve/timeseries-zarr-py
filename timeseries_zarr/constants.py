@@ -190,12 +190,24 @@ units. The spelled-out names are lowercase and match without regard to case.
 """
 
 
+_NOT_FACTOR_TYPES: Final = (
+    bool,
+    np.bool_,
+    str,
+    bytes,
+    bytearray,
+    memoryview,
+    np.ndarray,
+)
+"""Types that never hold a decimation factor, whatever they contain."""
+
+
 def integer_like(value: object) -> int | None:
     """Return value as a plain int, or None when it is not integer-like.
 
     An integer-like value is anything that operator.index accepts, such as an
     int or a numpy integer scalar. A bool, a numpy bool, a float, a string,
-    bytes, and an array are not integer-like.
+    bytes, a bytearray, a memoryview, and an array are not integer-like.
 
     Args:
         value: The value to convert.
@@ -203,7 +215,7 @@ def integer_like(value: object) -> int | None:
     Returns:
         The value as an int, or None.
     """
-    if isinstance(value, bool | np.bool_ | str | bytes | np.ndarray):
+    if isinstance(value, _NOT_FACTOR_TYPES):
         return None
     try:
         return operator.index(value)  # type: ignore[arg-type]
@@ -230,8 +242,8 @@ def normalize_factors(
 
     Raises:
         TypeError: value is not an integer-like value or a sequence of them. A
-            bool, a float, a string, an array, and a nested sequence are not
-            integer-like.
+            bool, a float, a string, bytes, a bytearray, a memoryview, an
+            array, and a nested sequence are not integer-like.
         ValueError: value is an empty sequence, or a ratio is below
             MIN_DECIMATION_FACTOR.
     """
@@ -242,9 +254,7 @@ def normalize_factors(
                 f"{name} must be {MIN_DECIMATION_FACTOR} or more, got {single}"
             )
         return (single,)
-    if isinstance(
-        value, bool | np.bool_ | str | bytes | np.ndarray
-    ) or not isinstance(value, Sequence):
+    if isinstance(value, _NOT_FACTOR_TYPES) or not isinstance(value, Sequence):
         raise TypeError(
             f"{name} must be an int or a sequence of ints, "
             f"got {type(value).__name__} {value!r}"
